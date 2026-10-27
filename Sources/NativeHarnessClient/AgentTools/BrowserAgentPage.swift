@@ -73,6 +73,9 @@ final class BrowserAgentPage {
     }
     /// What the vault last filled into this page, until the field is gone or the page navigates.
     var vaultFill: BrowserAgentVaultFill?
+    /// The documents (main frame `loaderId`) the vault filled a secret into, which stay closed to the agent's
+    /// scripts when going back shows one again.
+    var vaultFilledDocuments: Set<String> = []
     /// The vault's passkey waiting in this tab's authenticator for the page's next request.
     var armedPasskey: BrowserAgentArmedPasskey? {
         didSet { onArmedPasskeyChange?(self) }

@@ -91,6 +91,10 @@ enum BrowserAgentSnapshot {
         var isTruncated = false
         /// Frames already placed, so a frame the page holds twice is read once.
         var placed: Set<Int> = [0]
+        /// How many nodes deep the walk is, the ones it reads through included. A page nested deeper than
+        /// `maximumNesting` is cut there, as the panel's tree is, so it cannot run the walk out of stack.
+        var nesting = 0
+        static let maximumNesting = 256
 
         init(frames: [Frame], maximumLength: Int, pageOrigin: String?) {
             self.frames = frames
@@ -114,6 +118,12 @@ enum BrowserAgentSnapshot {
 
         mutating func visit(_ id: String, in frame: Int, depth: Int, parentName: String) -> [String] {
             guard !isTruncated, let node = byID[frame][id] else { return [] }
+            guard nesting < Self.maximumNesting else {
+                isTruncated = true
+                return []
+            }
+            nesting += 1
+            defer { nesting -= 1 }
             let role = node["role"]?["value"]?.stringValue ?? ""
             var name = BrowserAgentSnapshot.clean(node["name"]?["value"]?.stringValue ?? "")
             let children = node["childIds"]?.arrayValue?.compactMap(\.stringValue) ?? []

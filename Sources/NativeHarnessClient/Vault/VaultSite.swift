@@ -113,7 +113,14 @@ enum VaultSite {
               let host = url.host(percentEncoded: false) else { return nil }
         if localHosts.contains(host) { return origin }
         guard url.scheme == "https" else { return nil }
+        // An address has no registrable domain: `192.168.1.1` is that one host, not `1.1`.
+        if isAddress(host) { return host }
         return suffixes.registrableDomain(of: host) ?? normalize(host, suffixes: suffixes)
+    }
+
+    /// An IP address rather than a name.
+    static func isAddress(_ host: String) -> Bool {
+        host.contains(":") || (!host.isEmpty && host.allSatisfy { $0.isASCII && ($0.isNumber || $0 == ".") })
     }
 
     /// Whether a page at `origin` is one of the site's pages.
@@ -121,7 +128,7 @@ enum VaultSite {
         guard let page = origin(of: pageOrigin), let url = URL(string: page),
               let host = url.host(percentEncoded: false) else { return false }
         if site.contains("://") { return origin(of: site) == page }
-        guard url.scheme == "https" else { return false }
+        guard url.scheme == "https", !isAddress(host) && !isAddress(site) || host == site else { return false }
         return host == site || host.hasSuffix("." + site)
     }
 

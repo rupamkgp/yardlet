@@ -197,7 +197,7 @@ extension AppModel: TaskSuggestionToolHandling {
             assignment = start.assignment
         }
         let submission = NewTaskDraft.Submission(
-            originalText: suggestion.prompt, attachments: [], harness: harness, workspaceURL: place.folder,
+            originalText: TaskMessage.disarmed(suggestion.prompt), attachments: [], harness: harness, workspaceURL: place.folder,
             projectID: place.project?.id, runtimeURL: runtime, connection: connection,
             startsInNewWorktree: place.folder != nil && place.startsInNewWorktree,
             providerOptions: choice.providerOptions,

@@ -350,7 +350,7 @@ final class AgentToolInjectionTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appending(path: "ytb-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appending(path: "tools.sock").path(percentEncoded: false)
-        let listener = try UnixSocketListener(path: path) { body in await broker.respond(to: body) }
+        let listener = try UnixSocketListener(path: path) { body, peer in await broker.respond(to: body, peer: peer) }
         defer { listener.stop() }
         let taskA = UUID()
         let server = try XCTUnwrap(broker.agentToolServer(for: taskA, workspaceRoots: []))
@@ -362,6 +362,23 @@ final class AgentToolInjectionTests: XCTestCase {
         let forged = await UnixSocketToolInvoker(environment: environment).call(tool: "browser_console_messages", arguments: .object([:]))
         XCTAssertTrue(forged.isError)
         XCTAssertTrue(forged.text.contains("does not recognise"), forged.text)
+
+        // The right token from a process that is not under the task's harness is refused too.
+        environment = server.environment
+        environment[AgentToolEnvironment.endpoint] = path
+        var asked: [(UUID, Int32?)] = []
+        broker.callerProcessCheck = { session, process in
+            asked.append((session, process))
+            return false
+        }
+        let foreign = await UnixSocketToolInvoker(environment: environment).call(tool: "browser_console_messages", arguments: .object([:]))
+        XCTAssertTrue(foreign.isError)
+        XCTAssertTrue(foreign.text.contains("did not come from the tool server"), foreign.text)
+        XCTAssertEqual(asked.first?.0, taskA)
+        XCTAssertEqual(asked.first?.1, ProcessInfo.processInfo.processIdentifier, "The check gets the caller's process")
+        broker.callerProcessCheck = { _, _ in true }
+        let admitted = await UnixSocketToolInvoker(environment: environment).call(tool: "browser_console_messages", arguments: .object([:]))
+        XCTAssertFalse(admitted.isError, admitted.text)
     }
 
     // MARK: - AppModel

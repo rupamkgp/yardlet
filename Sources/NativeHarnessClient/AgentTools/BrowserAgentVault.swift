@@ -2,8 +2,9 @@ import Foundation
 import YardletAgentTools
 
 /// Values the vault filled into pages lately, kept in memory for 30 minutes so that no tool result
-/// carries one back to the model (design §5.3, the way CI logs mask their secrets). Short values are
-/// left alone: they would blank out ordinary text.
+/// carries one back to the model (design §5.3, the way CI logs mask their secrets), in the spellings a
+/// page or a result most often turns them into. Short values are left alone: they would blank out
+/// ordinary text.
 struct VaultScrubList {
     private var entries: [(value: String, until: Date)] = []
     static let keep: TimeInterval = 30 * 60
@@ -11,8 +12,31 @@ struct VaultScrubList {
 
     mutating func add(_ value: String?, now: Date = Date()) {
         guard let value, value.count >= Self.shortest else { return }
-        entries.removeAll { $0.until < now || $0.value == value }
-        entries.append((value, now.addingTimeInterval(Self.keep)))
+        let until = now.addingTimeInterval(Self.keep)
+        for form in Set(Self.forms(of: value)) {
+            entries.removeAll { $0.until < now || $0.value == form }
+            entries.append((form, until))
+        }
+    }
+
+    /// The value as written, escaped in JSON (a script's result), and as base64 (plain, unpadded and
+    /// URL-safe), percent-encoding and hex. A page can still make a spelling this misses; these keep the
+    /// usual ones from passing for something else.
+    static func forms(of value: String) -> [String] {
+        let bytes = Data(value.utf8)
+        let base64 = bytes.base64EncodedString()
+        let unpadded = base64.trimmingCharacters(in: CharacterSet(charactersIn: "="))
+        let urlSafe = unpadded.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        let json = [JSONEncoder.OutputFormatting(), .withoutEscapingSlashes].compactMap { formatting -> String? in
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = formatting
+            return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) }
+        }
+        // What `encodeURIComponent` leaves as it is.
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+        let percent = value.addingPercentEncoding(withAllowedCharacters: unreserved)
+        return [value, base64, unpadded, urlSafe, hex, hex.uppercased()] + json + (percent.map { [$0] } ?? [])
     }
 
     func scrub(_ text: String, now: Date = Date()) -> String {
@@ -343,6 +367,7 @@ extension BrowserAgentTools {
         vaultScrub.add(grant.code)
         if kinds.contains("password") || kinds.contains("one_time_code") {
             page.vaultFill = BrowserAgentVaultFill(contextID: contextID, loaderID: frame.loaderID, eventMark: page.cdp.eventLog.count)
+            page.vaultFilledDocuments.insert(frame.loaderID)
         }
         vault.record(grant, for: request, filled: kinds)
         NotificationCenter.default.post(name: .vaultFilled, object: nil, userInfo: [VaultFillNotice.tabKey: page.tabID])
@@ -367,24 +392,27 @@ extension BrowserAgentTools {
             + (submitted ? " and submitted it." : ".") + " The values are not shown to you.")
     }
 
-    /// Whether a value the vault filled is still in its field on the page. While it is, the page's
-    /// scripts are not run for the agent and screenshots cover the field (design §5.3).
-    func vaultValueIsLive(on page: BrowserAgentPage) async -> Bool {
+    /// Whether the vault filled a password or a code into the document the page shows now (design §5.3):
+    /// the one it filled last, until the main frame opens another by a navigation or a reload, or one it
+    /// filled earlier that going back brought again. A page can copy what it was given, so an emptied field
+    /// does not end it. While it holds, the page's scripts are not run for the agent.
+    func vaultFilledDocument(_ page: BrowserAgentPage) -> Bool {
         guard let fill = page.vaultFill else { return false }
         let log = page.cdp.eventLog
-        if log.count > fill.eventMark, log[fill.eventMark...].contains(where: {
+        guard log.count > fill.eventMark, let shown = log[fill.eventMark...].last(where: {
             $0.method == "Page.frameNavigated" && $0.params["frame"]?["parentId"] == nil
-        }) {
-            page.vaultFill = nil
-            return false
-        }
+        }) else { return true }
+        return shown.params["frame"]?["loaderId"]?.stringValue.map(page.vaultFilledDocuments.contains) ?? false
+    }
+
+    /// Whether a value the vault filled is still in its field on the page, for screenshots to cover.
+    func vaultValueIsLive(on page: BrowserAgentPage) async -> Bool {
+        guard vaultFilledDocument(page), let fill = page.vaultFill else { return false }
         let live = try? await send(page, "Runtime.evaluate", [
             "expression": .string("(window.__yardletVault || []).some(e => e.isConnected && e.value !== '')"),
             "contextId": .integer(fill.contextID), "returnByValue": .bool(true)
         ])
-        if live?["result"]?["value"]?.boolValue == true { return true }
-        page.vaultFill = nil
-        return false
+        return live?["result"]?["value"]?.boolValue == true
     }
 
     /// Hides the filled values that the page would draw as text (a shown password, a code), for one
@@ -466,7 +494,7 @@ extension BrowserAgentTools {
           const put = (e, v) => {
             e.focus();
             setter.call(e, v);
-            e.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: v }));
+            e.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText' }));
             e.dispatchEvent(new Event('change', { bubbles: true }));
           };
           const isInput = e => e instanceof HTMLInputElement;

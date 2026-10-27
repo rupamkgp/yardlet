@@ -54,12 +54,16 @@ enum YardletUpdateOffer: Equatable {
 
     /// The alert asking to install `build`, made `date`, with a button for each choice in order.
     @MainActor
-    static func alert(build: String, date: String, hasRunningTasks: Bool) -> NSAlert {
+    /// `makerIsUnknown`: the installed app has no developer's signature to hold the build to.
+    static func alert(build: String, date: String, hasRunningTasks: Bool, makerIsUnknown: Bool = false) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = L10n.string("Install the staged Yardlet build?")
         var message = L10n.format(
             "Build %@, made %@. Yardlet quits, installs it, and opens again. Tasks, drafts and history stay as they are, and the current app is kept for rollback.",
             build, date)
+        if makerIsUnknown {
+            message += "\n\n" + L10n.string("This Yardlet has no developer's signature, so Yardlet cannot tell who made the staged build. Install it only if you built it.")
+        }
         if hasRunningTasks {
             message += "\n\n" + L10n.string("Tasks are still running. Yardlet can wait until they finish, then install and restart on its own.")
         }

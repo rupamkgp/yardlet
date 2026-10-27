@@ -1440,6 +1440,8 @@
 "The staged build is already installed." = "The staged build is already installed.";
 "The staged build's signature could not be verified." = "The staged build's signature could not be verified.";
 "The staged build is not signed by the developer who signed the installed Yardlet." = "The staged build is not signed by the developer who signed the installed Yardlet.";
+"The staged build is a link to another folder, so Yardlet does not install it." = "The staged build is a link to another folder, so Yardlet does not install it.";
+"This Yardlet has no developer's signature, so Yardlet cannot tell who made the staged build. Install it only if you built it." = "This Yardlet has no developer's signature, so Yardlet cannot tell who made the staged build. Install it only if you built it.";
 "with uncommitted changes" = "with uncommitted changes";
 "Install the staged Yardlet build?" = "Install the staged Yardlet build?";
 "Build %@, made %@. Yardlet quits, installs it, and opens again. Tasks, drafts and history stay as they are, and the current app is kept for rollback." = "Build %@, made %@. Yardlet quits, installs it, and opens again. Tasks, drafts and history stay as they are, and the current app is kept for rollback.";
@@ -2064,6 +2066,9 @@
 "Send a message to another project's task" = "Send a message to another project's task";
 "Send a message to a task that runs without asking" = "Send a message to a task that runs without asking";
 "Create a task in another project" = "Create a task in another project";
+"Schedule messages to a task that runs without asking" = "Schedule messages to a task that runs without asking";
+"Schedule messages to another project's task" = "Schedule messages to another project's task";
+"Schedule a task in another project" = "Schedule a task in another project";
 "Run a subagent outside this task's folders" = "Run a subagent outside this task's folders";
 "Open a file outside this task's folders?" = "Open a file outside this task's folders?";
 "Archive %lld tasks" = "Archive %lld tasks";
@@ -2338,6 +2343,8 @@
 "Allow Claude to create the scheduled task “%@”?" = "Allow Claude to create the scheduled task “%@”?";
 "Each run starts a new task." = "Each run starts a new task.";
 "Each run continues a task." = "Each run continues a task.";
+"Task: %@" = "Task: %@";
+"Project or folder: %@" = "Project or folder: %@";
 "Allow Claude to update the scheduled task “%@”?" = "Allow Claude to update the scheduled task “%@”?";
 "Allow Claude to update a scheduled task?" = "Allow Claude to update a scheduled task?";
 "New name: %@" = "New name: %@";

@@ -67,6 +67,22 @@ enum ClaudePermissionMode {
     static func isElevated(_ mode: String?) -> Bool {
         mode == bypassPermissions
     }
+
+    static let acceptEdits = "acceptEdits"
+    static let auto = "auto"
+
+    /// How much the mode lets the CLI do without the person, least first: plan reads only; the default
+    /// asks and dontAsk refuses what is not allowed; acceptEdits takes file edits; auto lets its
+    /// classifier take the rest; bypassPermissions takes everything. No mode is the default.
+    static func freedom(_ mode: String?) -> Int {
+        switch mode {
+        case plan: 0
+        case acceptEdits: 2
+        case auto: 3
+        case bypassPermissions: 4
+        default: 1
+        }
+    }
 }
 
 /// The Claude Code tools whose permission request is a question or a plan the user answers

@@ -336,10 +336,27 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertTrue(two.text.contains("takes one file"), two.text)
         XCTAssertTrue(hostCommands.isEmpty, "Nothing outside the rules reaches the page")
 
+        let uploads = root.appending(path: "uploads")
+        tools.uploadFolder = uploads
         let chosen = await run(AgentToolCatalog.fileUpload, ["paths": .array([.string("docs/a.txt")])])
         XCTAssertEqual(chosen.text, "Gave the file chooser “a.txt”.")
-        let expected = root.appending(path: "docs/a.txt").resolvingSymlinksInPath().path(percentEncoded: false)
-        XCTAssertEqual(hostCommands.last, .fileDialogResult(tab: 4, dialog: 5, paths: [expected]))
+        // The page gets a copy read from the checked path, which a later swap of the file cannot change.
+        guard case .fileDialogResult(tab: 4, dialog: 5, paths: let paths?)? = hostCommands.last, paths.count == 1,
+              let copy = paths.first else {
+            return XCTFail("\(String(describing: hostCommands.last))")
+        }
+        XCTAssertTrue(copy.hasPrefix(uploads.path(percentEncoded: false)), copy)
+        XCTAssertEqual(URL(filePath: copy).lastPathComponent, "a.txt")
+        try FileManager.default.removeItem(at: root.appending(path: "docs/a.txt"))
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "docs/a.txt"), withDestinationURL: outside)
+        XCTAssertEqual(try String(contentsOfFile: copy, encoding: .utf8), "a")
+        XCTAssertThrowsError(try BrowserAgentWorkspaceFile.privateCopy(
+            of: root.appending(path: "docs/a.txt").path(percentEncoded: false), roots: [root], in: uploads),
+            "A link swapped in after the check is not followed out of the task's folders")
+        let fifo = root.appending(path: "docs/pipe").path(percentEncoded: false)
+        XCTAssertEqual(mkfifo(fifo, 0o600), 0)
+        XCTAssertThrowsError(try BrowserAgentWorkspaceFile.privateCopy(of: fifo, roots: [root], in: uploads),
+                             "A pipe is refused without waiting for a writer")
 
         page.receive(.fileDialog(tab: 4, dialog: BrowserFileDialog(id: 6, mode: .openMultiple, title: "", defaultPath: "", extensions: [])))
         let cancelled = await run(AgentToolCatalog.fileUpload, [:])
@@ -405,6 +422,15 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertEqual(rendered.refs["@e2"], BrowserAgentSnapshot.Ref(node: 3, session: "S1"),
                        "the same backend id in another process is a different element")
         XCTAssertEqual(rendered.refs["@e1"], BrowserAgentSnapshot.Ref(node: 3, session: nil))
+
+        // A page nested deeper than any reader needs, or a tree that loops, is cut instead of running out of stack.
+        let deep = [node("0", "RootWebArea", "Deep", children: ["n0"])] + (0..<5_000).map {
+            node("n\($0)", "generic", parent: $0 == 0 ? "0" : "n\($0 - 1)", children: ["n\($0 + 1)"])
+        }
+        XCTAssertTrue(BrowserAgentSnapshot.render(nodes: deep).isTruncated)
+        let loop = [node("0", "RootWebArea", children: ["a"]), node("a", "group", "A", parent: "0", children: ["b"]),
+                    node("b", "group", "B", parent: "a", children: ["a"])]
+        XCTAssertTrue(BrowserAgentSnapshot.render(nodes: loop).isTruncated)
     }
 
     func testReferencesNeedASnapshotAndExpireWithTheNextOneOrANavigation() async {
@@ -750,21 +776,33 @@ final class BrowserAgentToolsTests: XCTestCase {
             .object(["nodes": .array([
                 axNode("1", "RootWebArea", "Sign in", parent: nil, children: ["2", "3"]),
                 axNode("2", "paragraph", "", parent: "1", children: ["4"]),
-                axNode("4", "StaticText", "Signed in with correct-horse-battery", parent: "2"),
+                axNode("4", "StaticText", "Signed in with correct-horse-battery as Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5, 636f72726563742d686f7273652d62617474657279", parent: "2"),
                 axNode("3", "textbox", "Password", parent: "1", value: "•••••••••••••••••••••")
             ])])
         }
         let echoed = await run(AgentToolCatalog.snapshot)
         XCTAssertFalse(echoed.text.contains("correct-horse-battery"), echoed.text)
-        XCTAssertTrue(echoed.text.contains("[saved value]"), echoed.text)
+        XCTAssertEqual(echoed.text.components(separatedBy: "[saved value]").count, 4,
+                       "The value as written, in base64 and in hex: \(echoed.text)")
+        XCTAssertFalse(BrowserAgentTools.fillFunction.contains("data: v"), "The input event does not carry the value")
         XCTAssertTrue(echoed.text.contains("textbox \"Password\" [ref=@e1]: \"<redacted>\""), echoed.text)
 
         let paused = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertTrue(paused.isError)
         XCTAssertTrue(paused.text.contains("password manager"), paused.text)
+        // An emptied field does not end the fill: the page may have kept what it was given. A new document does.
         stillFilled = false
+        let emptied = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertTrue(emptied.isError && emptied.text.contains("Reload it"), emptied.text)
+        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object([
+            "id": .string("main"), "loaderId": .string("doc-2"), "url": .string("https://www.example.com/")])])))
         let resumed = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertFalse(resumed.isError, resumed.text)
+        // Going back to the filled document closes it again.
+        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object([
+            "id": .string("main"), "loaderId": .string("doc-1"), "url": .string("https://www.example.com/login")])])))
+        let back = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertTrue(back.isError, back.text)
 
         let elsewhere = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2"), "item": .string("Other")])
         XCTAssertTrue(elsewhere.isError)

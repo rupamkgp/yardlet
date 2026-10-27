@@ -100,6 +100,11 @@ final class AgentToolBroker: AgentToolLaunchProviding {
     private var endpointStarted = false
     /// Starts the endpoint the first time a task is injected; a failure leaves the task without tools.
     var startEndpoint: @MainActor () throws -> Void = {}
+    /// Whether a call naming a task may come from the process that sent it (its ID; nil when the endpoint
+    /// could not tell). A task's token is in its harness's configuration, which other processes of the same
+    /// user can read, so on macOS the app also asks that the caller run under the process Yardlet started
+    /// for that task's harness (`AppModel.agentToolHarnessProcesses`). Nil, as in tests, takes the token alone.
+    var callerProcessCheck: (@MainActor (_ session: UUID, _ process: Int32?) -> Bool)?
     /// Whether a task is in a turn (running, or waiting for an approval). A change to its tools
     /// is told when the turn ends. The app sets it; tests leave it saying no task is in one.
     var isTaskInTurn: @MainActor (UUID) -> Bool = { _ in false }
@@ -121,6 +126,7 @@ final class AgentToolBroker: AgentToolLaunchProviding {
         self.environment = environment
         self.tools = tools
         tools.workspaceRoots = { [weak self] in self?.workspaceRoots[$0] ?? [] }
+        tools.uploadFolder = environment.privateDirectory.appending(path: "uploads", directoryHint: .isDirectory)
         tools.allowsFileOutsideFolders = { [weak self] session, path in
             await self?.sessions?.allowsBrowserFile(path, callerID: session) ?? false
         }
@@ -321,10 +327,14 @@ final class AgentToolBroker: AgentToolLaunchProviding {
         toolListWatches[sessionID]?.count ?? 0
     }
 
-    /// The endpoint's entry: one framed call body in, one result body out.
-    func respond(to body: Data) async -> Data {
+    /// The endpoint's entry: one framed call body in, from the process `peer`, one result body out.
+    func respond(to body: Data, peer: Int32? = nil) async -> Data {
         guard let call = try? JSONDecoder().decode(AgentToolCall.self, from: body) else {
             return (try? JSONEncoder().encode(AgentToolResult.error("Yardlet could not read this tool call."))) ?? Data()
+        }
+        if let check = callerProcessCheck, let session = UUID(uuidString: call.session), tokens[session] != nil,
+           !check(session, peer) {
+            return (try? JSONEncoder().encode(Self.foreignCaller)) ?? Data()
         }
         if call.method == AgentToolCall.watchMethod {
             // A refused watch is an error result, which the server cannot read as an answer, so it
@@ -348,6 +358,11 @@ final class AgentToolBroker: AgentToolLaunchProviding {
         else { return nil }
         return sessionID
     }
+
+    private static let foreignCaller = AgentToolResult.error(
+        "Yardlet refused this call: it did not come from the tool server the task's harness started. Start or "
+            + "resume the task in Yardlet to use its tools."
+    )
 
     private static let unrecognizedToken = AgentToolResult.error(
         "Yardlet does not recognise this task's tool token. Start or resume the task in Yardlet again to use "

@@ -148,10 +148,10 @@ final class YardletMCPServerTests: XCTestCase {
         let directory = privateDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appending(path: "tools.sock").path(percentEncoded: false)
-        let listener = try UnixSocketListener(path: path) { body in
+        let listener = try UnixSocketListener(path: path) { body, peer in
             let call = try? JSONDecoder().decode(AgentToolCall.self, from: body)
             let result = AgentToolResult(content: [
-                .text("\(call?.tool ?? "?") for \(call?.session ?? "?") with \(call?.token ?? "?")"),
+                .text("\(call?.tool ?? "?") for \(call?.session ?? "?") with \(call?.token ?? "?") from \(peer ?? 0)"),
                 .image(data: String(repeating: "A", count: 300_000), mimeType: "image/png")
             ])
             return (try? JSONEncoder().encode(result)) ?? Data()
@@ -171,7 +171,8 @@ final class YardletMCPServerTests: XCTestCase {
         ])
         let result = await invoker.call(tool: "browser_navigate", arguments: .object(["url": .string("https://example.com")]))
         XCTAssertFalse(result.isError)
-        XCTAssertEqual(result.text, "browser_navigate for session-1 with token-1")
+        XCTAssertEqual(result.text, "browser_navigate for session-1 with token-1 from \(ProcessInfo.processInfo.processIdentifier)",
+                       "The app learns which process called")
         if case .image(let data, _) = result.content.last {
             XCTAssertEqual(data.count, 300_000, "A large result arrives whole")
         } else {
@@ -199,7 +200,7 @@ final class YardletMCPServerTests: XCTestCase {
         let file = FileManager.default.temporaryDirectory.appending(path: "ytl-file-\(UUID().uuidString.prefix(8))")
         XCTAssertTrue(FileManager.default.createFile(atPath: file.path(percentEncoded: false), contents: Data()))
         defer { try? FileManager.default.removeItem(at: file) }
-        XCTAssertThrowsError(try UnixSocketListener(path: file.appending(path: "tools.sock").path(percentEncoded: false)) { _ in Data() })
+        XCTAssertThrowsError(try UnixSocketListener(path: file.appending(path: "tools.sock").path(percentEncoded: false)) { _, _ in Data() })
     }
 
     /// The executable a harness starts, spoken to exactly as a harness would: JSON-RPC lines on

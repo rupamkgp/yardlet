@@ -162,6 +162,19 @@ package enum UnixDomainSocket {
         #endif
     }
 
+    /// The process ID of the peer as it connected, or nil when the system does not say. The app checks it
+    /// against the processes it started for the task a call names.
+    static func peerProcessID(_ descriptor: Int32) -> Int32? {
+        #if canImport(Darwin)
+        var processID: pid_t = 0
+        var length = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &processID, &length) == 0, processID > 0 else { return nil }
+        return processID
+        #else
+        return nil  // SO_PEERCRED, when a Linux build checks its peers.
+        #endif
+    }
+
     #if canImport(Darwin)
     static let streamType = SOCK_STREAM
     static let sendFlags: Int32 = 0
@@ -184,9 +197,10 @@ package enum UnixDomainSocket {
 }
 
 /// Accepts connections on a socket in a private directory and answers each framed call with
-/// the handler's framed result. Connections from another user are dropped unread.
+/// the handler's framed result, given the peer's process ID. Connections from another user are
+/// dropped unread.
 package final class UnixSocketListener: @unchecked Sendable {
-    package typealias Handler = @Sendable (Data) async -> Data
+    package typealias Handler = @Sendable (Data, Int32?) async -> Data
 
     package let path: String
     private let descriptor: Int32
@@ -251,6 +265,7 @@ package final class UnixSocketListener: @unchecked Sendable {
                 continue
             }
             UnixDomainSocket.configure(client, timeout: 30)
+            let peer = UnixDomainSocket.peerProcessID(client)
             let handler = handler
             DispatchQueue.global(qos: .userInitiated).async {
                 guard let call = try? UnixDomainSocket.readFrame(client, maximumLength: AgentToolFraming.maximumCallLength) else {
@@ -258,7 +273,7 @@ package final class UnixSocketListener: @unchecked Sendable {
                     return
                 }
                 Task.detached {
-                    let reply = await handler(call)
+                    let reply = await handler(call, peer)
                     try? UnixDomainSocket.writeAll(client, AgentToolFraming.frame(body: reply))
                     close(client)
                 }

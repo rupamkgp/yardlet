@@ -310,10 +310,10 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
             let installed = Bundle.main.bundleURL
             let identifier = Bundle.main.bundleIdentifier
             let result = await Task.detached(priority: .userInitiated) {
-                Result<YardletUpdater.Candidate, Error> {
+                Result<(YardletUpdater.Candidate, makerIsUnknown: Bool), Error> {
                     let candidate = try YardletUpdater.pending(bundleIdentifier: identifier, installedBundle: installed)
                     try YardletUpdater.verifySignature(of: candidate.bundleURL, replacing: installed)
-                    return candidate
+                    return (candidate, YardletUpdater.makerIsUnknown(installed: installed))
                 }
             }.value
             let alert: NSAlert
@@ -326,9 +326,10 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
                 alert.messageText = L10n.string("No update to install")
                 alert.informativeText = error.localizedDescription
                 candidate = nil
-            case let .success(value):
+            case let .success((value, makerIsUnknown)):
                 let date = value.builtAt?.formatted(date: .abbreviated, time: .shortened) ?? "-"
-                alert = YardletUpdateOffer.alert(build: value.build ?? "-", date: date, hasRunningTasks: hasRunningTasks)
+                alert = YardletUpdateOffer.alert(build: value.build ?? "-", date: date, hasRunningTasks: hasRunningTasks,
+                                                 makerIsUnknown: makerIsUnknown)
                 candidate = value
             }
             // A sheet on the main window stays in front of the task it concerns; a free-standing
@@ -497,6 +498,11 @@ struct NativeHarnessClientApp: App {
                     BrowserHostQAFixture.model = model
 #endif
                     MacAgentToolService.shared.broker.isTaskInTurn = { [weak model] in model?.isInTurn($0) ?? false }
+                    MacAgentToolService.shared.broker.callerProcessCheck = { [weak model] session, process in
+                        guard let roots = model?.agentToolHarnessProcesses(for: session) else { return true }
+                        guard let process else { return false }
+                        return MacAgentToolService.process(process, descendsFromAnyOf: roots)
+                    }
                     if !model.usesVisualFixture {
                         // A finished subagent's conversation is kept with its task in Yardlet's own folder.
                         model.sessionTools.runDirectory = FileManager.default.homeDirectoryForCurrentUser

@@ -20,11 +20,16 @@ struct ScheduledTask: Codable, Identifiable, Equatable, Sendable {
     var updatedAt: Date
     /// The other app's schedule this one was imported from, which importing again recognises.
     var origin: ScheduleOrigin?
+    /// The task whose agent made the schedule, or last changed its prompt or where its runs go, with
+    /// the scheduled-task tools; nil when the person wrote the prompt. A run sends such a prompt as
+    /// that task's message (`TaskMessage`), so neither the receiving task nor the person reads it as
+    /// the person's own.
+    var agentTaskID: UUID?
     var state: ScheduleRunState
 
     init(id: UUID = UUID(), name: String, prompt: String, trigger: ScheduleTrigger,
          destination: ScheduleDestination, isEnabled: Bool = true, createdAt: Date = Date(),
-         origin: ScheduleOrigin? = nil) {
+         origin: ScheduleOrigin? = nil, agentTaskID: UUID? = nil) {
         self.id = id
         self.name = name
         self.prompt = prompt
@@ -34,7 +39,17 @@ struct ScheduledTask: Codable, Identifiable, Equatable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.origin = origin
+        self.agentTaskID = agentTaskID
         state = ScheduleRunState(scanFloor: createdAt)
+    }
+
+    /// What a run sends: the person's prompt as written, or an agent's as its task's message, with how
+    /// the sending task stands to the task that receives it (its parent, the task itself, or another).
+    func runText(sender: String?, relation: TaskMessage.Relation) -> String {
+        guard let agentTaskID else { return prompt }
+        var message = TaskMessage(senderID: agentTaskID.uuidString, senderName: sender, body: prompt)
+        message.relation = relation
+        return message.text(in: .yardlet)
     }
 
     /// The run whose task is the latest this schedule started.

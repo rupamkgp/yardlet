@@ -43,11 +43,13 @@ extension AppModel {
         let result: ScheduleStartResult
         switch schedule.destination.mode {
         case .continueTask:
-            guard let id = schedule.destination.targetTaskID, store.sessions.contains(where: { $0.id == id }) else {
+            guard let id = schedule.destination.targetTaskID, let target = store.sessions.first(where: { $0.id == id }) else {
                 return .failed(L10n.string("The task this schedule continues is no longer in Yardlet."))
             }
             let previousError = errorBySessionID[id]
-            guard await deliverAutoFix(schedule.prompt, to: id) else {
+            let text = schedule.runText(sender: scheduleSenderName(schedule),
+                                        relation: TaskMessage.relation(of: schedule.agentTaskID?.uuidString ?? "", to: target))
+            guard await deliverAutoFix(text, to: id) else {
                 let error = errorBySessionID[id]
                 return .failed(error != previousError ? error ?? "" : L10n.string("The message could not be sent."))
             }
@@ -108,13 +110,20 @@ extension AppModel {
         }
         let projectID = folder == nil ? nil : projects.project(id: destination.projectID)?.id
         let parent = destination.parentTaskID.flatMap { id in store.sessions.contains { $0.id == id } ? id : nil }
+        let text = schedule.runText(sender: scheduleSenderName(schedule),
+                                    relation: parent != nil && parent == schedule.agentTaskID ? .parent : .task)
         return .success(NewTaskDraft.Submission(
-            originalText: schedule.prompt, attachments: [], harness: harness, workspaceURL: folder,
+            originalText: text, attachments: [], harness: harness, workspaceURL: folder,
             projectID: projectID, runtimeURL: runtimeURL, connection: connection,
             startsInNewWorktree: folder != nil && destination.startsInNewWorktree,
             providerOptions: destination.modelChoice?.providerOptions(for: harness) ?? [:],
             titleOverride: ScheduleText.runTitle(schedule.name, at: date),
             selectsTask: false, parentTaskID: parent))
+    }
+
+    /// The name an agent's schedule sends its runs under: its task's title, while the task is here.
+    private func scheduleSenderName(_ schedule: ScheduledTask) -> String? {
+        schedule.agentTaskID.flatMap { id in store.sessions.first { $0.id == id }?.title }
     }
 
     /// The Claude app's notice for a run that comes late: "Scheduled task “{name}” missed at

@@ -29,6 +29,12 @@ final class VaultTests: XCTestCase {
         }
         XCTAssertTrue(VaultSite.matches("http://localhost:3000", origin: "http://localhost:3000"))
         XCTAssertFalse(VaultSite.matches("http://localhost:3000", origin: "http://localhost:3001"))
+        // An address is one host, not a domain whose last parts other addresses share.
+        XCTAssertEqual(VaultSite.suggestion(for: "https://192.168.1.1/login", suffixes: suffixes), "192.168.1.1")
+        XCTAssertEqual(VaultSite.suggestion(for: "https://10.0.0.1:8443", suffixes: suffixes), "10.0.0.1")
+        XCTAssertTrue(VaultSite.matches("192.168.1.1", origin: "https://192.168.1.1"))
+        XCTAssertFalse(VaultSite.matches("1.1", origin: "https://45.33.1.1"))
+        XCTAssertFalse(VaultSite.matches("192.168.1.1", origin: "https://10.192.168.1.1"))
     }
 
     func testOneTimeCodesMatchRFC6238() throws {

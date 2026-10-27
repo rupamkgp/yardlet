@@ -10,10 +10,13 @@ import YardletAgentTools
 // harness, the folder it came from, its project and account, and its Auto or Bypass permissions.
 //
 // Where the Claude app and the Codex app ask before a change, the harness's own approval asks in
-// Yardlet too (Claude Code's request card, Codex's `approval_mode = "prompt"`), so a call that arrives
-// here was allowed. The one card Yardlet adds is the Claude app's rule for a session a schedule
-// started: a change from it is asked in every permission mode, and it may not run a schedule or
-// delete the one that started it.
+// Yardlet too (Claude Code's request card; Codex as its approval setting and the tool's annotations
+// decide), so a call that arrives here was allowed. Yardlet adds two cards of its own. One is the
+// Claude app's rule for a session a schedule started: a change from it is asked in every permission
+// mode, and it may not run a schedule or delete the one that started it. The other is
+// `send_message_to_task`'s rule for a schedule whose runs continue another task, since each run is a
+// message into that task. What an agent writes runs as its task's message, never as the person's,
+// and a schedule runs no more freely than the task that made it.
 
 extension AppModel: ScheduleToolHandling {
     func callScheduleTool(named name: String, arguments: ToolJSON, callerID: UUID) async -> AgentToolResult {
@@ -28,7 +31,7 @@ extension AppModel: ScheduleToolHandling {
         switch name {
         case ScheduleToolCatalog.create: return await createScheduleFromTool(arguments, caller: caller)
         case ScheduleToolCatalog.list: return listSchedulesForTool()
-        case ScheduleToolCatalog.update: return updateScheduleFromTool(arguments, caller: caller)
+        case ScheduleToolCatalog.update: return await updateScheduleFromTool(arguments, caller: caller)
         case ScheduleToolCatalog.delete: return deleteScheduleFromTool(arguments)
         case ScheduleToolCatalog.run: return await runScheduleFromTool(arguments)
         case ScheduleToolCatalog.listRuns: return listScheduleRunsForTool(arguments)
@@ -48,8 +51,8 @@ extension AppModel: ScheduleToolHandling {
 
     /// Why a change from a task a schedule started may not go ahead, or nil. As the Claude app refuses
     /// in a scheduled-run session: no run of a schedule, no deleting the schedule that started it, and
-    /// any other change asked of the person even where the harness would not ask (Claude Code in Auto or
-    /// Bypass permissions; Codex asks every time, `codexPromptedTools`).
+    /// any other change asked of the person even where Claude Code would not ask (Auto or Bypass
+    /// permissions).
     private func scheduledRunRefusal(_ tool: String, arguments: JSONValue, caller: SessionToolCaller) async -> String? {
         guard let origin = scheduleThatStarted(caller.hostTaskID) else { return nil }
         if tool == ScheduleToolCatalog.run {
@@ -94,8 +97,12 @@ extension AppModel: ScheduleToolHandling {
         case let .failure(error): return .error("Nothing was created: \(error.message)")
         }
         let name = Self.scheduleName(arguments[Key.name]?.stringValue, prompt: prompt)
+        if let refusal = await scheduleAgentRefusal(destination, previous: nil, promptChanged: true, prompt: prompt,
+                                                    trigger: trigger, name: name, caller: caller) {
+            return .error("Nothing was created: \(refusal)")
+        }
         scheduledTasks.create(ScheduledTask(name: name, prompt: prompt, trigger: trigger, destination: destination,
-                                            createdAt: now))
+                                            createdAt: now, agentTaskID: caller.hostTaskID))
         guard let schedule = scheduledTasks.schedules.last else {
             return .error("Nothing was created: Yardlet could not keep the schedule.")
         }
@@ -136,7 +143,82 @@ extension AppModel: ScheduleToolHandling {
             return .failure(SessionToolError(
                 message: "the prompt is longer than \(ScheduleToolCatalog.maximumPromptLength) characters."))
         }
+        // Each run sends it as this task's message, as `send_message_to_task` and `create_task` send theirs.
+        guard !prompt.hasPrefix("/") else {
+            return .failure(SessionToolError(message: "the prompt must be words, not a slash command; each run "
+                + "sends it as this task's message."))
+        }
         return .success(prompt)
+    }
+
+    /// Why what an agent makes or changes in a schedule may not stand, asking the person where a session tool
+    /// would, or nil. Each run does what the caller could do itself: a new task's run is a child task it starts
+    /// later (`create_task`'s nesting limit and its card for another project or a folder outside the caller's),
+    /// no freer than the caller; a run that continues another task is a message to it (`send_message_to_task`'s
+    /// card). `previous` is where the runs went before, for a change: only what changed is weighed.
+    private func scheduleAgentRefusal(_ destination: ScheduleDestination, previous: ScheduleDestination?,
+                                      promptChanged: Bool, prompt: String, trigger: ScheduleTrigger, name: String,
+                                      caller: SessionToolCaller) async -> String? {
+        let when = ScheduleText.summary(trigger, calendar: scheduledTasks.calendar(), now: scheduledTasks.now())
+        switch destination.mode {
+        case .newTask:
+            let becameNew = previous?.mode != .newTask
+            if becameNew, let refusal = sessionToolSpawnRefusal(caller: caller) { return refusal }
+            let modeChanged = becameNew || destination.harness != previous?.harness
+                || destination.modelChoice?.permissionMode != previous?.modelChoice?.permissionMode
+            if promptChanged || modeChanged, let refusal = scheduleFreedomRefusal(destination, caller: caller) {
+                return refusal
+            }
+            let placeChanged = becameNew || destination.workspacePath != previous?.workspacePath
+                || destination.projectID != previous?.projectID
+            let project = projects.project(id: destination.projectID)
+            let origin = store.sessions.first { $0.id == caller.hostTaskID }?.originWorkspaceURL
+            guard placeChanged, !harnessAskedBeforeScheduleCall(caller), sessionToolAsksPerson(caller),
+                  sessionToolPlaceReachesPast(folder: destination.workspaceURL, project: project, caller: caller,
+                                              alsoWithin: origin.map { [$0] } ?? []) else { return nil }
+            let place = project?.name ?? destination.workspacePath ?? ""
+            let detail = "“\(name)” · \(when)\n" + L10n.format("%@ → %@", caller.title, place) + "\n\n"
+                + Self.cardPreview(prompt)
+            let allowed = await askPerson(title: L10n.string("Schedule a task in another project"), detail: detail,
+                                          caller: caller)
+            return allowed ? nil : "the person did not approve a scheduled task in another project."
+        case .continueTask:
+            guard promptChanged || destination.targetTaskID != previous?.targetTaskID,
+                  !harnessAskedBeforeScheduleCall(caller), let id = destination.targetTaskID, id != caller.hostTaskID,
+                  let target = store.sessions.first(where: { $0.id == id }),
+                  let reach = sessionToolMessageReach(to: target, caller: caller) else { return nil }
+            let title = reach == .raisesPermission
+                ? L10n.string("Schedule messages to a task that runs without asking")
+                : L10n.string("Schedule messages to another project's task")
+            let detail = "“\(name)” · \(when)\n" + sessionToolMessageDetail(to: target, prompt, caller: caller)
+            let allowed = await askPerson(title: title, detail: detail, caller: caller)
+            return allowed ? nil : "the person did not approve sending its runs to that task."
+        }
+    }
+
+    /// Whether the caller's harness asked the person before this call came: Claude Code asks before every
+    /// changing scheduled-task call, on a card that names the place or the task each run goes to, unless it
+    /// runs in Auto or Bypass permissions. Whether another harness asks is its own setting, so Yardlet asks
+    /// for it where a session tool would.
+    private func harnessAskedBeforeScheduleCall(_ caller: SessionToolCaller) -> Bool {
+        guard caller.id == caller.hostTaskID, caller.harness == .claudeCode,
+              let host = store.sessions.first(where: { $0.id == caller.hostTaskID }) else { return false }
+        return Self.unaskedPermissionMode(of: host) == nil
+    }
+
+    /// Why a new task's runs would do more without asking than the caller may, or nil: a Claude Code run in a
+    /// mode freer than the caller's (`scheduleModeCeiling`), or any other harness's run from a read-only caller,
+    /// since only Claude Code's mode is kept with a schedule.
+    private func scheduleFreedomRefusal(_ destination: ScheduleDestination, caller: SessionToolCaller) -> String? {
+        if destination.harness == .claudeCode {
+            let mode = destination.modelChoice?.permissionMode
+            guard ClaudePermissionMode.freedom(mode) > scheduleModeCeiling(caller) else { return nil }
+            return "its runs would use \(mode.map(Self.claudeAppMode) ?? "default") mode, which does more without "
+                + "asking than this task may; the person can change it in Scheduled tasks."
+        }
+        guard caller.permission == .readOnly else { return nil }
+        return "a read-only task schedules new tasks only on Claude Code, whose runs keep plan mode; the person can "
+            + "schedule others in Scheduled tasks."
     }
 
     /// A schedule's name: the one given, on one line, or the prompt's first words.
@@ -156,7 +238,7 @@ extension AppModel: ScheduleToolHandling {
 
     // MARK: - update_scheduled_task
 
-    private func updateScheduleFromTool(_ arguments: JSONValue, caller: SessionToolCaller) -> AgentToolResult {
+    private func updateScheduleFromTool(_ arguments: JSONValue, caller: SessionToolCaller) async -> AgentToolResult {
         typealias Key = ScheduleToolCatalog.Key
         let schedule: ScheduledTask
         switch scheduleForTool(arguments) {
@@ -197,6 +279,20 @@ extension AppModel: ScheduleToolHandling {
         guard !parts.isEmpty || enabled != nil else {
             return .error("Nothing was updated for scheduled task \(schedule.id.uuidString): give at least one of "
                 + "name, prompt, cronExpression, fireAt, enabled, or where each run goes.")
+        }
+        // A prompt the agent wrote runs as this task's message; one the person wrote stays theirs wherever it goes.
+        let promptChanged = edited.prompt != schedule.prompt
+        if promptChanged { edited.agentTaskID = caller.hostTaskID }
+        if promptChanged || edited.destination != schedule.destination {
+            if let refusal = await scheduleAgentRefusal(edited.destination, previous: schedule.destination,
+                                                        promptChanged: promptChanged, prompt: edited.prompt,
+                                                        trigger: edited.trigger, name: edited.name, caller: caller) {
+                return .error("Nothing was updated: \(refusal)")
+            }
+            // The schedule may have changed or gone while the card waited.
+            guard scheduledTasks.schedule(id: schedule.id) == schedule else {
+                return .error("Nothing was updated: the schedule changed meanwhile; list it and try again.")
+            }
         }
         if edited != schedule { scheduledTasks.update(edited) }
         if let enabled {
@@ -407,7 +503,7 @@ extension AppModel: ScheduleToolHandling {
     }
 
     /// Yardlet's Manual is the Claude app's `default`.
-    private static func claudeAppMode(_ mode: String) -> String {
+    static func claudeAppMode(_ mode: String) -> String {
         mode == ClaudePermissionMode.manual ? "default" : mode
     }
 
@@ -546,7 +642,10 @@ extension AppModel: ScheduleToolHandling {
         // otherwise its runs start in the default mode.
         var choice = (keepsBase && !harnessChanged ? destination.modelChoice : nil) ?? NewTaskModelChoice(model: nil)
         if !keepsBase || harnessChanged {
-            choice.permissionMode = harness == .claudeCode ? host.flatMap(Self.unaskedPermissionMode) : nil
+            // A caller that reads only makes runs that read only, as its child tasks do.
+            let readsOnly = scheduleModeCeiling(caller) < ClaudePermissionMode.freedom(nil)
+            choice.permissionMode = harness == .claudeCode
+                ? host.flatMap(Self.unaskedPermissionMode) ?? (readsOnly ? ClaudePermissionMode.plan : nil) : nil
         }
         if let model = arguments[Key.model]?.stringValue?.trimmingCharacters(in: .whitespaces) {
             choice.model = model.isEmpty ? nil : model
@@ -564,9 +663,9 @@ extension AppModel: ScheduleToolHandling {
                     + ScheduleToolCatalog.permissionModes.joined(separator: ", ") + "."))
             }
             // A schedule does not do more without asking than the task that makes it may.
-            if ClaudePermissionMode.isElevated(value), caller.permission < .elevated {
-                return .failure(SessionToolError(message: "bypassPermissions is only for a schedule made from a "
-                    + "task that itself runs without asking; the person can choose it in Scheduled tasks."))
+            if ClaudePermissionMode.freedom(value) > scheduleModeCeiling(caller) {
+                return .failure(SessionToolError(message: "permissionMode \(mode) lets each run do more without "
+                    + "asking than this task may; the person can choose it in Scheduled tasks."))
             }
             choice.permissionMode = value
         }
@@ -588,6 +687,23 @@ extension AppModel: ScheduleToolHandling {
             destination.parentTaskID = caller.hostTaskID
         }
         return .success(destination)
+    }
+}
+
+extension AppModel {
+    /// The freest Claude Code mode a schedule the caller makes may run in: a Claude Code task's own
+    /// mode, else the mode that matches the caller's permission level (a harness's default edits its
+    /// folder as acceptEdits does).
+    func scheduleModeCeiling(_ caller: SessionToolCaller) -> Int {
+        if caller.id == caller.hostTaskID, caller.harness == .claudeCode,
+           let host = store.sessions.first(where: { $0.id == caller.hostTaskID }) {
+            return ClaudePermissionMode.freedom(host.providerOptions[ClaudeLaunchOption.permissionMode])
+        }
+        switch caller.permission {
+        case .readOnly: return ClaudePermissionMode.freedom(ClaudePermissionMode.plan)
+        case .standard: return ClaudePermissionMode.freedom(ClaudePermissionMode.acceptEdits)
+        case .elevated: return ClaudePermissionMode.freedom(ClaudePermissionMode.bypassPermissions)
+        }
     }
 }
 

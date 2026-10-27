@@ -42,7 +42,7 @@ protocol specifies.
 | `browser_console_messages` | `onlyErrors` | `Runtime.consoleAPICalled`, `exceptionThrown` and `Log.entryAdded`. The latest 200 |
 | `browser_evaluate` | `function`, `ref` | Runs one function and returns the result as JSON. With a reference, the element is the argument. An expression that is not a function returns its value as is. Cuts at 50,000 characters |
 | `browser_handle_dialog` | `accept`, `promptText` | Answers the open JS dialog (alert, confirm, prompt or leave-page confirmation). When there is no JS dialog and Chromium's passkey dialog or sign-in window is open over a tab of this task, accept false closes only that window (a passkey request gets `NotAllowedError` and can move on to another sign-in method). accept true is an error (only the person can finish a passkey). It does not close the windows of another task's tabs, or windows whose tab is not known (printing) |
-| `browser_file_upload` | `paths` | Gives files inside the task's folders to the open file chooser. Empty cancels |
+| `browser_file_upload` | `paths` | Gives files inside the task's folders to the open file chooser, each as a private copy read from the checked path (a folder or a place to save goes as its path). Empty cancels |
 | `browser_resize` | `preset` (mobile, tablet or desktop), `width` and `height` (1 to 9999), `colorScheme` (light or dark) | 2026-10-26, the same arguments and rules as `resize_window` of the Claude app's Browser pane. Emulates that size for the tab's page (`Emulation.setDeviceMetricsOverride`; narrower than 768 is a phone: deviceScaleFactor 2, 5 touch points, and the user agent and client hints of Chrome on an Android 14 Pixel 8). desktop clears the emulation, and `colorScheme` is the `prefers-color-scheme` of `Emulation.setEmulatedMedia`. It holds per tab, across reloads and navigations; the tab is drawn at that size, and the panel shows a larger one scaled down. The size and color scheme the agent set are cleared when that turn ends (a size the person picked in the panel menu stays, and when the agent changes it, the result says so) |
 | `browser_handoff` | `reason` (required), `text`, `timeout` (seconds, 600 by default) | 2026-10-26. Hands the tab to the person and waits: opens the task's right-hand panel on that tab and shows a bar ("The agent handed this tab to you", the reason, "Decline" and "I'm done") and a macOS notification. Returns on the person's answer, on `text` appearing on the page, at the end of the turn, when the tab closes, or at the timeout (within the harness limit `SessionToolPolicy.waitCeiling`). After the timeout the tab stays handed over, and the next call gets an answer given meanwhile. Cannot go in a batch |
 | `browser_batch` | `actions: [{name, input}]` | Runs the tools above and the tab tools in order (at most 50, not `browser_handoff`). Each action picks its tab with the `tabId` in its own `input`. Stops at the first failure and reports how many remain. No batch inside a batch |
@@ -149,11 +149,13 @@ built into the server (`builtInTools`) either.
 |---|---|---|
 | `browser_fill_credential` | `ref` (the sign-in or code field), `item` (optional), `kind` (`login` by default, `one_time_code`, `passkey`), `submit`, `tabId` | Gets the origin of the tab's main frame from `Page.getFrameTree` (`securityOrigin`) and asks the vault (`VaultCenter.authorize`: on, team signature, registered domain match, named or the only match among the items that have what `kind` asks for, step and Touch ID). When allowed, it takes the reference's node in an isolated world of Yardlet's own (`yardlet-vault`) and puts the password in the `type=password` field, the username in a text or email field of the same form, and the code in the code field (split up when the fields hold one character each), with the native `value` setter and `input` and `change` events. It refuses a field in a frame other than the main frame, and refuses when the page changed while it asked. With `submit` it presses the form's submit button (`requestSubmit` when there is none, Enter when there is no form). The result is "Filled the username and password of “name” into the form on host[ and submitted it]. The values are not shown to you." and gives no values or lengths. `passkey` attaches a CDP virtual authenticator to the tab, adds the item's one credential so that it signs the next single request within 60 seconds, and then detaches it (the signature count is updated in the keychain) |
 
-- **Keeping values from leaking:** While a filled password or code stays in its field (the field kept in the isolated
-  world is attached and not empty; it ends when the main frame navigates), `browser_evaluate` is refused, and
-  `browser_screenshot` makes that field's text transparent, captures, and restores it (the username is not a secret and
-  stays as is). In the text of every browser tool result, strings equal to a value filled in the last 30 minutes (4
-  characters or more) become `[vault value]` (`VaultScrubList`, in one place, `run(tool:arguments:sessionID:)`). The
+- **Keeping values from leaking:** Once a password or code is filled, `browser_evaluate` is refused on that document
+  until the main frame opens another one, by a navigation or a reload; an emptied field does not end it. While the
+  filled field stays (the field kept in the isolated world is attached and not empty), `browser_screenshot` makes its
+  text transparent, captures, and restores it (the username is not a secret and stays as is). In the text of every
+  browser tool result, a value filled in the last 30 minutes (4 characters or more), as written and in its common
+  encodings (JSON escaping, base64, percent-encoding, hex), becomes `[saved value]` (`VaultScrubList`, in one place,
+  `run(tool:arguments:sessionID:)`). The fill's `input` event does not carry the value. The
   snapshot also turns the dots of the same length that Chromium gives as a password field's value into `<redacted>`
   (always, whether or not the vault is used).
 - **Log and notifications:** Fills and refusals are logged in `~/.yardlet/vault/usage.jsonl` (no values) with the task,
@@ -202,7 +204,7 @@ keeps them behind tool search). The descriptions say only what each tool does, n
 | `read_task` | `task_id` (required, can be `self`), `turns` (4 by default, at most 10), `cursor` | The task's details as JSON + its latest turns as the phone remote's compact conversation (`RemoteConversationProjection`): messages from the person and from other tasks, answers, one line per call (no output, file contents or diffs), and requests. A limit of 16,000 characters (the oldest turns go first, and a single turn over the limit is cut), and a `before:<turn>` cursor |
 | `wait_tasks` | `ids` (required, at most 8 task or agent IDs), `timeout_seconds` (120 by default, 0 returns at once) | Returns when one of them ends its turn or waits for the person, with each one's state and latest answer (8,000 characters). For one that waits for room (state `queued`, "Limits" below), it waits until that one starts and then ends or waits for the person. It does not go past the call deadline (below) |
 | `send_message_to_task` | `task_id`, `message` (required, 32,000 characters) | The same path as the composer, with the receiving task's model, permissions and account: a new turn for an idle task, and Steer into the turn for a running one (it does not stop the turn). When the receiving task was started from this task (`parentTaskID`), the message reads as a follow-up instruction for the work handed over; otherwise as another task's message ("Shape of a sent message" below, 2026-10-23). Refuses slash commands and the task itself. Sending to a task of another project (except a split neighbor), or to a task that runs without asking, needs an approval card in the calling task |
-| `create_task` | `prompt` (required), `harness`, `model`, `effort`, `account` (2026-10-27, an ID or name from `list_accounts`; assigned automatically when omitted), `project` (a name or folder), `chat` (2026-10-23, as a chat with no project: a new chat folder, no approval card, not together with `project`), `topLevel` and `parent_task_id` (2026-10-27, after the table below), `wait`, `notify` | Creates a sidebar task nested under the calling task (`parentTaskID`) and sends the first message as the calling task's message ("Shape of a sent message" below, the night of 2026-10-23). It does not move the window. Another project needs an approval card. With `wait` it waits until the end of the first turn; with `notify` it messages the calling task when the turn ends. When there is no room, the task appears in the sidebar at once and waits in the queue with its first message (`Queued task …`, "Limits" below) |
+| `create_task` | `prompt` (required), `harness`, `model`, `effort`, `account` (2026-10-27, an ID or name from `list_accounts`; assigned automatically when omitted), `project` (a name or folder), `chat` (2026-10-23, as a chat with no project: a new chat folder, no approval card, not together with `project`), `topLevel` and `parent_task_id` (2026-10-27, after the table below), `wait`, `notify` | Creates a sidebar task nested under the calling task (`parentTaskID`) and sends the first message as the calling task's message ("Shape of a sent message" below, the night of 2026-10-23). It does not move the window. Another project, or a folder outside the calling task's when neither is a project, needs an approval card. With `wait` it waits until the end of the first turn; with `notify` it messages the calling task when the turn ends. When there is no room, the task appears in the sidebar at once and waits in the queue with its first message (`Queued task …`, "Limits" below) |
 | `run_agent` | `harness`, `prompt` (required), `model`, `effort`, `account` (2026-10-27, as for `create_task`), `folder`, `background`, `notify` | Starts one harness session headless, sends the prompt and returns the final answer as the tool result (first line `agent_id: …`). No sidebar row. The calling task's folder, an automatically assigned account and default permissions (read-only when the calling task is read-only; refused when that is not possible). With `background` it returns the ID at once, and the answer comes through `wait_tasks` or `notify`. When there is no room it queues with state `queued` (`Queued agent …`, "Limits" below), and a foreground call waits for room and for the end within the call deadline. It leaves no history in the harness itself (Claude `--no-session-persistence`, a Codex ephemeral thread, Pi `--no-session`; a harness with no way to do this keeps it) |
 | `archive_task` | `task_ids` (required, at most 30 task IDs; `self` and its own ID are allowed, and a duplicate counts once) | Archives with the sidebar's archive (`AppModel.archive(_:)`): archives the attached provider session (Codex `thread/archive`), archives the index entry, and cleans up a Yardlet worktree that no task uses. When the calling task runs at a level that asks, one approval card ("Archive task"/"Archive %d tasks", or "Archive this task" when it is the task alone; per task "• title · project", itself "(this task)", child tasks that go with it "(started by this task)", and when itself is included, at the end "This task's turn stops after this call, and its conversation ends."); no card when the task runs with bypass permissions or full access (`sessionToolAsksPerson`, 2026-10-23). When another task is running (a turn, a queued message, a shell command or a subagent), waits for approval or an answer, is switching accounts or being edited, or has an unsent draft, it refuses before the card, and it also refuses when the task starts running while the card waits. For itself, see "Self-archive" below. Result JSON `{archived, notArchived, tasks:[{taskId, title, archived, reason, worktree}], alsoArchived, keptChildTasks, note}` (the last two only for a self-archive), with `isError` when nothing was archived. Argument errors are `Not archived: …` |
 | `list_projects` | none | The projects in sidebar order, then the hidden projects. JSON `{projects:[{projectId, name, folder, otherFolders, tasks, pinned, hidden, containsThisTask}], note}` (flags only when true). With no projects, "No projects in Yardlet; every task is a chat." |
@@ -334,17 +336,29 @@ Times in results are ISO 8601 in the Mac's time zone (with the offset).
   project, the account (only for the same harness; otherwise, at run time, that harness's new task account), and runs
   nested under the calling task (`parentTaskID`; top level with `topLevel: true`, 2026-10-26). Model and effort are the
   harness defaults (the Claude app does not pass them either). Permissions carry over, as in the Claude app, only when
-  the calling Claude Code task is in Auto or bypass permissions mode; otherwise the default mode. Only a task that runs
-  without asking can choose `permissionMode: bypassPermissions`.
+  the calling Claude Code task is in Auto or bypass permissions mode; a caller in plan mode makes runs in plan mode;
+  otherwise the default mode.
+- **No freer than the caller:** a schedule's Claude Code mode, whether `permissionMode` names it or the schedule already
+  has it when an agent rewrites its prompt or moves it, may be no freer than the calling task's own (plan, then the
+  default and dontAsk, acceptEdits, auto, bypassPermissions; a caller on another harness counts as acceptEdits, or plan
+  when it reads only). A caller that reads only schedules new tasks only on Claude Code. A caller at the nesting limit of
+  `create_task` schedules no new tasks, and a task an agent's schedule started nests one below the task that made it.
+- **What a run sends:** a prompt an agent wrote, by creating the schedule or changing its prompt, reaches each run as
+  that task's message, in the envelope `send_message_to_task` uses ("this task's own schedule" when it continues the task
+  itself). A prompt the person wrote in Scheduled tasks goes as written, wherever an agent moves it. A prompt from an
+  agent may not be a slash command.
 - **Who asks (as in the two apps):** Claude Code: only `list_task_runs` goes in `--allowedTools` (the Claude app also
   puts only that one), and the CLI asks for the rest as for other tools (a request card in Manual and Accept edits, the
   CLI classifier in Auto, no question with bypass permissions). The card for the four that change things is "Allow
-  Claude to create the scheduled task “…”?" with the schedule, where it runs and the instructions, and it offers no
-  "Always allow" (the Claude app's `Tl`). Codex: `mcp_servers.yardlet.tools.<tool>.approval_mode = "prompt"` (for five,
-  all but `list_task_runs`) makes Codex ask every time (the same as `automation_update` of the Codex app's `codex_app`
-  server; with approval policy never, Codex refuses). ACP harnesses use that harness's own MCP approval. Yardlet has one
-  card of its own: in a task a schedule started, when Claude Code is in a mode that does not ask (Auto or bypass
-  permissions), a call that changes things is asked with the session tool approval card (the Claude app's `unattended`).
+  Claude to create the scheduled task “…”?" with the schedule, where it runs (the project or folder and the task the call
+  names), its mode and the instructions, and it offers no "Always allow" (the Claude app's `Tl`). Codex asks as the
+  task's own approval setting and the tools' annotations decide (decision of 2026-10-22). ACP harnesses use that
+  harness's own MCP approval. Yardlet has cards of its own. Where the harness did not ask (Claude Code in Auto, or
+  another harness), a schedule an agent makes or changes that continues another task asks as `send_message_to_task`
+  does ("Schedule messages to …"), and one whose new tasks start in another project or a folder outside the caller's
+  asks as `create_task` does ("Schedule a task in another project"); a task that runs without asking is not asked. In a
+  task a schedule started, when Claude Code is in a mode that does not ask (Auto or bypass permissions), a call that
+  changes things is asked with the session tool approval card (the Claude app's `unattended`).
   That task cannot run a schedule or delete the schedule that started it (the Claude app's refusal wording). A schedule
   created without a card gets the notification "{harness} scheduled a task: “{name}”" / "Its runs will use {mode} mode."
   (the Claude app's "Claude scheduled a task").
@@ -391,8 +405,11 @@ stopped at the wrapper).
   `listChanged: true` in `initialize`, and when it gets an answer that the list changed, it sends
   `notifications/tools/list_changed` to the client. It starts asking 3 seconds after the client first gets the list. The
   protocol and the results per harness are in "Tool lists of running tasks" in [CONNECTORS](CONNECTORS.md).
-- The app runs a call only when both the token and the task ID match (constant-time comparison). When a task is archived
-  or deleted, the app revokes its token and closes all of that task's tabs.
+- The app runs a call only when both the token and the task ID match (constant-time comparison) and the process that
+  connected (`LOCAL_PEERPID`) runs under the harness process Yardlet started for that task: a Claude Code task's own
+  process (with the task's terminals), any Codex App Server for a Codex task, Yardlet itself for an ACP harness
+  (`AppModel.agentToolHarnessProcesses`). When a task is archived or deleted, the app revokes its token and closes all
+  of that task's tabs.
 - When Yardlet is not running, "Yardlet is not running…"; for a server started without the environment variables,
   "Yardlet did not start this MCP server…"; for a build without CEF, "no browser engine…". Each comes back as a tool
   error.
@@ -421,9 +438,8 @@ stopped at the wrapper).
 
 ## 6. Security and limits
 
-- Another process of the same user can get the token by reading the server's environment variables or the Claude
-  settings file. The token guards against other users and against connecting to the wrong task; it is not a boundary
-  within the same user.
+- Another process of the same user can read the token from the server's environment variables or the Claude settings
+  file, so a call must also come from under the task's harness process (section 4).
 - Tool approval belongs to the harness (Claude's `can_use_tool` card, Codex's own policy). Yardlet does not ask
   separately.
 - `browser_evaluate` runs arbitrary JS in the page (a product decision). What was decided against is a Codex-style

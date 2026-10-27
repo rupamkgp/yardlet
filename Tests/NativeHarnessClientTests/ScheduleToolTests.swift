@@ -151,6 +151,14 @@ final class ScheduleToolTests: XCTestCase {
                                                                    "enabled": .bool(false)]), name: names))
             XCTAssertEqual(text.title, title, tool)
         }
+        // The card names where each run goes, as the call gives it, and the mode it asks for.
+        let elsewhere = try XCTUnwrap(ScheduleToolApproval.request(
+            toolName: "mcp__yardlet__create_scheduled_task",
+            input: .object(["prompt": .string("Go."), "fireAt": .string("2026-10-18T09:00:00+09:00"),
+                            "project": .string("site"), "permissionMode": .string("acceptEdits")])))
+        XCTAssertTrue(elsewhere.detail.contains(L10n.format("Project or folder: %@", "site")), elsewhere.detail)
+        XCTAssertTrue(elsewhere.detail.contains(L10n.format("Its runs will use %@ mode.", L10n.string("Accept edits"))),
+                      elsewhere.detail)
         XCTAssertNil(ScheduleToolApproval.request(toolName: "mcp__scheduled-tasks__create_scheduled_task",
                                                   input: .object([:])), "The Claude app's own tool is its own")
         XCTAssertNil(ScheduleToolApproval.request(toolName: "mcp__yardlet__list_task_runs", input: .object([:])))
@@ -238,8 +246,11 @@ final class ScheduleToolTests: XCTestCase {
         XCTAssertTrue(ran.text.contains("it started task \(task.id.uuidString)"), ran.text)
         XCTAssertEqual(task.parentTaskID, fixture.caller.id, "Its runs nest under the task that made it")
         XCTAssertNotEqual(model.store.selectedSessionID, task.id, "A run starts beside the person's work")
+        // The agent's prompt reaches the run as the message of the task that made it, its parent.
         let prompts = await fixture.adapter.prompts
-        XCTAssertEqual(prompts, ["Summarize yesterday's merges."])
+        XCTAssertEqual(prompts, [TaskMessage(senderID: fixture.caller.id.uuidString, senderName: "Deploy watch",
+                                             body: "Summarize yesterday's merges.", relation: .parent).text(in: .yardlet)])
+        XCTAssertEqual(model.sessionToolDepth(of: task.id), 1, "A run nests one below the task whose schedule started it")
         let runs = try await call("list_task_runs", ["scheduleId": schedule.id.uuidString])
         let history = try JSONDecoder().decode(Runs.self, from: Data(runs.text.utf8))
         XCTAssertEqual(history.totalRuns, 1)
@@ -325,7 +336,11 @@ final class ScheduleToolTests: XCTestCase {
             "prompt": "Clean up.", "cronExpression": "0 3 * * *", "permissionMode": "bypassPermissions"
         ], from: fixture.claude)
         XCTAssertTrue(raised.isError, "A schedule does no more without asking than the task that makes it")
-        XCTAssertTrue(raised.text.contains("bypassPermissions is only for"), raised.text)
+        XCTAssertTrue(raised.text.contains("lets each run do more without asking than this task may"), raised.text)
+        let auto = await call(model, "create_scheduled_task", [
+            "prompt": "Clean up.", "cronExpression": "0 3 * * *", "permissionMode": "auto"
+        ], from: fixture.claude)
+        XCTAssertTrue(auto.isError, "Nor in a mode freer than the caller's own: \(auto.text)")
         XCTAssertEqual(model.scheduledTasks.schedules.count, 3)
         await model.shutdown()
     }
@@ -360,8 +375,14 @@ final class ScheduleToolTests: XCTestCase {
 
         // Into a project and under this task again, then back to a chat, then to this task's folder.
         let id = schedule.id.uuidString
-        let moved = await call(model, "update_scheduled_task", ["scheduleId": id, "project": "site", "useWorktree": true,
-                                                                "topLevel": false], from: fixture.caller)
+        // Another project asks first, as `create_task` would, since the caller's harness did not.
+        let moving = Task { await self.call(model, "update_scheduled_task", ["scheduleId": id, "project": "site",
+                                                                              "useWorktree": true, "topLevel": false],
+                                            from: fixture.caller) }
+        let card = try await waitForApproval(in: fixture.caller.id, model: model)
+        XCTAssertEqual(card.request.title, L10n.string("Schedule a task in another project"))
+        XCTAssertTrue(model.sessionTools.answer(card.id, allow: true))
+        let moved = await moving.value
         XCTAssertTrue(moved.text.contains("updated: where each run goes"), moved.text)
         var destination = try XCTUnwrap(model.scheduledTasks.schedule(id: schedule.id)?.destination)
         XCTAssertEqual(destination.projectID, fixture.site.id)
@@ -398,6 +419,35 @@ final class ScheduleToolTests: XCTestCase {
             "prompt": "Clean up.", "cronExpression": "0 3 * * *", "permissionMode": "bypassPermissions"
         ], from: fixture.claude)
         XCTAssertFalse(raised.isError, "A caller that runs without asking may choose it: \(raised.text)")
+
+        // A task that asks may not schedule messages into one that does not, unless the person agrees on its card.
+        let count = model.scheduledTasks.schedules.count
+        let into = Task { await self.call(model, "create_scheduled_task", [
+            "prompt": "Deploy now.", "fireAt": "2026-10-18T09:00:00+09:00", "continueTaskId": fixture.claude.id.uuidString
+        ], from: fixture.caller) }
+        let card = try await waitForApproval(in: fixture.caller.id, model: model)
+        XCTAssertEqual(card.request.title, L10n.string("Schedule messages to a task that runs without asking"))
+        XCTAssertTrue(card.request.detail?.contains("Deploy watch → Release prep") == true, card.request.detail ?? "")
+        XCTAssertTrue(model.sessionTools.answer(card.id, allow: false))
+        let refusedInto = await into.value
+        XCTAssertTrue(refusedInto.isError && refusedInto.text.contains("did not approve"), refusedInto.text)
+        XCTAssertEqual(model.scheduledTasks.schedules.count, count)
+
+        // The person's own Bypass schedule: an agent that asks may not put its words into it, and a change of name
+        // alone leaves the person's prompt theirs.
+        var destination = ScheduleDestination(harness: .claudeCode)
+        destination.modelChoice = NewTaskModelChoice(model: nil, permissionMode: ClaudePermissionMode.bypassPermissions)
+        model.scheduledTasks.create(ScheduledTask(name: "Mine", prompt: "Prune old branches.",
+                                                  trigger: .daily(ScheduleTime(hour: 4, minute: 0)), destination: destination))
+        let mine = try XCTUnwrap(model.scheduledTasks.schedules.last)
+        let rewritten = await call(model, "update_scheduled_task", ["scheduleId": mine.id.uuidString, "prompt": "Push to main."],
+                                   from: fixture.caller)
+        XCTAssertTrue(rewritten.isError && rewritten.text.contains("bypassPermissions mode"), rewritten.text)
+        XCTAssertEqual(model.scheduledTasks.schedule(id: mine.id)?.prompt, "Prune old branches.")
+        let renamed = await call(model, "update_scheduled_task", ["scheduleId": mine.id.uuidString, "name": "Prune"],
+                                 from: fixture.caller)
+        XCTAssertFalse(renamed.isError, renamed.text)
+        XCTAssertNil(model.scheduledTasks.schedule(id: mine.id)?.agentTaskID)
         await model.shutdown()
 
         let auto = try Fixture(root: root, calendar: seoul, now: date(17, 20), claudeMode: "auto")
@@ -494,8 +544,11 @@ final class ScheduleToolTests: XCTestCase {
         let run = try XCTUnwrap(model.scheduledTasks.schedule(id: schedule.id)?.state.runs.first)
         XCTAssertEqual(run.outcome, .started)
         XCTAssertEqual(run.taskID, fixture.caller.id)
+        // An agent's prompt arrives as its task's own scheduled message, not as the person's.
         let prompts = await fixture.adapter.prompts
-        XCTAssertEqual(prompts, ["Check whether the deploy finished."])
+        XCTAssertEqual(prompts, [TaskMessage(senderID: fixture.caller.id.uuidString, senderName: "Deploy watch",
+                                             body: "Check whether the deploy finished.", relation: .itself).text(in: .yardlet)])
+        XCTAssertEqual(TaskMessage.parse(prompts.first ?? "")?.relation, .itself)
         await model.shutdown()
     }
 

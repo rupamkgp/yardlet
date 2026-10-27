@@ -74,7 +74,7 @@ extension AppModel: SessionToolHandling {
                 id: id, hostTaskID: id, harness: session.harness, workspaceURL: session.workspaceURL,
                 roots: [session.workspaceURL] + session.additionalRootURLs,
                 projectID: project(for: session)?.id, title: session.title,
-                depth: sessionTools.depth(of: id), permission: sessionToolPermission(of: session),
+                depth: sessionToolDepth(of: id), permission: sessionToolPermission(of: session),
                 deadline: .now + sessionToolWaitCeiling(for: session.harness))
         }
         if let run = sessionTools.run(id), let host = store.sessions.first(where: { $0.id == run.hostTaskID }) {
@@ -85,6 +85,43 @@ extension AppModel: SessionToolHandling {
                 deadline: .now + sessionToolWaitCeiling(for: run.harness))
         }
         return nil
+    }
+
+    /// The processes under which Yardlet's tool server for a task or subagent runs, whose descendants
+    /// alone may call with its token (`AgentToolBroker.callerProcessCheck`): its own Claude Code process
+    /// (with the task's terminals), the Codex App Servers that run Codex threads, or Yardlet itself for a
+    /// harness whose one shared process Yardlet does not track. Nil for an ID that is no task or subagent
+    /// here (a stand-in in QA), which the token alone admits; empty while the task has no process, so
+    /// nothing may call for it then.
+    func agentToolHarnessProcesses(for callerID: UUID) -> Set<Int32>? {
+        let harness: HarnessKind
+        if let session = store.sessions.first(where: { $0.id == callerID }) {
+            harness = session.harness
+        } else if let run = sessionTools.run(callerID) {
+            harness = run.harness
+        } else {
+            return nil
+        }
+        let registered = TaskProcessRegistry.shared.registered
+        switch HarnessCatalog.descriptor(for: harness)?.transport {
+        case .claudeStreamJSON?:
+            return Set(registered.filter { $0.value == .task(callerID) }.keys)
+        case .codexAppServer?:
+            return Set(registered.filter { if case .codexAppServer = $0.value { true } else { false } }.keys)
+        default:
+            return [ProcessInfo.processInfo.processIdentifier]
+        }
+    }
+
+    /// How deep a task nests under tasks agents started: as `create_task` recorded it, and for a task the
+    /// run of an agent's schedule started, one below the task that made the schedule.
+    func sessionToolDepth(of taskID: UUID, seen: Set<UUID> = []) -> Int {
+        let recorded = sessionTools.depth(of: taskID)
+        guard let maker = scheduledTasks.schedules.first(where: { schedule in
+            schedule.destination.mode == .newTask
+                && schedule.state.runs.contains { $0.outcome == .started && $0.taskID == taskID }
+        })?.agentTaskID, maker != taskID, !seen.contains(maker) else { return recorded }
+        return max(recorded, sessionToolDepth(of: maker, seen: seen.union([taskID])) + 1)
     }
 
     /// A task's permission level as the composer shows it now (`TaskPermissionLevel`).
@@ -287,26 +324,47 @@ extension AppModel: SessionToolHandling {
         }
     }
 
-    /// Asks the person when a message reaches past what goes without asking: another project's
-    /// task, or a task that runs without asking while this one asks. Nil when
-    /// it may go; otherwise why not.
-    private func sessionToolMessageApproval(to target: SessionRecord, message: String,
-                                            caller: SessionToolCaller) async -> String? {
+    /// How a message from the caller reaches past what goes without asking.
+    enum TaskMessageReach {
+        /// Another project's task.
+        case otherProject
+        /// A task that runs without asking, while the caller asks.
+        case raisesPermission
+    }
+
+    /// Whether a message into `target` needs the person: nil when it goes without asking (the
+    /// caller's own project or split, or a caller that runs without asking).
+    func sessionToolMessageReach(to target: SessionRecord, caller: SessionToolCaller) -> TaskMessageReach? {
         let neighbors = SessionToolPolicy.splitNeighborsShareProject
             && splits.split(containing: caller.hostTaskID)?.sessionIDs.contains(target.id) == true
-        let targetProject = project(for: target)
-        let sameProject = caller.projectID != nil && targetProject?.id == caller.projectID
+        let sameProject = caller.projectID != nil && project(for: target)?.id == caller.projectID
         let raisesPermission = sessionToolPermission(of: target) == .elevated && caller.permission < .elevated
-        guard (!sameProject && !neighbors) || raisesPermission else { return nil }
-        guard sessionToolAsksPerson(caller) else { return nil }
-        let preview = String(message.prefix(600)) + (message.count > 600 ? "…" : "")
-        let title = raisesPermission
+        guard (!sameProject && !neighbors) || raisesPermission, sessionToolAsksPerson(caller) else { return nil }
+        return raisesPermission ? .raisesPermission : .otherProject
+    }
+
+    /// Asks the person when a message reaches past what goes without asking. Nil when it may go;
+    /// otherwise why not.
+    private func sessionToolMessageApproval(to target: SessionRecord, message: String,
+                                            caller: SessionToolCaller) async -> String? {
+        guard let reach = sessionToolMessageReach(to: target, caller: caller) else { return nil }
+        let title = reach == .raisesPermission
             ? L10n.string("Send a message to a task that runs without asking")
             : L10n.string("Send a message to another project's task")
-        let detail = L10n.format("%@ → %@", caller.title, target.title)
-            + (targetProject.map { " · \($0.name)" } ?? "") + "\n\n" + preview
-        let allowed = await askPerson(title: title, detail: detail, caller: caller)
+        let allowed = await askPerson(title: title, detail: sessionToolMessageDetail(to: target, message, caller: caller),
+                                      caller: caller)
         return allowed ? nil : "the person did not approve sending it."
+    }
+
+    /// A card's lines for a message: from whom to which task, in which project, then the message.
+    func sessionToolMessageDetail(to target: SessionRecord, _ message: String, caller: SessionToolCaller) -> String {
+        L10n.format("%@ → %@", caller.title, target.title) + (project(for: target).map { " · \($0.name)" } ?? "")
+            + "\n\n" + Self.cardPreview(message)
+    }
+
+    /// A message or prompt on a card: its first 600 characters, and "…" when there is more.
+    static func cardPreview(_ text: String) -> String {
+        String(text.prefix(600)) + (text.count > 600 ? "…" : "")
     }
 
     /// Delivers a message to a task the way the composer sends one, with the task's own model,
@@ -511,10 +569,11 @@ extension AppModel: SessionToolHandling {
         case let .success(value): parentTaskID = value
         case let .failure(error): return .error("Not created: \(error.message)")
         }
-        if !chat, place.project?.id != caller.projectID || caller.projectID == nil && place.project != nil,
+        if !chat, sessionToolPlaceReachesPast(folder: place.folder, project: place.project, caller: caller),
            sessionToolAsksPerson(caller) {
-            let detail = L10n.format("%@ → %@", caller.title, place.project?.name ?? place.folder.lastPathComponent)
-                + "\n\n" + String(prompt.prefix(600))
+            let detail = L10n.format("%@ → %@", caller.title,
+                                     place.project?.name ?? place.folder.path(percentEncoded: false))
+                + "\n\n" + Self.cardPreview(prompt)
             guard await askPerson(title: L10n.string("Create a task in another project"), detail: detail,
                                   caller: caller) else {
                 return .error("Not created: the person did not approve a task in another project.")
@@ -1219,6 +1278,23 @@ extension AppModel: SessionToolHandling {
             })
         }
         admitQueuedSessionToolStarts()
+    }
+
+    /// Whether a new task in `folder` reaches past the caller: another project, or, where neither is a
+    /// project, a folder outside the caller's own (and `alsoWithin`), so a chat's child cannot start anywhere
+    /// without a card. A chat, with no folder, reaches nothing.
+    func sessionToolPlaceReachesPast(folder: URL?, project: Project?, caller: SessionToolCaller,
+                                     alsoWithin: [URL] = []) -> Bool {
+        guard let folder else { return false }
+        if caller.projectID != nil, project?.id == caller.projectID { return false }
+        return project?.id != caller.projectID || !(caller.roots + alsoWithin).contains { Self.folder(folder, isWithin: $0) }
+    }
+
+    /// Whether `folder` is `root` or inside it, after `..` and links are resolved.
+    static func folder(_ folder: URL, isWithin root: URL) -> Bool {
+        let inner = folder.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let outer = root.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        return inner.count >= outer.count && Array(inner.prefix(outer.count)) == outer
     }
 
     /// Where a child goes: a project by name or a folder by path, else the caller's folder.

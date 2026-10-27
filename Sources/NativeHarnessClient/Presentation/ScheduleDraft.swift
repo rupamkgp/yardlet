@@ -164,6 +164,8 @@ struct ScheduleDraft: Equatable {
         var schedule = existing ?? ScheduledTask(name: "", prompt: "", trigger: .daily(time), destination: destination,
                                                  createdAt: now)
         schedule.name = trimmedName.isEmpty ? SessionTitleProjection.provisionalTitle(from: prompt) : trimmedName
+        // A prompt the person rewrote is theirs, whoever wrote the one before.
+        if schedule.prompt != prompt { schedule.agentTaskID = nil }
         schedule.prompt = prompt
         schedule.trigger = trigger(now: now, calendar: calendar)
         schedule.destination = destination

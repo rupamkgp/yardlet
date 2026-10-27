@@ -54,6 +54,59 @@ enum BrowserAgentWorkspaceFile {
         return resolved.path(percentEncoded: false)
     }
 
+    /// A private copy of a file `resolve` let through, for the chooser. The file's real path as the system
+    /// gives it (`realpath`) must still be in one of `roots`, and the file is opened along that path one folder
+    /// at a time without following a link, so a link swapped in after the check cannot lead outside the task's
+    /// folders. Only a regular file is copied, and it is opened without waiting, so a pipe cannot hold the open.
+    /// Chromium reads the copy, which nothing can change before the page takes it. The copy keeps the file's
+    /// name, in a folder of its own under `folder`. It reads and writes the disk: run it off the main thread.
+    static func privateCopy(of path: String, roots: [URL], in folder: URL) throws -> String {
+        guard let real = canonicalPath(path),
+              roots.compactMap({ canonicalPath($0.path(percentEncoded: false)) })
+                .contains(where: { contains(URL(filePath: $0), URL(filePath: real)) }) else {
+            throw BrowserAgentToolError("\(path) is outside this task's project folders.")
+        }
+        let parts = real.split(separator: "/").map(String.init)
+        guard let name = parts.last else { throw BrowserAgentToolError("\(path) is not a file.") }
+        var directory = open("/", O_RDONLY | O_DIRECTORY)
+        for part in parts.dropLast() where directory >= 0 {
+            let next = openat(directory, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            close(directory)
+            directory = next
+        }
+        let source = directory >= 0 ? openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) : -1
+        if directory >= 0 { close(directory) }
+        guard source >= 0 else {
+            throw BrowserAgentToolError("\(path) changed while it was being read; try again.")
+        }
+        let input = FileHandle(fileDescriptor: source, closeOnDealloc: true)
+        var status = stat()
+        guard fstat(source, &status) == 0, status.st_mode & S_IFMT == S_IFREG else {
+            throw BrowserAgentToolError("\(path) is not a file.")
+        }
+        let place = folder.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let copy = place.appending(path: name)
+        guard FileManager.default.createFile(atPath: copy.path(percentEncoded: false), contents: nil,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw BrowserAgentToolError("Yardlet could not prepare \(name) for the upload.")
+        }
+        let output = try FileHandle(forWritingTo: copy)
+        defer { try? output.close() }
+        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try output.write(contentsOf: chunk)
+        }
+        return copy.path(percentEncoded: false)
+    }
+
+    /// The path with every link and `..` resolved by the system, `/private` included; nil when it does not exist.
+    static func canonicalPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     /// The file a `file:` address opens, as a real path: read as Chromium reads it (tabs and line breaks dropped,
     /// "\" as "/", no host, query or fragment, escapes decoded, `..` taken out), with symbolic links resolved as
     /// far as the path exists. Nil for an address of another scheme.

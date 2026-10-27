@@ -23,7 +23,7 @@ enum YardletUpdater {
     }
 
     enum Problem: LocalizedError, Equatable {
-        case nothingStaged, otherApp, alreadyInstalled, unverifiedSignature, otherSigner
+        case nothingStaged, otherApp, alreadyInstalled, unverifiedSignature, otherSigner, linked
 
         var errorDescription: String? {
             switch self {
@@ -32,6 +32,7 @@ enum YardletUpdater {
             case .alreadyInstalled: L10n.string("The staged build is already installed.")
             case .unverifiedSignature: L10n.string("The staged build's signature could not be verified.")
             case .otherSigner: L10n.string("The staged build is not signed by the developer who signed the installed Yardlet.")
+            case .linked: L10n.string("The staged build is a link to another folder, so Yardlet does not install it.")
             }
         }
     }
@@ -47,6 +48,12 @@ enum YardletUpdater {
                         digests: ExecutableDigests = ExecutableDigests()) throws -> Candidate {
         let folder = root.appending(path: "Pending", directoryHint: .isDirectory)
         let bundle = folder.appending(path: "Yardlet.app", directoryHint: .isDirectory)
+        // Moved into place, a link would leave the installed app in a folder anything can change. Read without a
+        // trailing slash, which would follow the link.
+        if (try? FileManager.default.destinationOfSymbolicLink(
+            atPath: folder.appending(path: "Yardlet.app").path(percentEncoded: false))) != nil {
+            throw Problem.linked
+        }
         guard let info = NSDictionary(contentsOf: bundle.appending(path: "Contents/Info.plist")) as? [String: Any]
         else { throw Problem.nothingStaged }
         guard let identifier = info["CFBundleIdentifier"] as? String, identifier == bundleIdentifier,
@@ -65,7 +72,8 @@ enum YardletUpdater {
     /// the same identifier from the same team, as Sparkle requires of an update. The keychain items,
     /// permissions and browser cookie key that trust the installed app then trust the update too,
     /// and an ad-hoc or someone else's build cannot replace it. An ad-hoc installed app has no
-    /// team, so any verified Yardlet build replaces it, as before.
+    /// team, so any verified Yardlet build replaces it, and Install Update… says it cannot tell who
+    /// made the build (`makerIsUnknown`).
     static func verifySignature(of bundle: URL, replacing installed: URL? = nil) throws {
         let path = bundle.path(percentEncoded: false)
         guard try codesign(["--verify", "--strict", "--deep", path]).status == 0 else { throw Problem.unverifiedSignature }
@@ -76,6 +84,11 @@ enum YardletUpdater {
     static func verify(_ bundle: URL, satisfies requirement: String) throws {
         guard try codesign(["--verify", "--strict", "-R", "=" + requirement, bundle.path(percentEncoded: false)]).status == 0
         else { throw Problem.otherSigner }
+    }
+
+    /// Whether nothing ties a staged build to the installed app's maker: no team signed it (ad-hoc).
+    static func makerIsUnknown(installed: URL) -> Bool {
+        ((try? signerRequirement(of: installed)) ?? nil) == nil
     }
 
     /// The installed app's designated requirement, or nil when no team signed it (ad-hoc).
@@ -182,6 +195,10 @@ enum YardletUpdater {
       if [ "$n" -gt 600 ]; then say "Yardlet did not quit; nothing changed"; exit 1; fi
       /bin/sleep 0.2
     done
+    # Moved into place, a link or a file linked from elsewhere would stay changeable from outside the app.
+    if [ -L "$pending" ] || [ -n "$(/usr/bin/find "$pending" -type f -links +1 -print -quit 2>/dev/null)" ]; then
+      say "The staged build is or holds a link to another place; nothing changed"; reopen; exit 1
+    fi
     if ! /usr/bin/codesign --verify --strict --deep "$pending" 2>>"$log"; then
       say "The staged build's signature could not be verified; nothing changed"; reopen; exit 1
     fi

@@ -512,7 +512,7 @@ private struct BrokerRig {
         connectors.onChange = { [weak broker] in broker?.toolsMayHaveChanged() }
         directory = FileManager.default.temporaryDirectory.appending(path: "ylt-\(UUID().uuidString.prefix(8))")
         path = directory.appending(path: "tools.sock").path(percentEncoded: false)
-        listener = try UnixSocketListener(path: path) { body in await broker.respond(to: body) }
+        listener = try UnixSocketListener(path: path) { body, peer in await broker.respond(to: body, peer: peer) }
     }
 
     /// The server's side of one task, as `yardlet-mcp` reads it from its environment.

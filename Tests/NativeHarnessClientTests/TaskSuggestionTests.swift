@@ -108,7 +108,7 @@ final class TaskSuggestionTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appending(path: "yts-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appending(path: "tools.sock").path(percentEncoded: false)
-        let listener = try UnixSocketListener(path: path) { body in await broker.respond(to: body) }
+        let listener = try UnixSocketListener(path: path) { body, peer in await broker.respond(to: body, peer: peer) }
         defer { listener.stop() }
         var environment = launch.environment
         environment[AgentToolEnvironment.endpoint] = path

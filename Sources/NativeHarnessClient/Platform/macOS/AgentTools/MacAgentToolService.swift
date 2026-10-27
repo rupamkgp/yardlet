@@ -97,7 +97,7 @@ final class MacAgentToolService: NativeSurfaceResource {
         let broker = broker
         listener = try UnixSocketListener(
             path: directory.appending(path: "tools.sock").path(percentEncoded: false)
-        ) { body in
+        ) { body, peer in
             // An agent works while Yardlet sits behind other windows. Without an activity, App Nap
             // coalesces the timers a call waits on (page loads, text waits) into seconds.
             let activity = ProcessInfo.processInfo.beginActivity(
@@ -105,7 +105,7 @@ final class MacAgentToolService: NativeSurfaceResource {
                 reason: "Agent browser tool call"
             )
             defer { ProcessInfo.processInfo.endActivity(activity) }
-            return await broker.respond(to: body)
+            return await broker.respond(to: body, peer: peer)
         }
     }
 
@@ -160,6 +160,22 @@ final class MacAgentToolService: NativeSurfaceResource {
         listener?.stop()
         listener = nil
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Whether `process` is one of `ancestors` or runs under one, by the parent chain the kernel reports.
+    nonisolated static func process(_ process: Int32, descendsFromAnyOf ancestors: Set<Int32>) -> Bool {
+        var current = process
+        for _ in 0..<64 {
+            if ancestors.contains(current) { return true }
+            var info = kinfo_proc()
+            var size = MemoryLayout<kinfo_proc>.stride
+            var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, current]
+            guard sysctl(&name, 4, &info, &size, nil, 0) == 0, size > 0 else { return false }
+            let parent = info.kp_eproc.e_ppid
+            guard parent > 1, parent != current else { return false }
+            current = parent
+        }
+        return false
     }
 
     private static let directoryPrefix = "Yardlet-tools-"

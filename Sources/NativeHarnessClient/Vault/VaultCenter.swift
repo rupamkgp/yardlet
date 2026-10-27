@@ -289,8 +289,8 @@ final class VaultCenter: ObservableObject {
                 notify(L10n.string("Not filled on another site"),
                                    L10n.format("“%@” asked for “%@” on %@, which is not one of its sites.", title, named.name, host),
                                    request.sessionID)
-                return refuse(request, item: named, "“\(named.name)” is not saved for \(host) (it is for "
-                    + named.sites.joined(separator: ", ") + "), so Yardlet did not fill it.")
+                // Its own sites stay unsaid: a name guessed on one page would otherwise tell where it signs in.
+                return refuse(request, item: named, "“\(named.name)” is not saved for \(host), so Yardlet did not fill it.")
             }
             item = named
         } else {

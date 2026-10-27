@@ -35,6 +35,7 @@ enum ScheduleToolApproval {
             title = L10n.format("Allow Claude to create the scheduled task “%@”?", name)
             lines.append(input[Key.continueTaskID] == nil
                          ? L10n.string("Each run starts a new task.") : L10n.string("Each run continues a task."))
+            lines += placeLines(input)
         case ScheduleToolCatalog.update:
             title = existing.map { L10n.format("Allow Claude to update the scheduled task “%@”?", $0) }
                 ?? L10n.string("Allow Claude to update a scheduled task?")
@@ -44,6 +45,7 @@ enum ScheduleToolApproval {
             }
             if Key.destination.contains(where: { input[$0] != nil }) {
                 lines.append(L10n.string("Changes where each run goes."))
+                lines += placeLines(input)
             }
         case ScheduleToolCatalog.delete:
             title = existing.map { L10n.format("Allow Claude to delete the scheduled task “%@”?", $0) }
@@ -54,6 +56,10 @@ enum ScheduleToolApproval {
                 ?? L10n.string("Allow Claude to run a scheduled task now?")
             lines.append(L10n.string("It starts now with the schedule's own settings."))
         }
+        if let mode = input[Key.permissionMode]?.stringValue, !mode.isEmpty {
+            let value = OtherAppScheduleImport.claudePermissionMode(mode)
+            lines.append(L10n.format("Its runs will use %@ mode.", value.flatMap(ClaudePermissionMode.displayName) ?? mode))
+        }
         var detail = lines.joined(separator: "\n")
         if let prompt, !prompt.isEmpty {
             let preview = prompt.count > 1_200 ? String(prompt.prefix(1_200)) + "…" : prompt
@@ -61,6 +67,19 @@ enum ScheduleToolApproval {
             detail += (detail.isEmpty ? "" : "\n\n") + lead + preview
         }
         return (title, detail)
+    }
+
+    /// The project or folder, or the task, each run goes to, as the call names them.
+    private static func placeLines(_ input: JSONValue) -> [String] {
+        typealias Key = ScheduleToolCatalog.Key
+        var lines: [String] = []
+        if let task = input[Key.continueTaskID]?.stringValue, !task.isEmpty, task != SessionToolCatalog.selfReference {
+            lines.append(L10n.format("Task: %@", task))
+        }
+        if let place = input[Key.project]?.stringValue, !place.isEmpty {
+            lines.append(L10n.format("Project or folder: %@", place))
+        }
+        return lines
     }
 
     /// "Every day at 9:00 AM", "Once, Tomorrow at 9:00 AM", or the cron text Yardlet cannot repeat.

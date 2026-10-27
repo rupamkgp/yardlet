@@ -41,6 +41,10 @@ final class BrowserAgentTools {
     var allowsFileOutsideFolders: @MainActor (UUID, String) async -> Bool = { _, _ in false }
     /// The files outside its folders each task was let open, so a page that shows one asks once.
     private var openedOutsideFolders: [UUID: Set<String>] = [:]
+    /// Where the copies of uploaded files go (`BrowserAgentWorkspaceFile.privateCopy`): the broker's private
+    /// folder, which goes when Yardlet quits.
+    var uploadFolder = FileManager.default.temporaryDirectory
+        .appending(path: "Yardlet-uploads-\(ProcessInfo.processInfo.processIdentifier)", directoryHint: .isDirectory)
     /// Chromium on macOS needs editing commands with key events (see `BrowserAgentKeyPress`).
     private let usesMacEditingCommands: Bool
     /// How often text waits look again.
@@ -521,7 +525,7 @@ final class BrowserAgentTools {
         case AgentToolCatalog.consoleMessages: consoleMessages(arguments, on: page)
         case AgentToolCatalog.evaluate: try await evaluate(arguments, on: page)
         case AgentToolCatalog.handleDialog: try handleDialog(arguments, on: page, sessionID: sessionID)
-        case AgentToolCatalog.fileUpload: try fileUpload(arguments, on: page)
+        case AgentToolCatalog.fileUpload: try await fileUpload(arguments, on: page)
         case AgentToolCatalog.resize: try await resize(arguments, on: page)
         case AgentToolCatalog.handoff: try await handOff(arguments, on: page, sessionID: sessionID)
         default: throw BrowserAgentToolError("Unknown Yardlet tool: \(tool)")
@@ -1118,9 +1122,10 @@ final class BrowserAgentTools {
         guard let function = arguments["function"]?.stringValue, !function.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw BrowserAgentToolError("browser_evaluate needs a function.")
         }
-        if await vaultValueIsLive(on: page) {
-            throw BrowserAgentToolError("A value Yardlet's password manager filled is still in a field on this page, so browser_evaluate "
-                + "does not run here until the field is gone or the page navigates (submitting the form usually does both).")
+        if vaultFilledDocument(page) {
+            throw BrowserAgentToolError("Yardlet's password manager filled a password or code on this page, so browser_evaluate "
+                + "does not run on it. Reload it (browser_navigate to its address) or go to another page to use browser_evaluate "
+                + "again; browser_snapshot, clicks and typing work as before.")
         }
         let result: JSONValue
         if let ref = arguments["ref"]?.stringValue {
@@ -1225,7 +1230,7 @@ final class BrowserAgentTools {
         return .text("\(accept ? "Accepted" : "Dismissed") the \(kind) dialog “\(dialog.message)”.")
     }
 
-    private func fileUpload(_ arguments: JSONValue, on page: BrowserAgentPage) throws -> AgentToolResult {
+    private func fileUpload(_ arguments: JSONValue, on page: BrowserAgentPage) async throws -> AgentToolResult {
         guard let chooser = page.fileDialog else {
             throw BrowserAgentToolError("No file chooser is open. Click the page's file input first.")
         }
@@ -1237,7 +1242,17 @@ final class BrowserAgentTools {
         if chooser.mode != .openMultiple, requested.count > 1 {
             throw BrowserAgentToolError("This file chooser takes one \(chooser.mode == .openFolder ? "folder" : "file").")
         }
-        let paths = try requested.map { try BrowserAgentWorkspaceFile.resolve($0, roots: page.workspaceRoots, mode: chooser.mode) }
+        var paths = try requested.map { try BrowserAgentWorkspaceFile.resolve($0, roots: page.workspaceRoots, mode: chooser.mode) }
+        // A file goes as a copy read from the path just checked; a folder or a place to save stays a path.
+        if chooser.mode == .open || chooser.mode == .openMultiple {
+            let checked = paths, roots = page.workspaceRoots, folder = uploadFolder
+            paths = try await Task.detached(priority: .userInitiated) {
+                try checked.map { try BrowserAgentWorkspaceFile.privateCopy(of: $0, roots: roots, in: folder) }
+            }.value
+            guard page.fileDialog?.id == chooser.id else {
+                throw BrowserAgentToolError("The file chooser closed while the files were being read.")
+            }
+        }
         _ = page.answerFileDialog(paths: paths)
         return .text("Gave the file chooser " + paths.map { "“\(URL(filePath: $0).lastPathComponent)”" }
             .joined(separator: ", ") + ".")

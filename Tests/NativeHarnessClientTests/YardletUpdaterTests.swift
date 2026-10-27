@@ -38,6 +38,15 @@ final class YardletUpdaterTests: XCTestCase {
         XCTAssertTrue(candidate.hasUncommittedChanges)
         XCTAssertEqual(candidate.builtAt, Date(timeIntervalSince1970: 1_791_291_600))
         XCTAssertNoThrow(try YardletUpdater.verifySignature(of: candidate.bundleURL))
+
+        // A link to a build elsewhere is not moved into place.
+        let elsewhere = root.appending(path: "Elsewhere/Yardlet.app")
+        try FileManager.default.createDirectory(at: elsewhere.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: staged, to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: staged, withDestinationURL: elsewhere)
+        XCTAssertThrowsError(try YardletUpdater.pending(root: updates, bundleIdentifier: identifier, installedBundle: installed)) {
+            XCTAssertEqual($0 as? YardletUpdater.Problem, .linked)
+        }
     }
 
     /// The sidebar's "Restart to update" and its menu bar line follow the staged build without checking
@@ -131,6 +140,17 @@ final class YardletUpdaterTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
         XCTAssertTrue(try String(contentsOf: updates.appending(path: "install.log"), encoding: .utf8)
             .contains("nothing changed"))
+
+        // A build holding a file linked from elsewhere stays out too, though its signature verifies.
+        try FileManager.default.removeItem(at: staged)
+        let linked = try bundle(at: staged, marker: "linked", executableSuffix: "linked")
+        try FileManager.default.linkItem(at: linked.appending(path: "Contents/Resources/marker.txt"),
+                                         to: root.appending(path: "outside-marker.txt"))
+        let refused = try YardletUpdater.launchInstaller(target: target, processID: 999_999, root: updates, relaunch: false)
+        XCTAssertNotEqual(exitStatus(refused), 0)
+        XCTAssertEqual(try marker(target), "old")
+        XCTAssertTrue(try String(contentsOf: updates.appending(path: "install.log"), encoding: .utf8)
+            .contains("holds a link"))
     }
 
     // MARK: - Fixtures
