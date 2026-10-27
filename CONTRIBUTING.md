@@ -34,6 +34,10 @@ to add a control.
 
 See [Development](README.md#development) in the README.
 
+## Code of conduct
+
+Everyone taking part in this project's issues and discussions is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
 By contributing, you agree that your contribution is licensed under the [MIT License](LICENSE), like the rest of the
