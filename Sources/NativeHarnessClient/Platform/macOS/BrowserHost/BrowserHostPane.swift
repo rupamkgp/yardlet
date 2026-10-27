@@ -497,7 +497,7 @@ final class BrowserHostPaneController {
 
     func openExternally() {
         guard let url = BrowserTabMenuActions.externalURL(tab?.currentURL ?? workspace.browserTabs.tab(key)?.address) else { return }
-        NSWorkspace.shared.open(url)
+        OutsideBrowser.open(url)
     }
 
     private func perform(_ shortcut: BrowserPanelShortcut) {

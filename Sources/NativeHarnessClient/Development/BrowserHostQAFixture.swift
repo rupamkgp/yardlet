@@ -173,6 +173,12 @@ private final class BrowserHostQARunner {
             await exerciseDraftHandoff()
             return await finish()
         }
+        // `--ui-fixture-browser-check-only=external-links` runs links and HTML files other apps open with Yardlet, the
+        // default browser, alone.
+        if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "external-links" {
+            await exerciseExternalLinks()
+            return await finish()
+        }
         // `--ui-fixture-browser-check-only=many-tabs --ui-fixture-browser-limit=20` runs many tasks' tabs and a
         // tab the browser has no room for alone.
         if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "many-tabs" {
@@ -308,6 +314,53 @@ private final class BrowserHostQARunner {
         let grace = Double(client.idleGrace.components.seconds)
         _ = await waitUntil(.seconds(Int(grace) + 20)) { !self.client.isHostRunning }
         await phase("draft-3-after")
+    }
+
+    // MARK: Links from other apps
+
+    /// Links and HTML files other apps open with Yardlet once it is the default browser (`AppModel.openExternalLinks`):
+    /// Launch Services hands each to this running app, which it does not make active, and each opens at its page in a
+    /// new tab of the side panel of the task the window shows, with no window of its own (SwiftUI opens one for a URL
+    /// the app delegate does not take).
+    private func exerciseExternalLinks() async {
+        guard let controller = await openPanel(label: "external-links", address: base) else { return }
+        _ = await waitUntil(.seconds(10)) { controller.title == "Browser QA" && !controller.isLoading }
+        let workspace = controller.workspace
+        let windowsBefore = NSApp.windows.filter(\.canBecomeMain)
+        let windows = windowsBefore.count
+        let file = output.appending(path: "external-link.html")
+        try? Data("<!doctype html><title>Local file</title><p>Opened with Yardlet</p>".utf8).write(to: file)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        for (name, url, title) in [("a link", URL(string: base + "second"), "Second"), ("an HTML file", file, "Local file")] {
+            guard let url else { continue }
+            let before = Set(TaskSurfaceNavigationProjection.browserKeys(in: workspace.panels))
+            var opened: String?
+            do {
+                _ = try await NSWorkspace.shared.open([url], withApplicationAt: Bundle.main.bundleURL, configuration: configuration)
+            } catch {
+                opened = error.localizedDescription
+            }
+            var shown = "none"
+            let arrived = await waitUntil(.seconds(20)) {
+                guard let key = TaskSurfaceNavigationProjection.browserKey(inTab: workspace.panels.trailingSurfaceID),
+                      !before.contains(key) else { return false }
+                let tab = self.client.tab(key: key, forSession: self.session)
+                shown = "\(workspace.browserTabs.tab(key)?.address ?? "-") \"\(tab?.title ?? "")\""
+                return tab?.title == title && !(tab?.isLoading ?? true)
+            }
+            check("external links: \(name) opens in a new tab of the shown task's panel, at its page", arrived && opened == nil,
+                  "open \(opened ?? "sent"); shown \(shown); tabs \(before.count) → "
+                    + "\(TaskSurfaceNavigationProjection.browserKeys(in: workspace.panels).count)")
+        }
+        let added = NSApp.windows.filter { $0.canBecomeMain && !windowsBefore.contains($0) }
+        check("external links: no window of their own", added.isEmpty,
+              "windows \(windows) → \(windows + added.count); added \(added.map { $0.identifier?.rawValue ?? "-" })")
+        await phase("external-links")
+        await closePanel()
+        client.closeTabs(forSession: session)
+        let grace = Double(client.idleGrace.components.seconds)
+        _ = await waitUntil(.seconds(Int(grace) + 20)) { !self.client.isHostRunning }
     }
 
     // MARK: Many tasks' tabs

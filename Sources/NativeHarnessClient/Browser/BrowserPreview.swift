@@ -241,7 +241,7 @@ final class BrowserPreviewModel: NSObject, @MainActor WKNavigationDelegate, @Mai
 
     func openInDefaultBrowser() {
         guard let url = displayedURL ?? requestedURL else { return }
-        NSWorkspace.shared.open(url)
+        OutsideBrowser.open(url)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

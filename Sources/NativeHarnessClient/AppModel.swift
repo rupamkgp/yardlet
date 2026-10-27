@@ -302,6 +302,8 @@ final class AppModel {
     @ObservationIgnored let dockAttention: DockAttention?
     /// Notification clicks that arrived before the task index was read at launch.
     @ObservationIgnored var pendingNotificationResponses: [SystemNotificationResponse] = []
+    /// Links other apps opened with Yardlet before the task index was read at launch (`AppModel+ExternalLinks`).
+    @ObservationIgnored var pendingExternalLinks: [(urls: [URL], elsewhere: @MainActor (URL) -> Void)] = []
     /// Each task's delivered approval notifications, by the request each asks about ("" for one
     /// that names no request), withdrawn once the request is answered.
     @ObservationIgnored var approvalNotificationIDs: [UUID: [String: String]] = [:]
@@ -666,6 +668,7 @@ final class AppModel {
         defer {
             isRestoringIndex = false
             handlePendingNotificationResponses()
+            handlePendingExternalLinks()
         }
         do {
             try await store.restore()

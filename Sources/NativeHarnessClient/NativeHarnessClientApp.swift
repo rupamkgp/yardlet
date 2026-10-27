@@ -161,7 +161,11 @@ private struct YardletUpdateCommands: Commands {
 
 @MainActor
 final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
-    weak var model: AppModel?
+    weak var model: AppModel? {
+        didSet { openPendingLinks() }
+    }
+    /// Links and HTML files opened with Yardlet before the window's model was ready, as when a link launched it.
+    private var pendingLinks: [URL] = []
     let workActivity = RunningWorkActivity()
     /// The network path, for turns a lost connection cut off (`AppModel.networkPathChanged`).
     let networkWatch = NetworkWatch()
@@ -213,6 +217,31 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
         if QABackground.isOn { return QABackground.start() }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// A link or an HTML file another app opened with Yardlet, the person's default browser (`AppModel.openExternalLinks`).
+    /// An open main window takes them, so SwiftUI opens no window for them (`handlesExternalEvents(preferring:allowing:)`).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        pendingLinks += urls.filter { ["http", "https", "file"].contains($0.scheme?.lowercased() ?? "") }
+        openPendingLinks()
+    }
+
+    private func openPendingLinks() {
+        guard let model, !pendingLinks.isEmpty else { return }
+        let links = pendingLinks
+        pendingLinks = []
+        model.openExternalLinks(links, elsewhere: OutsideBrowser.open)
+        // As Chrome shows the window it opens a link in: out of the Dock, or opened again once closed. Bringing Yardlet
+        // in front is Launch Services' part, as the app that opened the link asked, and brings a hidden Yardlet back with
+        // its windows; a window already showing is left as it is, so the window the person types in keeps the keyboard.
+        guard !QABackground.isOn, !NSApp.isHidden else { return }
+        let windows = NSApp.windows.filter { $0.identifier?.rawValue.hasPrefix("main") == true && $0.canBecomeMain }
+        guard !windows.contains(where: { $0.isVisible && !$0.isMiniaturized }) else { return }
+        if let window = windows.first(where: \.isMiniaturized) {
+            window.deminiaturize(nil)
+        } else {
+            TaskResourceUsageWindow.reopenMainWindow?()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -415,6 +444,10 @@ struct NativeHarnessClientApp: App {
                     .ignoresSafeArea(.container, edges: .top)
                     .imageViewerHost()
             }
+                // A link another app opens with Yardlet goes to a tab of the window's task (`application(_:open:)`): an
+                // open window takes it, where SwiftUI would otherwise open a window for each one. A link that launches
+                // Yardlet still gets the first window.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .environment(\.yardletInstallUpdate, { [appDelegate] in appDelegate.offerStagedUpdate() })
                 .environment(\.yardletUpdateWait, appDelegate.updateWait)
                 .environment(\.yardletSparkle, appDelegate.sparkle)
@@ -571,6 +604,7 @@ struct NativeHarnessClientApp: App {
             }
         }
         .defaultSize(width: 720, height: 360)
+        .handlesExternalEvents(matching: [])
         .commandsRemoved()
     }
 

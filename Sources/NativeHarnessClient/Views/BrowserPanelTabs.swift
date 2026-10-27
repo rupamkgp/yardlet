@@ -98,7 +98,7 @@ struct WorkSurfaceTabMenu: View {
                 Button(L10n.string("Copy URL")) { TranscriptClipboard.copy(copied) }
             }
             if let url = BrowserTabMenuActions.externalURL(address) {
-                Button(L10n.string("Open in External Browser")) { NSWorkspace.shared.open(url) }
+                Button(L10n.string("Open in External Browser")) { OutsideBrowser.open(url) }
             }
             Divider()
         }

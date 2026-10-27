@@ -866,7 +866,7 @@ enum TranscriptProseMenu {
                 items.append(item(L10n.string("Copy path")) { TranscriptClipboard.copy(link.path(percentEncoded: false)) })
             } else {
                 if ConversationLinkRoute(link) == .taskBrowser {
-                    items.append(item(L10n.string("Open in default browser")) { NSWorkspace.shared.open(link) })
+                    items.append(item(L10n.string("Open in default browser")) { OutsideBrowser.open(link) })
                 }
                 items.append(item(L10n.string("Copy link")) { TranscriptClipboard.copy(link.absoluteString) })
             }

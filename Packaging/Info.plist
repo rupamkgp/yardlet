@@ -52,6 +52,40 @@
             </array>
         </dict>
     </array>
+    <!-- Yardlet can be chosen as the default web browser (System Settings > Desktop & Dock), which
+         Launch Services offers only to an app that opens both http and https links and views HTML.
+         Alternate keeps Yardlet from becoming the default for HTML files on its own; until the person
+         chooses it, links and files open where they did. docs/BROWSER_HOST.md, "Default browser". -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Web site URL</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>http</string>
+                <string>https</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>HTML document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.html</string>
+                <string>public.xhtml</string>
+            </array>
+        </dict>
+    </array>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Yardlet lets your phone find this Mac on the same Wi-Fi when the phone remote is on.</string>
     <key>NSBonjourServices</key>
