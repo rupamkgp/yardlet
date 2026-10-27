@@ -12,6 +12,7 @@ struct ConnectorSetupAssistant: Equatable {
     enum Service: String, Equatable, Sendable {
         case google
         case slack
+        case appStoreConnect
     }
 
     enum StepID: String, CaseIterable, Sendable {
@@ -19,6 +20,8 @@ struct ConnectorSetupAssistant: Equatable {
         case project, apis, consent, publish, scopes, client, googleSignIn
         // Slack
         case slackCreate, slackCredentials, slackSignIn
+        // App Store Connect
+        case ascCreateKey, ascKeyFile, ascConnect
     }
 
     struct Link: Equatable {
@@ -52,10 +55,11 @@ struct ConnectorSetupAssistant: Equatable {
     // MARK: Google
 
     static let googleProject = URL(string: "https://console.cloud.google.com/projectcreate")!
-    /// Turns on all three APIs in one confirmation.
+    /// Turns on the three services' APIs, and the Docs, Sheets, and Slides APIs Drive's editing
+    /// tools call, in one confirmation.
     static var googleAPIs: URL {
         URL(string: "https://console.cloud.google.com/flows/enableapi?apiid="
-            + LocalConnectorService.allCases.map(\.apiID).joined(separator: ","))!
+            + (LocalConnectorService.google.compactMap(\.apiID) + GoogleEditorsToolCatalog.apiIDs).joined(separator: ","))!
     }
     static let googleOverview = URL(string: "https://console.cloud.google.com/auth/overview")!
     static let googleAudience = URL(string: "https://console.cloud.google.com/auth/audience")!
@@ -85,7 +89,7 @@ struct ConnectorSetupAssistant: Equatable {
                  detail: L10n.string("Any name. Or pick a project you have."),
                  link: Link(title: L10n.string("New project"), url: googleProject), isDone: done(.project)),
             Step(id: .apis, title: L10n.string("Turn on the Gmail, Calendar, and Drive APIs"),
-                 detail: L10n.string("One page turns on all three; confirm the project and press Enable."),
+                 detail: L10n.string("One page turns them on, with the Docs, Sheets, and Slides APIs the Drive tools use; confirm the project and press Enable."),
                  link: Link(title: L10n.string("Enable APIs"), url: googleAPIs), isDone: done(.apis)),
             Step(id: .consent, title: L10n.string("Set up Google Auth Platform"),
                  detail: L10n.string("App name, your email, then Audience: External for personal Gmail and other accounts, Internal for your Workspace organization's accounts only."),
@@ -125,6 +129,31 @@ struct ConnectorSetupAssistant: Equatable {
             Step(id: .slackSignIn, title: L10n.string("Sign in to Slack"),
                  detail: L10n.string("Slack asks to allow Yardlet in your workspace. If your workspace needs an admin's approval, ask for it there."),
                  isDone: connected)
+        ])
+    }
+
+    // MARK: App Store Connect
+
+    /// Users and Access → Integrations → App Store Connect API.
+    static let appStoreConnectKeys = URL(string: "https://appstoreconnect.apple.com/access/integrations/api")!
+    /// Apple's "Creating API Keys for App Store Connect API".
+    static let appStoreConnectKeyGuide =
+        URL(string: "https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api")!
+
+    /// Making an API key in App Store Connect, choosing its private key file here, and connecting.
+    /// The steps are for the key being added: a key connected before lists above them.
+    static func appStoreConnect(opened: Set<StepID>, keyChosen: Bool) -> ConnectorSetupAssistant {
+        ConnectorSetupAssistant(service: .appStoreConnect, steps: [
+            Step(id: .ascCreateKey, title: L10n.string("Create an API key in App Store Connect"),
+                 detail: L10n.string("Users and Access → Integrations → App Store Connect API. An Account Holder or Admin makes a team key and picks its role: Admin covers every tool here, App Manager all but answering reviews. An individual key, made in your profile, has your own access."),
+                 link: Link(title: L10n.string("Open App Store Connect"), url: appStoreConnectKeys),
+                 isDone: opened.contains(.ascCreateKey) || keyChosen),
+            Step(id: .ascKeyFile, title: L10n.string("Choose the key file and enter its IDs"),
+                 detail: L10n.string("App Store Connect lets you download the .p8 file once. Yardlet reads the key ID from the file's name; a team key also needs the issuer ID shown above the keys."),
+                 isDone: keyChosen),
+            Step(id: .ascConnect, title: L10n.string("Connect"),
+                 detail: L10n.string("Yardlet keeps the key in your keychain and reads your app list once to check it."),
+                 isDone: false)
         ])
     }
 
@@ -181,6 +210,22 @@ struct ConnectorSetupAssistant: Equatable {
             return .invalid(L10n.string("A Slack client ID is two numbers with a dot between, like 123.456."))
         }
         return .valid
+    }
+
+    /// An App Store Connect key ID: ten capital letters and digits.
+    static func validateAppStoreKeyID(_ text: String) -> Validation {
+        let value = trimmed(text)
+        guard !value.isEmpty else { return .empty }
+        return AppStoreConnectKey.isKeyID(value.uppercased()) ? .valid
+            : .invalid(L10n.string("A key ID is 10 letters and digits, such as 2X9R4HXF34."))
+    }
+
+    /// An App Store Connect issuer ID: a UUID.
+    static func validateIssuerID(_ text: String) -> Validation {
+        let value = trimmed(text)
+        guard !value.isEmpty else { return .empty }
+        return UUID(uuidString: value) != nil ? .valid
+            : .invalid(L10n.string("An issuer ID looks like 57246542-96fe-1a63-e053-0824d011072a."))
     }
 
     /// A Slack client secret, only for an app without PKCE: 32 hexadecimal digits.

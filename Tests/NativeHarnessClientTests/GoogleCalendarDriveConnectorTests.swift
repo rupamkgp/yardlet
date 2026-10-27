@@ -105,8 +105,11 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertEqual(tools.filter { $0.hasPrefix("drive_") },
                        ["drive_search_files", "drive_list_recent_files", "drive_get_file_metadata", "drive_get_file_permissions",
                         "drive_read_file_content", "drive_download_file_content", "drive_create_file", "drive_copy_file",
-                        "drive_update_file"])
-        XCTAssertEqual(tools.count, 8 + 9 + 9)
+                        "drive_update_file", "drive_read_doc", "drive_update_doc", "drive_get_spreadsheet", "drive_get_values",
+                        "drive_update_values", "drive_update_formulas", "drive_insert_dimension", "drive_update_spreadsheet",
+                        "drive_read_presentation", "drive_read_slide_page", "drive_read_slide_page_thumbnail",
+                        "drive_update_presentation"])
+        XCTAssertEqual(tools.count, 8 + 9 + 21)
         let exposed = await center.connectorTools(for: ConnectorToolContext())
         XCTAssertEqual(exposed.first { $0["name"] == .string("calendar_list_events") }?["title"],
                        .string("Google Calendar · person@example.test: List events"))
@@ -513,6 +516,175 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertEqual(google.requests.count, before)
     }
 
+    /// Docs, Sheets, and Slides through the Drive connector, on Drive's own scopes: a document's
+    /// structure with the indexes its requests take, values and formulas by range, slides with their
+    /// object IDs and notes, each long one in parts, a thumbnail fetched with no token, and writes
+    /// as the APIs' own batchUpdate requests, which Google lets Yardlet make only on its own files.
+    func testDocsSheetsAndSlidesToolsReadInPartsAndWriteOnlyYardletsFiles() async throws {
+        let google = FakeGoogleWorkspace()
+        let (center, _) = try await signedIn(google: google)
+        XCTAssertEqual(LocalConnectorService.googleDrive.scopes, [GoogleDriveToolCatalog.readScope, GoogleDriveToolCatalog.fileScope],
+                       "No scope beyond Drive's")
+
+        // A document: paragraphs with styles, a list item, a link and an image's one index, a table cell by cell.
+        let doc = try json(try await call(center, "drive_read_doc", ["documentId": .string("https://docs.google.com/document/d/doc-1/edit"),
+                                                                     "commentsIncluded": .bool(true)]))
+        XCTAssertEqual(google.calls("GET", "/v1/documents/doc-1").last?.value("includeTabsContent"), "true")
+        XCTAssertEqual(doc["documentId"], .string("doc-1"), "A link gives its ID")
+        XCTAssertEqual(doc["revisionId"], .string("rev-7"))
+        let content = try XCTUnwrap(doc["content"]?.arrayValue)
+        XCTAssertEqual(content.map { $0["kind"]?.stringValue }, ["paragraph", "paragraph", "paragraph", "table", "paragraph"],
+                       "The section break every body opens with is left out")
+        XCTAssertEqual(content[0]["style"], .string("HEADING_1"))
+        XCTAssertEqual(content[0]["text"], .string("Launch plan\n"))
+        XCTAssertEqual(content[1]["bullet"]?["listId"], .string("kix.list1"))
+        XCTAssertNil(content[1]["style"], "Normal text has no style line")
+        let linked = try XCTUnwrap(content[2]["text"]?.stringValue)
+        XCTAssertEqual(linked, "See spec\u{FFFC}\n")
+        XCTAssertEqual(linked.utf16.count, 28 - 18, "The text is as long as its indexes")
+        XCTAssertEqual(content[2]["links"]?.arrayValue?.first?["url"], .string("https://example.test/spec"))
+        XCTAssertEqual(content[3]["cells"]?.arrayValue?[1].arrayValue?[0]["text"], .string("Servers\n"))
+        XCTAssertEqual(content[3]["cells"]?.arrayValue?[1].arrayValue?[0]["startIndex"], .integer(44), "Where a cell's text starts")
+        XCTAssertNil(doc["nextStartIndex"])
+        XCTAssertNil(doc["tabs"], "One tab needs no list")
+        XCTAssertEqual(doc["commentThreads"]?.arrayValue?.first?["headPost"]?["content"], .string("Is this the final date?"))
+
+        // A long document in parts, each picking up where the last stopped.
+        var start: Int?
+        var paragraphs = 0
+        var parts = 0
+        repeat {
+            var arguments: [String: ToolJSON] = ["documentId": .string("doc-long")]
+            if let start { arguments["startIndex"] = .integer(Int64(start)) }
+            let part = try json(try await call(center, "drive_read_doc", arguments))
+            let items = try XCTUnwrap(part["content"]?.arrayValue)
+            if let start { XCTAssertEqual(items.first?["startIndex"], .integer(Int64(start)), "Each part starts where the last stopped") }
+            XCTAssertLessThanOrEqual(GoogleToolArguments.text(.array(items)).count, 100_000)
+            paragraphs += items.count
+            parts += 1
+            start = part["nextStartIndex"].flatMap { GoogleToolArguments.integer($0) }
+            if let start { XCTAssertEqual(items.last?["endIndex"], .integer(Int64(start))) }
+        } while start != nil && parts < 10
+        XCTAssertEqual(paragraphs, 2_000)
+        XCTAssertGreaterThan(parts, 1)
+        // Tabs, child tabs too, by ID.
+        let tabs = try json(try await call(center, "drive_read_doc", ["documentId": .string("doc-tabs"), "tabId": .string("t.1")]))
+        XCTAssertEqual(tabs["tabs"]?.arrayValue?.compactMap { $0["tabId"]?.stringValue }, ["t.0", "t.1"])
+        XCTAssertEqual(tabs["content"]?.arrayValue?.first?["text"], .string("Child tab\n"))
+        let noTab = try await call(center, "drive_read_doc", ["documentId": .string("doc-tabs"), "tabId": .string("t.9")])
+        XCTAssertTrue(noTab.isError)
+
+        // A spreadsheet: its sheets in a line each; asked for its grid, the Sheets API's JSON unless too large.
+        let sheet = try json(try await call(center, "drive_get_spreadsheet", ["spreadsheetId": .string("sheet-1")]))
+        XCTAssertEqual(google.calls("GET", "/v4/spreadsheets/sheet-1").last?.value("fields"), GoogleEditorsToolRunner.spreadsheetFields)
+        XCTAssertEqual(sheet["title"], .string("Budget"))
+        XCTAssertEqual(sheet["sheets"]?.arrayValue?.first, .object([
+            "sheetId": .integer(0), "title": .string("Costs"), "index": .integer(0), "rowCount": .integer(1_000),
+            "columnCount": .integer(26), "frozenRowCount": .integer(1)]))
+        XCTAssertEqual(sheet["sheets"]?.arrayValue?.last?["sheetType"], .string("OBJECT"))
+        let grid = try await call(center, "drive_get_spreadsheet", ["spreadsheetId": .string("sheet-1"), "includeGridData": .bool(true)])
+        XCTAssertTrue(grid.isError)
+        XCTAssertTrue(grid.text.contains("smaller range"), grid.text)
+        // Values and formulas by range; a large range in parts.
+        let formulas = try json(try await call(center, "drive_get_values", ["spreadsheetId": .string("sheet-1"), "range": .string("Costs!A1:B3"),
+                                                                            "valueRenderOption": .string("FORMULA")]))
+        let read = try XCTUnwrap(google.calls("GET", "/v4/spreadsheets/sheet-1/values/Costs%21A1%3AB3").last)
+        XCTAssertEqual(read.value("valueRenderOption"), "FORMULA")
+        XCTAssertEqual(formulas["values"]?.arrayValue?.last, .array([.string("total"), .string("=SUM(B2:B2)")]))
+        let big = try json(try await call(center, "drive_get_values", ["spreadsheetId": .string("sheet-1"), "range": .string("Data!A1:D3000")]))
+        let returned = try XCTUnwrap(big["rowsReturned"].flatMap { GoogleToolArguments.integer($0) })
+        XCTAssertLessThan(returned, 3_000)
+        XCTAssertEqual(big["nextRange"], .string("Data!A\(1 + returned):D3000"))
+        XCTAssertEqual(A1Range("'Q3 plan'!B2:F")?.rows(after: 5), "'Q3 plan'!B7:F")
+        XCTAssertNil(A1Range("Sheet1!A1:B2")?.rows(after: 2))
+
+        // Writing values as they are, formulas as typed, and the API's own requests; only on Yardlet's files.
+        let wrote = try json(try await call(center, "drive_update_values", [
+            "spreadsheetId": .string("app-sheet"), "range": .string("Costs!A2:B2"),
+            "values": .array([.array([.string("=not a formula"), .integer(3)])])]))
+        let put = try XCTUnwrap(google.calls("PUT", "/v4/spreadsheets/app-sheet/values/Costs%21A2%3AB2").last)
+        XCTAssertEqual(put.value("valueInputOption"), "RAW")
+        XCTAssertEqual(put.json?["values"], .array([.array([.string("=not a formula"), .integer(3)])]))
+        XCTAssertEqual(wrote["updatedCells"], .integer(2))
+        _ = try json(try await call(center, "drive_update_formulas", [
+            "spreadsheetId": .string("app-sheet"), "range": .string("Costs!C2"), "formulas": .array([.array([.string("=A2*2")])])]))
+        XCTAssertEqual(google.calls("PUT", "/v4/spreadsheets/app-sheet/values/Costs%21C2").last?.value("valueInputOption"), "USER_ENTERED")
+        _ = try json(try await call(center, "drive_insert_dimension", [
+            "spreadsheetId": .string("app-sheet"), "sheetId": .integer(0), "dimension": .string("ROWS"),
+            "startIndex": .integer(1), "endIndex": .integer(3)]))
+        XCTAssertEqual(google.calls("POST", "/v4/spreadsheets/app-sheet:batchUpdate").last?.json?["requests"], .array([.object([
+            "insertDimension": .object(["range": .object(["sheetId": .integer(0), "dimension": .string("ROWS"),
+                                                          "startIndex": .integer(1), "endIndex": .integer(3)])])])]))
+        let added = try json(try await call(center, "drive_update_spreadsheet", [
+            "spreadsheetId": .string("app-sheet"), "requests": .array([.object(["addSheet": .object(["properties": .object(["title": .string("Q4")])])])])]))
+        XCTAssertEqual(added["replies"]?.arrayValue?.first?["addSheet"]?["properties"]?["sheetId"], .integer(123))
+        let edited = try json(try await call(center, "drive_update_doc", [
+            "documentId": .string("app-doc"),
+            "requests": .array([.object(["insertText": .object(["location": .object(["index": .integer(1)]), "text": .string("Hi\n")])]),
+                                .object(["updateParagraphStyle": .object([
+                                    "range": .object(["startIndex": .integer(1), "endIndex": .integer(4)]),
+                                    "paragraphStyle": .object(["namedStyleType": .string("HEADING_2")]),
+                                    "fields": .string("namedStyleType")])])]),
+            "writeControl": .object(["requiredRevisionId": .string("rev-7")])]))
+        let docBatch = try XCTUnwrap(google.calls("POST", "/v1/documents/app-doc:batchUpdate").last?.json)
+        XCTAssertEqual(docBatch["requests"]?.arrayValue?.count, 2)
+        XCTAssertEqual(docBatch["writeControl"], .object(["requiredRevisionId": .string("rev-7")]))
+        XCTAssertEqual(edited["writeControl"]?["requiredRevisionId"], .string("rev-8"))
+        let refused = try await call(center, "drive_update_doc", [
+            "documentId": .string("doc-1"), "requests": .array([.object(["insertText": .object(["text": .string("x")])])])])
+        XCTAssertTrue(refused.isError)
+        XCTAssertEqual(refused.text, "Google Drive: The caller does not have permission (HTTP 403)")
+        let before = google.requests.count
+        for (tool, arguments) in [
+            ("drive_update_values", ["spreadsheetId": .string("app-sheet"), "range": .string("A1"), "values": .array([.string("flat")])]),
+            ("drive_update_values", ["spreadsheetId": .string("app-sheet"), "range": .string("A1"), "values": .array([.array([.object([:])])])]),
+            ("drive_update_doc", ["documentId": .string("app-doc"), "requests": .array([])]),
+            ("drive_insert_dimension", ["spreadsheetId": .string("app-sheet"), "sheetId": .integer(0), "dimension": .string("ROWS"),
+                                        "startIndex": .integer(3), "endIndex": .integer(3)]),
+            ("drive_get_values", ["spreadsheetId": .string("sheet-1"), "range": .string("A1"), "valueRenderOption": .string("RAW")])
+        ] as [(String, [String: ToolJSON])] {
+            let result = try await call(center, tool, arguments)
+            XCTAssertTrue(result.isError, "\(tool) \(arguments)")
+        }
+        XCTAssertEqual(google.requests.count, before, "Checked before any request")
+
+        // Slides: each slide's layout, elements with IDs and text, and notes; a long deck in parts.
+        let deck = try json(try await call(center, "drive_read_presentation", ["presentationId": .string("slides-1")]))
+        XCTAssertEqual(google.calls("GET", "/v1/presentations/slides-1").last?.value("fields"), GoogleEditorsToolRunner.presentationFields)
+        let slide = try XCTUnwrap(deck["slides"]?.arrayValue?.first)
+        XCTAssertEqual(slide["objectId"], .string("p1"))
+        XCTAssertEqual(slide["layout"], .string("Title and body"))
+        XCTAssertEqual(slide["notes"], .string("Say hello\n"))
+        XCTAssertEqual(slide["notesObjectId"], .string("p1-notes"))
+        let elements = try XCTUnwrap(slide["elements"]?.arrayValue)
+        XCTAssertEqual(elements.map { $0["kind"]?.stringValue }, ["shape", "shape", "image"])
+        XCTAssertEqual(elements[0]["placeholder"], .string("TITLE"))
+        XCTAssertEqual(elements[0]["text"], .string("Kickoff\n"))
+        XCTAssertNil(elements[0]["size"], "Positions only for one slide")
+        XCTAssertEqual(deck["slideCount"], .integer(2))
+        let long = try json(try await call(center, "drive_read_presentation", ["presentationId": .string("deck-long")]))
+        let nextSlide = try XCTUnwrap(long["nextStartSlide"].flatMap { GoogleToolArguments.integer($0) })
+        XCTAssertEqual(long["slides"]?.arrayValue?.count, nextSlide)
+        let rest = try json(try await call(center, "drive_read_presentation", ["presentationId": .string("deck-long"),
+                                                                               "startSlide": .integer(Int64(nextSlide))]))
+        XCTAssertEqual(rest["slides"]?.arrayValue?.first?["index"], .integer(Int64(nextSlide)))
+        let page = try json(try await call(center, "drive_read_slide_page", ["presentationId": .string("slides-1"), "pageId": .string("p2")]))
+        XCTAssertEqual(page["elements"]?.arrayValue?.first?["size"]?["width"]?["magnitude"], .integer(3_000_000))
+        XCTAssertEqual(page["layoutId"], .string("L1"))
+        // A thumbnail: its size, and the image, fetched with no Google token.
+        let thumbnail = try await call(center, "drive_read_slide_page_thumbnail", ["presentationId": .string("slides-1"), "pageId": .string("p1")])
+        XCTAssertFalse(thumbnail.isError, thumbnail.text)
+        XCTAssertEqual(google.calls("GET", "/v1/presentations/slides-1/pages/p1/thumbnail").last?.value("thumbnailProperties.thumbnailSize"),
+                       "MEDIUM")
+        XCTAssertEqual(thumbnail.content.last, .image(data: FakeGoogleWorkspace.pngBytes.base64EncodedString(), mimeType: "image/png"))
+        let fetched = try XCTUnwrap(google.calls("GET", "/p1.png").last)
+        XCTAssertNil(fetched.account, "No Authorization header to the image's address")
+        let created = try json(try await call(center, "drive_update_presentation", [
+            "presentationId": .string("app-deck"),
+            "requests": .array([.object(["createSlide": .object(["slideLayoutReference": .object(["predefinedLayout": .string("TITLE_AND_BODY")])])])])]))
+        XCTAssertEqual(created["replies"]?.arrayValue?.first?["createSlide"]?["objectId"], .string("new-slide"))
+    }
+
     private static func boundary(_ body: Data?) -> String? {
         guard let first = body.flatMap({ String(decoding: $0, as: UTF8.self).components(separatedBy: "\r\n").first }),
               first.hasPrefix("--") else { return nil }
@@ -525,7 +697,9 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         let (center, _) = try await signedIn()
         XCTAssertEqual(GoogleCalendarToolCatalog.approvalRequired,
                        ["create_event", "update_event", "delete_event", "respond_to_event"])
-        XCTAssertEqual(GoogleDriveToolCatalog.approvalRequired, ["create_file", "copy_file", "update_file"])
+        XCTAssertEqual(GoogleDriveToolCatalog.approvalRequired, ["create_file", "copy_file", "update_file", "update_doc",
+                                                                 "update_values", "update_formulas", "insert_dimension",
+                                                                 "update_spreadsheet", "update_presentation"])
         for tool in GoogleCalendarToolCatalog.tools + GoogleDriveToolCatalog.tools {
             let name = try XCTUnwrap(tool["name"]?.stringValue)
             let writes = GoogleCalendarToolCatalog.approvalRequired.contains(name) || GoogleDriveToolCatalog.approvalRequired.contains(name)
@@ -579,9 +753,34 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertTrue(file.detail.contains("a,b\n1,2"), file.detail)
         XCTAssertEqual(GoogleToolApproval.request(toolName: "mcp__yardlet__drive_update_file", input: .object([:]))?.title,
                        L10n.format("Allow Claude to change a file in %@'s Drive?", "person@example.test"))
+        // A change inside a Doc, Sheet, or Slides file: which file, the kinds of change, and what it writes.
+        let docCard = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__drive_update_doc", input: .object([
+            "documentId": .string("app-doc"),
+            "requests": .array([.object(["insertText": .object(["text": .string("New intro")])]),
+                                .object(["insertText": .object(["text": .string("More")])]),
+                                .object(["updateParagraphStyle": .object([:])])])
+        ])))
+        XCTAssertEqual(docCard.title, L10n.format("Allow Claude to change a document in %@'s Drive?", "person@example.test"))
+        for part in [L10n.format("File %@", "app-doc"), L10n.format("Changes: %@", "insertText ×2, updateParagraphStyle"), "New intro"] {
+            XCTAssertTrue(docCard.detail.contains(part), "\(part) in \(docCard.detail)")
+        }
+        let cells = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__drive_update_values", input: .object([
+            "spreadsheetId": .string("app-sheet"), "range": .string("Costs!A2:B2"),
+            "values": .array([.array([.string("servers"), .integer(120)])])
+        ])))
+        XCTAssertEqual(cells.title, L10n.format("Allow Claude to change a spreadsheet in %@'s Drive?", "person@example.test"))
+        XCTAssertTrue(cells.detail.contains(L10n.format("Range: %@", "Costs!A2:B2")), cells.detail)
+        XCTAssertTrue(cells.detail.contains("servers\t120"), cells.detail)
+        let rows = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__drive_insert_dimension", input: .object([
+            "spreadsheetId": .string("app-sheet"), "dimension": .string("ROWS"), "startIndex": .integer(1), "endIndex": .integer(3)
+        ])))
+        XCTAssertTrue(rows.detail.contains(L10n.format("Inserts %lld rows.", Int64(2))), rows.detail)
+        XCTAssertEqual(GoogleToolApproval.request(toolName: "mcp__yardlet__drive_update_presentation", input: .object([:]))?.title,
+                       L10n.format("Allow Claude to change a presentation in %@'s Drive?", "person@example.test"))
         XCTAssertNotNil(GoogleToolApproval.request(toolName: "mcp__yardlet__gmail_send_message", input: .object([:])),
                         "Gmail's cards come through the same place")
-        for read in ["mcp__yardlet__calendar_list_events", "mcp__yardlet__drive_read_file_content",
+        for read in ["mcp__yardlet__calendar_list_events", "mcp__yardlet__drive_read_file_content", "mcp__yardlet__drive_read_doc",
+                     "mcp__yardlet__drive_get_values", "mcp__yardlet__drive_read_slide_page_thumbnail",
                      "mcp__claude_ai_Google_Calendar__create_event"] {
             XCTAssertNil(GoogleToolApproval.request(toolName: read, input: .object([:])), read)
         }

@@ -80,6 +80,8 @@ struct ConversationTimeline: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conversationFind) private var find
+    /// A place in this conversation another view asked to show (a file's related task's call).
+    @Environment(\.conversationPlace) private var place
     /// The task's folder, which a transcript's file changes are read against.
     @Environment(\.transcriptWorkspaceURL) private var transcriptWorkspaceURL
 
@@ -188,6 +190,24 @@ struct ConversationTimeline: View {
                     focusedTurnID = targetTurnID
                     withAnimation(ParityMotion.easeInOut(reduceMotion: reduceMotion)) {
                         proxy.scrollTo(targetTurnID, anchor: .center)
+                    }
+                }
+                // A call another view asked for (a file's related task): the turn holding it, at its top,
+                // widening the window to it first as a history result does.
+                .task(id: place?.request.id) {
+                    guard placement == .task, let place else { return }
+                    defer { place.done() }
+                    guard let targetTurnID = Self.turn(holding: place.request.callID, in: whole) else { return }
+                    readingTracker.cancelRestoration()
+                    scrollState.isFollowing = false
+                    focusedTurnID = targetTurnID
+                    if let window, window.hides(targetTurnID, in: whole) { earliestReadTurnID = targetTurnID }
+                    // Once the widened window is drawn, and again once the place kept as its turns arrived
+                    // above has settled, as find goes to a match.
+                    for delay in [30, 120] {
+                        try? await Task.sleep(for: .milliseconds(delay))
+                        guard !Task.isCancelled else { return }
+                        proxy.scrollTo(targetTurnID, anchor: .top)
                     }
                 }
             }
@@ -300,6 +320,22 @@ struct ConversationTimeline: View {
     private var historySelection: CodexHistorySearchSelection? {
         if case let .codex(_, _, selection) = source { return selection }
         return nil
+    }
+
+    /// The turn holding the call the provider named `callID`: a Codex item, or a transcript's activity.
+    static func turn(holding callID: String, in presentation: ConversationPresentation) -> String? {
+        presentation.turns.first { turn in
+            [turn.prompt, turn.notices, turn.work, turn.answers].contains { items in
+                items.contains { item in
+                    switch item.source {
+                    case let .codex(codexItem, _): return codexItem.id == callID
+                    case let .transcript(entry):
+                        if case let .activity(activity, _) = entry.content { return activity.id == callID }
+                        return false
+                    }
+                }
+            }
+        }?.id
     }
 
     /// The first turn holding an item the opened history result matches.

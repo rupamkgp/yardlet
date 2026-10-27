@@ -54,6 +54,10 @@ struct DiffPane: View {
     @State private var loadedRepository: URL?
     /// The top folder of the loaded repository, which the diff's paths are relative to.
     @State private var loadedRoot: URL?
+    /// What the shown git scope compared, which a Markdown file's rendered view reads its file from.
+    @State private var shownTarget: GitDiffTarget?
+    /// The tasks that edited or read the selected file.
+    @State private var fileTasks = FileTasks()
     @State private var isMutating = false
     @State private var discardRequest: GitDiscardRequest?
     @FocusState private var isRefreshFocused: Bool
@@ -238,9 +242,13 @@ struct DiffPane: View {
                         .help(selectedFile?.path ?? "")
                         if let file = selectedFile {
                             DiffFileContent.summary(file)
+                            if let preview = markdownPreview(for: file) { MarkdownReviewToggle(isOn: preview.isOn) }
                         }
                     }
                     .padding(10)
+                    if !fileTasks.isEmpty {
+                        FileTasksLine(tasks: fileTasks).padding(.horizontal, 10).padding(.bottom, 8)
+                    }
                     Divider()
                 }
                 HStack(spacing: 0) {
@@ -253,7 +261,9 @@ struct DiffPane: View {
                             file: file, width: proxy.size.width - (proxy.size.width >= 620 ? 201 : 0),
                             showsHeader: proxy.size.width >= 620,
                             commentRoot: comments == nil ? nil : commentRoot,
-                            comments: comments ?? .constant([])
+                            comments: comments ?? .constant([]),
+                            markdownPreview: markdownPreview(for: file),
+                            fileTasks: fileTasks
                         )
                         .id(file.path)
                     }
@@ -266,6 +276,16 @@ struct DiffPane: View {
                 }
             }
         }
+        // Read again with each load, so a refresh also brings the tasks that touched the file since.
+        .loadsFileTasks(for: isLoading ? nil : selectedFileURL, refresh: requestID.uuidString, into: $fileTasks)
+    }
+
+    /// The selected file where it is: in the repository's top folder for the git scopes, in the task's
+    /// folder for Last turn (or where the call named it).
+    private var selectedFileURL: URL? {
+        guard let file = selectedFile else { return nil }
+        if file.path.hasPrefix("/") { return URL(filePath: file.path) }
+        return (review.scope == .lastTurn ? workspaceURL : loadedRoot ?? workspaceURL).appending(path: file.path)
     }
 
     private var fileList: some View {
@@ -306,6 +326,53 @@ struct DiffPane: View {
         let root = review.scope == .lastTurn ? workspaceURL : loadedRoot ?? workspaceURL
         let path = root.standardizedFileURL.path(percentEncoded: false)
         return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+    }
+
+    /// A Markdown file's rendered view (`MarkdownReviewDiff`): its change read against the file the
+    /// shown diff left, which the working tree holds for Unstaged and Last turn and the repository
+    /// for the other scopes. Nil for any other file.
+    private func markdownPreview(for file: DiffFile) -> DiffMarkdownPreview? {
+        guard MarkdownReviewDiff.isMarkdown(file.path), !file.isBinary, let scope = shownScope,
+              scope == .lastTurn || shownTarget != nil else { return nil }
+        let sections = snapshot.files.filter { $0.path == file.path }
+        let root = scope == .lastTurn ? workspaceURL : loadedRoot ?? workspaceURL
+        let fileURL = file.newPath.map { $0.hasPrefix("/") ? URL(filePath: $0) : root.appending(path: $0) }
+        let repository = loadedRepository ?? root
+        let target = shownTarget
+        return DiffMarkdownPreview(
+            isOn: Binding(get: { review.rendersMarkdown == true }, set: { review.rendersMarkdown = $0 ? true : nil }),
+            loadID: "\(scope.rawValue)|\(String(describing: target))|\(file.path)|\(sections.hashValue)",
+            documentFolder: (fileURL ?? root.appending(path: file.path)).deletingLastPathComponent(),
+            load: {
+                let new: String?
+                if let path = file.newPath {
+                    switch target {
+                    case nil, .unstaged?:
+                        new = fileURL.flatMap(Self.workingText)
+                    case .staged?:
+                        new = try? await GitDiffService().fileText(workspaceURL: repository, revision: "", path: path)
+                    case let .commit(hash)?:
+                        new = try? await GitDiffService().fileText(workspaceURL: repository, revision: hash, path: path)
+                    case .branch?:
+                        new = try? await GitDiffService().fileText(workspaceURL: repository, revision: "HEAD", path: path)
+                    }
+                } else {
+                    // The change took the whole file out.
+                    new = ""
+                }
+                return await Task.detached(priority: .userInitiated) {
+                    MarkdownReviewDiff.outcome(new: new, sections: sections, afterTurn: scope == .lastTurn)
+                }.value
+            }
+        )
+    }
+
+    /// A file in the working tree as the diff reads one, within the diff's own limit.
+    nonisolated private static func workingText(_ url: URL) -> String? {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true, (values.fileSize ?? 0) <= lastTurnByteLimit,
+              let data = try? Data(contentsOf: url) else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private var statusText: String? {
@@ -366,11 +433,14 @@ struct DiffPane: View {
             var resolved = review
             let repository = resolved.resolveRepository(among: found, workspaceURL: workspaceURL)
             var title: String?
+            var target: GitDiffTarget?
             let result: DiffSnapshot
             switch scope {
             case .unstaged:
+                target = .unstaged
                 result = try await service.load(workspaceURL: repository, target: .unstaged)
             case .staged:
+                target = .staged
                 result = try await service.load(workspaceURL: repository, target: .staged)
             case .commit:
                 let listed = try await service.recentCommits(workspaceURL: repository)
@@ -378,6 +448,7 @@ struct DiffPane: View {
                 guard requestID == ticket else { return }
                 commits = listed
                 if let commit = resolved.resolveCommit(among: listed) {
+                    target = .commit(commit.id)
                     result = try await service.load(workspaceURL: repository, target: .commit(commit.id))
                 } else {
                     result = DiffSnapshot(lines: [], isTruncated: false)
@@ -386,6 +457,7 @@ struct DiffPane: View {
             case .branch:
                 switch try await service.baseBranch(workspaceURL: repository) {
                 case let .found(base):
+                    target = .branch(base: base)
                     result = try await service.load(workspaceURL: repository, target: .branch(base: base))
                 case .missing:
                     result = DiffSnapshot(lines: [], isTruncated: false)
@@ -404,6 +476,7 @@ struct DiffPane: View {
             loadedRepository = repository
             loadedRoot = root ?? repository
             shownScope = scope
+            shownTarget = target
             emptyTitle = title
             isNotRepository = false
             // A remembered repository or commit that no longer exists is cleared without notice.
@@ -439,6 +512,7 @@ struct DiffPane: View {
         guard requestID == ticket, review.scope == .lastTurn else { return }
         snapshot = result
         shownScope = .lastTurn
+        shownTarget = nil
         errorMessage = nil
         isLoading = false
         emptyTitle = diff == nil ? L10n.string("No turns yet") : nil

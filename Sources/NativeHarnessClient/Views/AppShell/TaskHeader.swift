@@ -23,6 +23,11 @@ struct TaskHeaderActions {
     /// The pull request the task made (`TaskPullRequestMonitor`), shown beside the harness.
     var pullRequest: (SessionRecord) -> TaskPullRequest? = { _ in nil }
     var onOpenPullRequest: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// The ports the task's processes listen on (`TaskResourceMonitor.servers(of:)`), after its pull
+    /// request; read in the header's body, so a server starting redraws only that header.
+    var servers: (SessionRecord) -> [TaskServerPort] = { _ in [] }
+    /// Opens a server in the task's browser.
+    var onOpenServer: (SessionRecord, TaskServerPort) -> Void = { _, _ in }
 }
 
 /// A task's title, which opens the task's actions, its harness, its pull request and its state.
@@ -34,7 +39,10 @@ struct TaskHeaderIdentity: View {
 
     var body: some View {
         HStack(spacing: compact ? 7 : 9) {
+            // The title is offered its width before the status's servers (`TaskServersLink`), and the status
+            // keeps the room its harness and pull request need, as before.
             TaskTitleMenu(session: session, actions: actions, size: compact ? 12 : 13)
+                .layoutPriority(1)
             TaskHeaderStatus(session: session, actions: actions, compact: compact)
         }
     }
@@ -110,8 +118,24 @@ struct TaskHeaderStatus: View {
     let actions: TaskHeaderActions
     var compact = false
     var showsHarness = true
+    @AppStorage(TaskServersPreference.key) private var showsServers = true
 
     var body: some View {
+        let servers = showsServers ? actions.servers(session) : []
+        if servers.isEmpty {
+            row(servers: servers, extent: .none)
+        } else {
+            // The status takes the room the title leaves (`TaskHeaderIdentity`): in a narrow header the
+            // servers' list goes first, then the address, and the harness and pull request stay.
+            ViewThatFits(in: .horizontal) {
+                row(servers: servers, extent: .all)
+                row(servers: servers, extent: .first)
+                row(servers: servers, extent: .none)
+            }
+        }
+    }
+
+    private func row(servers: [TaskServerPort], extent: TaskServersLink.Extent) -> some View {
         HStack(spacing: compact ? 7 : 9) {
             if showsHarness {
                 HarnessIdentityLabel(harness: session.harness, size: compact ? 13 : 14)
@@ -122,8 +146,96 @@ struct TaskHeaderStatus: View {
             if let pullRequest = actions.pullRequest(session) {
                 TaskPullRequestBadgeView(badge: TaskPullRequestBadge(pullRequest), onOpen: actions.onOpenPullRequest)
             }
+            if extent != .none {
+                TaskServersLink(servers: servers, listsOthers: extent == .all, compact: compact) {
+                    actions.onOpenServer(session, $0)
+                }
+            }
             TaskHeaderActivity(status: session.status)
         }
+    }
+}
+
+/// The servers a task's processes run, after its pull request, as plain text: "localhost:3000",
+/// which opens it in the task's browser (the Claude app names its preview's server "localhost:3000"
+/// the same way). With more than one, "and 1 more" beside it lists them all, each with the process
+/// listening. Nothing shows without one, or with Settings › General's "Show servers tasks start" off.
+struct TaskServersLink: View {
+    /// All of them (the first and the list), the first alone, or none, by the header's room.
+    enum Extent { case all, first, none }
+
+    let servers: [TaskServerPort]
+    var listsOthers = true
+    var compact = false
+    let onOpen: (TaskServerPort) -> Void
+
+    @Environment(\.yardletInterfaceScale) private var interfaceScale
+    @State private var isHovered = false
+
+    var body: some View {
+        if let first = servers.first {
+            links(first)
+        }
+    }
+
+    private func links(_ first: TaskServerPort) -> some View {
+        HStack(spacing: 6) {
+            Button { onOpen(first) } label: { label(first) }
+                .buttonStyle(.plain)
+                .onHover { isHovered = $0 }
+                .parityPointer()
+                .help(help)
+                .accessibilityLabel(L10n.format("Open %@ in this task's browser", first.address))
+                .accessibilityAddTraits(.isLink)
+            if listsOthers, servers.count > 1 {
+                Menu {
+                    ForEach(servers, id: \.port) { server in
+                        Button(Self.line(server)) { onOpen(server) }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(L10n.format("and %lld more", servers.count - 1))
+                            .font(.system(size: (compact ? 11 : 11.5) * interfaceScale))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: (compact ? 8 : 8.5) * interfaceScale, weight: .semibold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                // SwiftUI draws the label, so it reads as the address beside it.
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .parityPointer()
+                .help(help)
+                .accessibilityLabel(L10n.string("This task's servers"))
+            }
+        }
+        .fixedSize()
+    }
+
+    private func label(_ first: TaskServerPort) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "globe")
+                .font(.system(size: (compact ? 10 : 10.5) * interfaceScale))
+            Text(first.address)
+                .font(.system(size: (compact ? 11 : 11.5) * interfaceScale))
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .foregroundStyle(isHovered ? .primary : .secondary)
+        .contentShape(Rectangle())
+    }
+
+    /// Each server and the process listening on it, then what pressing does.
+    private var help: String {
+        let lines = servers.map { "\(Self.line($0)) (PID \($0.processID))" }
+        return (lines + [L10n.string("Opens in this task's browser")]).joined(separator: "\n")
+    }
+
+    /// "localhost:3000 · node", or the address alone when the process's name could not be read.
+    static func line(_ server: TaskServerPort) -> String {
+        server.processName.isEmpty ? server.address : "\(server.address) · \(server.processName)"
     }
 }
 

@@ -17,6 +17,17 @@ struct DiffLineSelection: Equatable, Sendable {
     }
 }
 
+/// A Markdown file's rendered view in the review (`MarkdownReviewDiff`): whether it is on, and how
+/// the change is read.
+struct DiffMarkdownPreview {
+    var isOn: Binding<Bool>
+    /// Changes whenever what `load` reads does: the scope, the file and its diff.
+    let loadID: String
+    /// The file's folder, which the document's relative links are read against.
+    let documentFolder: URL?
+    let load: @MainActor () async -> MarkdownReviewDiff.Outcome
+}
+
 /// One file of the review's diff, line by line, with its diff comments under their lines.
 ///
 /// As in the Codex app's diff (`code-diff`, `use-diff-annotations`): pointing at a line shows a "+" in
@@ -32,35 +43,81 @@ struct DiffFileContent: View {
     let commentRoot: String?
     @Binding var comments: [DiffComment]
 
+    /// A Markdown file's rendered view; nil for any other file.
+    let markdownPreview: DiffMarkdownPreview?
+    /// The tasks that edited or read the file, under its name in the header.
+    let fileTasks: FileTasks
+
     @State private var newComment: DiffLineSelection?
     @State private var selection: DiffLineSelection?
     @State private var hoveredLineID: Int?
+    @State private var markdownOutcome: MarkdownReviewDiff.Outcome?
     @Environment(\.yardletInterfaceScale) private var interfaceScale
 
     init(file: DiffFile, width: CGFloat, showsHeader: Bool, commentRoot: String?,
-         comments: Binding<[DiffComment]>, newComment: DiffLineSelection? = nil) {
+         comments: Binding<[DiffComment]>, newComment: DiffLineSelection? = nil,
+         markdownPreview: DiffMarkdownPreview? = nil, fileTasks: FileTasks = FileTasks()) {
         self.file = file
         self.width = width
         self.showsHeader = showsHeader
         self.commentRoot = commentRoot
+        self.markdownPreview = markdownPreview
+        self.fileTasks = fileTasks
         _comments = comments
         _newComment = State(initialValue: newComment)
         _selection = State(initialValue: newComment)
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if showsHeader {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(file.path).font(.callout.weight(.semibold)).textSelection(.enabled)
+                            .lineLimit(2).truncationMode(.middle).help(file.path)
+                        Self.summary(file)
+                        if !fileTasks.isEmpty { FileTasksLine(tasks: fileTasks) }
+                    }
+                    Spacer(minLength: 0)
+                    if let markdownPreview { MarkdownReviewToggle(isOn: markdownPreview.isOn) }
+                }.padding(12)
+                Divider()
+            }
+            if let markdownPreview, markdownPreview.isOn.wrappedValue {
+                switch markdownOutcome {
+                case nil:
+                    ProgressView(L10n.string("Loading preview…"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case let .rows(rows)?:
+                    MarkdownReviewView(rows: rows, documentFolder: markdownPreview.documentFolder)
+                case let .unavailable(message)?:
+                    Label(message, systemImage: "doc.richtext")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ParityTheme.subtleFill)
+                    lines
+                }
+            } else {
+                lines
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: markdownPreview.flatMap { $0.isOn.wrappedValue ? $0.loadID : nil }) {
+            guard let markdownPreview, markdownPreview.isOn.wrappedValue else { return }
+            markdownOutcome = nil
+            let outcome = await markdownPreview.load()
+            guard !Task.isCancelled else { return }
+            markdownOutcome = outcome
+        }
+    }
+
+    /// The file's diff line by line, with its comments under their lines.
+    @ViewBuilder
+    private var lines: some View {
         let maxLine = file.lines.reduce(0) { max($0, $1.oldLine ?? 0, $1.newLine ?? 0) }
         let gutterWidth = max(38, CGFloat(String(maxLine).count) * 7 * interfaceScale + 14)
         let shown = shownComments
         VStack(alignment: .leading, spacing: 0) {
-            if showsHeader {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(file.path).font(.callout.weight(.semibold)).textSelection(.enabled)
-                        .lineLimit(2).truncationMode(.middle).help(file.path)
-                    Self.summary(file)
-                }.padding(12)
-                Divider()
-            }
             HStack(spacing: 0) {
                 Text(L10n.string("Old")).frame(width: gutterWidth)
                 Text(L10n.string("New")).frame(width: gutterWidth)
@@ -86,7 +143,6 @@ struct DiffFileContent: View {
                 .defaultScrollAnchor(.topLeading, for: .alignment)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Lines

@@ -17,6 +17,13 @@
     <!-- Programs in the terminal, as VS Code, Cursor and cmux allow theirs; both harness apps have it. -->
     <key>com.apple.security.device.camera</key>
     <true/>
+    <!-- The Apple Calendar, Reminders, and Contacts connectors (EventKit and Contacts in Yardlet itself,
+         asked once when the person turns one on), and commands that use them, as osascript to Calendar.
+         Reminders come under calendars. -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+    <key>com.apple.security.personal-information.addressbook</key>
+    <true/>
     <!-- The browser host's passkey Bluetooth is attributed to Yardlet, the app that launches it. -->
     <key>com.apple.security.device.bluetooth</key>
     <true/>

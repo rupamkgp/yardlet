@@ -157,15 +157,22 @@ void yardlet_cef_quit_message_loop(void);
 void yardlet_cef_shutdown(void);
 
 /// Creates a windowless browser for `tab`. sharedTexture asks CEF for IOSurface paints
-/// (on_accelerated_paint) instead of CPU buffers. Returns 1 on success, 0 on failure, and 2 when the
-/// profile is still loading: the browser is made at `url` once it has (YardletCEFEventProfileReady), and
-/// closing the tab before that only lets it go.
+/// (on_accelerated_paint) instead of CPU buffers. Returns 1 on success, 0 on failure, -1 when
+/// yardlet_cef_browser_limit browsers are open, and 2 when the profile is still loading: the browser is
+/// made at `url` once it has (YardletCEFEventProfileReady), and closing the tab before that only lets it go.
 /// profilePath: the request context's cache folder (a direct child of the root cache: Chromium makes a
 /// profile in memory for any other folder), or empty for the global context. Browsers with the same path
 /// share one context: cookies, storage and cache.
 int yardlet_cef_create_browser(int tab, const char *url, double width, double height, double scale,
                                double screenX, double screenY, int frameRate, int sharedTexture,
                                const char *profilePath);
+/// The most browsers open at once, every tab's and popup's together.
+int yardlet_cef_browser_limit(void);
+/// Lowers that limit (QA runs only); a limit outside 1 to the table's size is ignored.
+void yardlet_cef_set_browser_limit(int limit);
+/// Gives up on `tab`'s browser while it still waits for its profile: none was made, and its slot and
+/// context go without YardletCEFEventProfileReady. Returns 1 when it was waiting.
+int yardlet_cef_cancel_waiting_browser(int tab);
 /// frameRate: the display's refresh rate (1...240); 0 keeps the current one.
 void yardlet_cef_set_viewport(int tab, double width, double height, double scale, double screenX,
                               double screenY, int frameRate);
@@ -192,6 +199,20 @@ int yardlet_cef_open_browser_count(void);
 /// emits YardletCEFEventCookiesCopied with `request`. A host-only cookie stays host-only; a partitioned
 /// cookie is left out, since CEF cannot set one. Returns 0 when the copy could not start.
 int yardlet_cef_copy_cookies(int request, const char *fromPath, const char *toPath, const char *domain);
+/// A cookie another browser keeps, as Chromium stores it: `domain` with a leading dot for a domain cookie and
+/// the host alone for a host-only one; `same_site` and `priority` as CEF's (cef_cookie_same_site_t,
+/// cef_cookie_priority_t); `expires` in microseconds since 1601, as Chromium's times, when `has_expires`.
+typedef struct {
+    const char *name, *value, *domain, *path;
+    int secure, httponly, same_site, priority, has_expires;
+    int64_t expires;
+} YardletCEFCookie;
+/// Replaces the cookies of `sites` (each a domain with its subdomains) in one request context (an empty path is
+/// the global context) with `cookies`: deletes the context's cookies of those sites, sets these as
+/// `yardlet_cef_copy_cookies` sets a copy's, then flushes the store and emits YardletCEFEventCookiesCopied with
+/// `request`. Returns 0 when it could not start.
+int yardlet_cef_import_cookies(int request, const char *toPath, const char *const *sites, int siteCount,
+                               const YardletCEFCookie *cookies, int count);
 
 void yardlet_cef_load_url(int tab, const char *url);
 /// 0 back, 1 forward, 2 reload, 3 stop.

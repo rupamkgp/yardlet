@@ -421,6 +421,11 @@ struct NativeHarnessClientApp: App {
                     MacAgentToolService.shared.broker.suggestions = model
                     MacAgentToolService.shared.broker.sessions = model
                     MacAgentToolService.shared.broker.schedules = model
+                    MacAgentToolService.shared.broker.handoffs = model
+                    MacBrowserHost.shared.client.onChromiumWindowOverHiddenTab = { [weak model] tab in
+                        guard let session = tab.session else { return }
+                        model?.showBrowserTab(tab.key, under: session)
+                    }
                     MacAgentToolService.shared.broker.isTaskInTurn = { [weak model] in model?.isInTurn($0) ?? false }
                     if !model.usesVisualFixture {
                         // A finished subagent's conversation is kept with its task in Yardlet's own folder.

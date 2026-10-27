@@ -73,6 +73,13 @@ final class BrowserHostProtocolTests: XCTestCase {
         XCTAssertEqual(external.tab, 3)
         XCTAssertEqual(try decoder.decode(BrowserHostEvent.self, from: Data(#"{"newDocument":{"tab":3,"url":"https://a.test/"}}"#.utf8)),
                        .newDocument(tab: 3, url: "https://a.test/"))
+        // Chromium's own windows over their tabs (BROWSER_HOST section 3, "Chromium's windows").
+        XCTAssertEqual(try json(BrowserHostCommand.presentChromiumWindows(placements: [
+            BrowserChromiumWindowPlacement(window: 7, frame: BrowserRect(x: 10, y: 20, width: 300, height: 200), above: 3),
+            BrowserChromiumWindowPlacement(window: 8, above: 3)
+        ])), #"{"presentChromiumWindows":{"placements":[{"above":3,"frame":{"height":200,"width":300,"x":10,"y":20},"window":7},{"above":3,"window":8}]}}"#)
+        XCTAssertEqual(try json(BrowserHostCommand.closeChromiumWindows(tabs: [4])), #"{"closeChromiumWindows":{"tabs":[4]}}"#)
+        XCTAssertEqual(try json(BrowserHostCommand.closeChromiumWindows(tabs: nil)), #"{"closeChromiumWindows":{}}"#)
     }
 
     func testEventsDecodeFromHostJSON() throws {
@@ -104,7 +111,9 @@ final class BrowserHostProtocolTests: XCTestCase {
         XCTAssertEqual(try decode(#"{"chromiumWindow":{"isShown":false}}"#), .chromiumWindow(isShown: false, titles: nil))
         XCTAssertEqual(try decode(#"{"chromiumWindow":{"isShown":true,"titles":["로그인"],"kinds":["signIn"]}}"#),
                        .chromiumWindow(isShown: true, titles: ["로그인"], kinds: ["signIn"]))
-        XCTAssertNil(shown.tab, "the passkey dialog belongs to the host, not a tab")
+        XCTAssertEqual(try decode(#"{"chromiumWindow":{"isShown":true,"titles":["패스키","Print"],"kinds":["passkey","print"],"ids":[41,42],"tabs":[3,-1]}}"#),
+                       .chromiumWindow(isShown: true, titles: ["패스키", "Print"], kinds: ["passkey", "print"], ids: [41, 42], tabs: [3, -1]))
+        XCTAssertNil(shown.tab, "the event goes to the client, which keeps each window's tab")
     }
 
     func testFrameReaderSplitsMessagesAcrossChunkBoundaries() throws {

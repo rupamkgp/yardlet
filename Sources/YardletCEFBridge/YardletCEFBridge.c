@@ -126,8 +126,11 @@ static void init_base(cef_base_ref_counted_t *base, size_t size) {
 }
 
 // MARK: - Browser table
+// One host holds every task's tabs and their pages' popups, up to 9 tabs a task (Yardlet's
+// maxTabsPerSession) for as many tasks as the person keeps open. Until 2026-10-27 the table held 16, and
+// once 16 were open no tab of any task opened (yardlet_cef_create_browser returns -1 then).
 
-enum { kMaximumBrowsers = 16 };
+enum { kMaximumBrowsers = 256 };
 
 typedef struct {
     int inUse;
@@ -147,6 +150,8 @@ typedef struct {
     /// the person (or a reload for the agent) can wait or end the renderer.
     cef_unresponsive_process_callback_t *unresponsive;
     double width, height, scale, screenX, screenY;
+    /// When the view's size or scale last changed (CLOCK_MONOTONIC seconds), for the frames captured across it.
+    double resizedAt;
     /// The windowless frame rate last given to CEF (the panel's display refresh rate).
     int frameRate;
     /// Yardlet's last focus command: a panel showing this tab has the keyboard.
@@ -167,6 +172,9 @@ typedef struct {
 } BrowserSlot;
 
 static BrowserSlot g_browsers[kMaximumBrowsers];
+/// The browsers made at most, popups included: kMaximumBrowsers, or fewer for a QA run
+/// (yardlet_cef_set_browser_limit).
+static int g_browser_limit = kMaximumBrowsers;
 enum { kWaitingForProfile = -2, kPopupPending = -3 };
 static void release_media_prompts(int tab);
 /// Tabs the host opens for pages' new windows; Yardlet numbers the tabs it opens from 1.
@@ -228,7 +236,8 @@ typedef struct {
     int ready;
 } ContextSlot;
 
-enum { kMaximumContexts = 32 };
+/// A context for every browser, and room for the contexts a cookie copy holds while it runs.
+enum { kMaximumContexts = kMaximumBrowsers + 32 };
 static ContextSlot g_contexts[kMaximumContexts];
 /// Each context's handler; its position in this table names the context.
 static cef_request_context_handler_t g_context_handlers[kMaximumContexts];
@@ -360,11 +369,15 @@ static BrowserSlot *slot_for_browser(cef_browser_t *browser) {
     return pending;
 }
 
+/// A slot for another browser, or NULL when g_browser_limit are in use.
 static BrowserSlot *free_slot(void) {
+    BrowserSlot *free = NULL;
+    int used = 0;
     for (int index = 0; index < kMaximumBrowsers; index++) {
-        if (!g_browsers[index].inUse) return &g_browsers[index];
+        if (g_browsers[index].inUse) used++;
+        else if (free == NULL) free = &g_browsers[index];
     }
-    return NULL;
+    return used < g_browser_limit ? free : NULL;
 }
 
 static BrowserSlot *slot_for_tab(int tab) {
@@ -599,6 +612,27 @@ static void CEF_CALLBACK render_on_paint(cef_render_handler_t *self, cef_browser
     YARDLET_RELEASE(browser);
 }
 
+static double monotonic_seconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
+
+// Chromium's capture makes its frames at the size the page last drew at, and the view's new size reaches the
+// page a frame later: in between, each frame holds the view's new size fit into the old one between black bars
+// (`content_rect` short of the frame, on every step of a resize, 136 of about 400 frames while a divider was
+// dragged). Shown, the page shrinks or loses its sides behind bars and jumps back; the panel keeps the frame
+// before it instead. A difference that lasts (the page held at another size than the view, as during an agent's
+// full-page screenshot) is shown once the view's size has stayed a second.
+static int is_resize_letterbox(cef_browser_t *browser, const cef_accelerated_paint_info_common_t *extra) {
+    if (extra->size < offsetof(cef_accelerated_paint_info_common_t, source_size)) return 0;
+    if (extra->content_rect.x == 0 && extra->content_rect.y == 0
+        && extra->content_rect.width == extra->coded_size.width
+        && extra->content_rect.height == extra->coded_size.height) return 0;
+    BrowserSlot *slot = slot_for_browser(browser);
+    return slot != NULL && monotonic_seconds() - slot->resizedAt < 1;
+}
+
 static void CEF_CALLBACK render_on_accelerated_paint(cef_render_handler_t *self,
                                                      cef_browser_t *browser,
                                                      cef_paint_element_type_t type,
@@ -606,6 +640,10 @@ static void CEF_CALLBACK render_on_accelerated_paint(cef_render_handler_t *self,
                                                      cef_rect_t const *dirty_rects,
                                                      const cef_accelerated_paint_info_t *info) {
     (void)self; (void)dirty_count; (void)dirty_rects;
+    if (info && type == PET_VIEW && is_resize_letterbox(browser, &info->extra)) {
+        YARDLET_RELEASE(browser);
+        return;
+    }
     if (g_callbacks.acceleratedPaint && info) {
         g_callbacks.acceleratedPaint(tab_of(browser), (int)type, info->shared_texture_io_surface,
                                      (int)info->format);
@@ -2169,14 +2207,8 @@ int yardlet_cef_create_browser(int tab, const char *url, double width, double he
                                double screen_x, double screen_y, int frame_rate, int shared_texture,
                                const char *profile_path) {
     if (g_library == NULL || slot_for_tab(tab) != NULL) return 0;
-    BrowserSlot *slot = NULL;
-    for (int index = 0; index < kMaximumBrowsers; index++) {
-        if (!g_browsers[index].inUse) {
-            slot = &g_browsers[index];
-            break;
-        }
-    }
-    if (slot == NULL) return 0;
+    BrowserSlot *slot = free_slot();
+    if (slot == NULL) return -1;
     int context_handle = acquire_context(profile_path);
     if (context_handle < 0) return 0;
     memset(slot, 0, sizeof(*slot));
@@ -2205,6 +2237,7 @@ void yardlet_cef_set_viewport(int tab, double width, double height, double scale
     int scale_changed = slot->scale != scale;
     int size_changed = slot->width != width || slot->height != height;
     int rate_changed = frame_rate > 0 && slot->frameRate != frame_rate;
+    if (size_changed || scale_changed) slot->resizedAt = monotonic_seconds();
     slot->width = width;
     slot->height = height;
     slot->scale = scale;
@@ -2240,17 +2273,29 @@ int yardlet_cef_unresponsive_action(int tab, int terminate) {
     return 1;
 }
 
-void yardlet_cef_close_browser(int tab) {
+int yardlet_cef_browser_limit(void) { return g_browser_limit; }
+
+void yardlet_cef_set_browser_limit(int limit) {
+    if (limit > 0 && limit <= kMaximumBrowsers) g_browser_limit = limit;
+}
+
+int yardlet_cef_cancel_waiting_browser(int tab) {
     BrowserSlot *slot = slot_for_tab(tab);
-    if (slot && slot->identifier == kWaitingForProfile) {
-        // Closed before its profile loaded: no browser was made, so the tab just goes.
-        int context = slot->contextHandle;
-        free(slot->waitingURL);
-        memset(slot, 0, sizeof(*slot));
-        release_context(context);
+    if (slot == NULL || slot->identifier != kWaitingForProfile) return 0;
+    int context = slot->contextHandle;
+    free(slot->waitingURL);
+    memset(slot, 0, sizeof(*slot));
+    release_context(context);
+    return 1;
+}
+
+void yardlet_cef_close_browser(int tab) {
+    // Closed before its profile loaded: no browser was made, so the tab just goes.
+    if (yardlet_cef_cancel_waiting_browser(tab)) {
         emit(tab, YardletCEFEventBeforeClose, NULL, NULL, 0);
         return;
     }
+    BrowserSlot *slot = slot_for_tab(tab);
     cef_browser_host_t *host = host_for_tab(tab);
     if (host == NULL) return;
     if (slot) slot->closing = 1;
@@ -2376,6 +2421,10 @@ int yardlet_cef_open_browser_count(void) {
 // one makes an unpartitioned cookie, which every top-level site would get; so the copy then asks the
 // source which of them each cookie's address gets, which CEF answers with unpartitioned cookies only,
 // and sets just those. The target's store is flushed, and the flush's completion reports the copy.
+// An import (another browser's sign-ins the person chose, docs/BROWSER_SESSION_ISOLATION.md 10) has no
+// source context: its cookies come from Yardlet, unpartitioned, and a first visitor deletes the target's
+// cookies of the chosen sites, so each site holds the other browser's cookies alone; they are then set
+// as a copy's are.
 
 typedef struct {
     cef_completion_callback_t callback;
@@ -2395,16 +2444,22 @@ typedef struct {
     int references;
     int request, sourceHandle, targetHandle;
     char *domain;
+    /// An import's sites, whose cookies the target loses first.
+    char **sites;
+    int siteCount;
     cef_cookie_manager_t *source, *target;
     SourceCookie *cookies;
     int count, capacity;
 } CookieCopy;
 
+/// What a visitor does: reads every source cookie, finds those an address gets, or deletes an import's sites'.
+enum { kVisitSource, kVisitAddress, kVisitImportSites };
+
 typedef struct {
     cef_cookie_visitor_t visitor;
     int references;
     CookieCopy *copy;
-    int lookup;
+    int mode;
 } CookieCopyVisitor;
 
 static void finish_cookie_copy(int request, int copied, int source, int target) {
@@ -2543,26 +2598,43 @@ static void cookie_copy_release_reference(CookieCopy *copy) {
         free(item->url);
     }
     free(copy->cookies);
+    for (int index = 0; index < copy->siteCount; index++) free(copy->sites[index]);
+    free(copy->sites);
     YARDLET_RELEASE(copy->source);
     YARDLET_RELEASE(copy->target);
     free(copy->domain);
     free(copy);
 }
 
-static void start_cookie_visitor(CookieCopy *copy, int lookup, const char *url);
+static void start_cookie_visitor(CookieCopy *copy, int mode, const char *url);
+
+/// The address a cookie is asked about and set at: its host, over https when it is Secure.
+static char *cookie_address(const char *domain, const char *path, int secure) {
+    const char *host = domain[0] == '.' ? domain + 1 : domain;
+    size_t size = strlen(host) + strlen(path) + 16;
+    char *url = malloc(size);
+    if (url) snprintf(url, size, "%s://%s%s", secure ? "https" : "http", host, path[0] ? path : "/");
+    return url;
+}
 
 static int CEF_CALLBACK cookie_copy_visit(cef_cookie_visitor_t *self, const cef_cookie_t *cookie, int count,
                                           int total, int *delete_cookie) {
     (void)count;
     (void)total;
-    (void)delete_cookie;
     CookieCopyVisitor *visitor = (CookieCopyVisitor *)self;
     CookieCopy *copy = visitor->copy;
     if (cookie == NULL) return 1;
     char *name = copy_string(&cookie->name);
     char *domain = copy_string(&cookie->domain);
     char *path = copy_string(&cookie->path);
-    if (visitor->lookup) {
+    if (visitor->mode == kVisitImportSites) {
+        for (int index = 0; index < copy->siteCount && domain[0] != '\0'; index++) {
+            if (cookie_domain_matches(domain, copy->sites[index])) {
+                *delete_cookie = 1;
+                break;
+            }
+        }
+    } else if (visitor->mode == kVisitAddress) {
         // This address gets the cookie, so it is not partitioned.
         for (int index = 0; index < copy->count; index++) {
             SourceCookie *item = &copy->cookies[index];
@@ -2578,11 +2650,8 @@ static int CEF_CALLBACK cookie_copy_visit(cef_cookie_visitor_t *self, const cef_
             copy->cookies = grown;
             copy->capacity = capacity;
         }
-        const char *host = domain[0] == '.' ? domain + 1 : domain;
-        size_t size = strlen(host) + strlen(path) + 16;
-        char *url = malloc(size);
+        char *url = cookie_address(domain, path, cookie->secure);
         if (url == NULL) goto done;
-        snprintf(url, size, "%s://%s%s", cookie->secure ? "https" : "http", host, path[0] ? path : "/");
         copy->cookies[copy->count++] = (SourceCookie){.cookie = *cookie, .name = name, .domain = domain, .path = path,
                                                       .value = copy_string(&cookie->value), .url = url};
         return 1;
@@ -2602,9 +2671,9 @@ static int CEF_CALLBACK cookie_copy_release(cef_base_ref_counted_t *self) {
     CookieCopyVisitor *visitor = (CookieCopyVisitor *)self;
     if (__atomic_sub_fetch(&visitor->references, 1, __ATOMIC_ACQ_REL) != 0) return 0;
     CookieCopy *copy = visitor->copy;
-    int lookup = visitor->lookup;
+    int mode = visitor->mode;
     free(visitor);
-    if (!lookup) {
+    if (mode == kVisitSource) {
         // Every source cookie was read: one question per address, while this visitor's reference keeps
         // the copy from ending under a question CEF answers at once.
         for (int index = 0; index < copy->count; index++) {
@@ -2612,7 +2681,7 @@ static int CEF_CALLBACK cookie_copy_release(cef_base_ref_counted_t *self) {
             for (int earlier = 0; earlier < index && !asked; earlier++) {
                 asked = strcmp(copy->cookies[earlier].url, copy->cookies[index].url) == 0;
             }
-            if (!asked) start_cookie_visitor(copy, 1, copy->cookies[index].url);
+            if (!asked) start_cookie_visitor(copy, kVisitAddress, copy->cookies[index].url);
         }
     }
     cookie_copy_release_reference(copy);
@@ -2627,13 +2696,14 @@ static int CEF_CALLBACK cookie_copy_has_at_least_one_ref(cef_base_ref_counted_t 
     return __atomic_load_n(&((CookieCopyVisitor *)self)->references, __ATOMIC_ACQUIRE) >= 1;
 }
 
-/// Hands CEF a visitor with its one reference, which holds one of the copy's: every source cookie, or
-/// (`lookup`) the unpartitioned ones `url` gets. CEF's last release of the visitor ends its part.
-static void start_cookie_visitor(CookieCopy *copy, int lookup, const char *url) {
+/// Hands CEF a visitor with its one reference, which holds one of the copy's: every source cookie, the
+/// unpartitioned ones `url` gets (`kVisitAddress`), or every cookie of an import's target, whose sites' it
+/// deletes (`kVisitImportSites`). CEF's last release of the visitor ends its part.
+static void start_cookie_visitor(CookieCopy *copy, int mode, const char *url) {
     CookieCopyVisitor *visitor = calloc(1, sizeof(*visitor));
     if (visitor == NULL) return;
     __atomic_add_fetch(&copy->references, 1, __ATOMIC_RELAXED);
-    *visitor = (CookieCopyVisitor){.references = 1, .copy = copy, .lookup = lookup};
+    *visitor = (CookieCopyVisitor){.references = 1, .copy = copy, .mode = mode};
     cef_base_ref_counted_t *base = &visitor->visitor.base;
     base->size = sizeof(visitor->visitor);
     base->add_ref = cookie_copy_add_ref;
@@ -2641,7 +2711,7 @@ static void start_cookie_visitor(CookieCopy *copy, int lookup, const char *url) 
     base->has_one_ref = cookie_copy_has_one_ref;
     base->has_at_least_one_ref = cookie_copy_has_at_least_one_ref;
     visitor->visitor.visit = cookie_copy_visit;
-    if (!lookup) {
+    if (mode != kVisitAddress) {
         copy->source->visit_all_cookies(copy->source, &visitor->visitor);
         return;
     }
@@ -2677,7 +2747,53 @@ int yardlet_cef_copy_cookies(int request, const char *from_path, const char *to_
     // This function's own reference, dropped once the first visitor is with CEF.
     *copy = (CookieCopy){.references = 1, .request = request, .sourceHandle = source, .targetHandle = target,
                          .domain = domain && domain[0] ? strdup(domain) : NULL, .source = reader, .target = writer};
-    start_cookie_visitor(copy, 0, NULL);
+    start_cookie_visitor(copy, kVisitSource, NULL);
+    cookie_copy_release_reference(copy);
+    return 1;
+}
+
+int yardlet_cef_import_cookies(int request, const char *to_path, const char *const *sites, int site_count,
+                               const YardletCEFCookie *cookies, int count) {
+    if (g_library == NULL || sites == NULL || site_count <= 0 || count < 0) return 0;
+    int target = acquire_context(to_path);
+    if (target < 0) return 0;
+    cef_request_context_t *context = context_reference(target);
+    cef_cookie_manager_t *manager = context ? context->get_cookie_manager(context, NULL) : NULL;
+    YARDLET_RELEASE_CONTEXT(context);
+    CookieCopy *copy = manager ? calloc(1, sizeof(*copy)) : NULL;
+    if (copy == NULL) {
+        YARDLET_RELEASE(manager);
+        release_context(target);
+        return 0;
+    }
+    // The visitor that deletes the sites' cookies reads the target: its manager is the copy's source and target,
+    // with a reference for each.
+    manager->base.add_ref(&manager->base);
+    *copy = (CookieCopy){.references = 1, .request = request, .targetHandle = target, .source = manager, .target = manager,
+                         .sites = calloc((size_t)site_count, sizeof(char *)),
+                         .cookies = count ? calloc((size_t)count, sizeof(SourceCookie)) : NULL};
+    for (int index = 0; copy->sites && index < site_count; index++) {
+        if (sites[index] && sites[index][0]) copy->sites[copy->siteCount++] = strdup(sites[index]);
+    }
+    for (int index = 0; copy->cookies && index < count; index++) {
+        const YardletCEFCookie *given = &cookies[index];
+        if (given->name == NULL || given->value == NULL || given->domain == NULL || given->domain[0] == '\0') continue;
+        const char *path = given->path && given->path[0] ? given->path : "/";
+        cef_cookie_t cookie;
+        memset(&cookie, 0, sizeof(cookie));
+        cookie.size = sizeof(cookie);
+        cookie.secure = given->secure;
+        cookie.httponly = given->httponly;
+        cookie.same_site = (cef_cookie_same_site_t)given->same_site;
+        cookie.priority = (cef_cookie_priority_t)given->priority;
+        cookie.has_expires = given->has_expires;
+        cookie.expires.val = given->expires;
+        copy->cookies[copy->count++] = (SourceCookie){
+            .cookie = cookie, .name = strdup(given->name), .value = strdup(given->value), .domain = strdup(given->domain),
+            .path = strdup(path), .url = cookie_address(given->domain, path, given->secure), .unpartitioned = 1};
+        copy->capacity = copy->count;
+    }
+    start_cookie_visitor(copy, kVisitImportSites, NULL);
     cookie_copy_release_reference(copy);
     return 1;
 }

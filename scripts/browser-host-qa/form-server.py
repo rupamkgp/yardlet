@@ -27,8 +27,10 @@ card checkout /checkout (a card form posting to /checkout/done), /checkout/addre
 /checkout/wallet (a wallet button's Payment Request) and the card issuer's check (3-D Secure) on another port
 reached as localhost, another site: /checkout/frame (in frames, posting to the issuer and back), /checkout/redirect
 (the whole page posts to the issuer and back) and /checkout/popup (a new window that answers window.opener), and
-a sign-in's cookie check across two sites, /cookie-check/start (COOKIE_SIGN_IN below), and for picking an element
-/pick (PICK below).
+a sign-in's cookie check across two sites, /cookie-check/start (COOKIE_SIGN_IN below), for picking an element
+/pick (PICK below), and for the agent's browser use /viewport (what the page sees of its screen size, device and color
+scheme, and a tap target), /frames (an open and a closed shadow root, a frame from this site and one from another that
+holds a frame from this site again) and /handoff (a check only the person passes).
 Each records what the page received in window.qa."""
 import time
 import argparse
@@ -746,6 +748,108 @@ def one_page_pdf():
 
 PDF = one_page_pdf()
 
+# Screen size checks: what the page sees of its viewport, device and color scheme, and a tap target near the
+# bottom right of a phone's screen whose clicks (and their pointer type) the page counts.
+VIEWPORT = '''<!doctype html>
+<html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Viewport</title>
+<style>
+  body { margin: 0; font: 16px -apple-system, sans-serif; background: white; color: black; }
+  @media (prefers-color-scheme: dark) { body { background: rgb(20, 20, 20); color: white; } }
+  #target { position: absolute; left: 255px; top: 700px; width: 100px; height: 60px; }
+</style>
+<h1>Viewport</h1>
+<button id="target">Tap target</button>
+<script>
+  window.qa = {clicks: 0, pointerTypes: []};
+  window.qa.read = () => ({width: innerWidth, height: innerHeight, ratio: devicePixelRatio,
+    coarse: matchMedia('(pointer: coarse)').matches, touch: 'ontouchstart' in window, touchPoints: navigator.maxTouchPoints,
+    dark: matchMedia('(prefers-color-scheme: dark)').matches, userAgent: navigator.userAgent,
+    mobile: !!(navigator.userAgentData && navigator.userAgentData.mobile)});
+  document.getElementById('target').addEventListener('click', () => window.qa.clicks++);
+  addEventListener('pointerdown', event => window.qa.pointerTypes.push(event.pointerType));
+</script>
+</html>'''
+
+# Resizing the panel: a page laid out for its width, with a red edge on its right that a frame shows where the page
+# ends, its width in large type and its columns by width. `?heavy=1` adds cards of text to lay out again each time.
+RESPONSIVE = '''<!doctype html>
+<html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Responsive</title>
+<style>
+  body { margin: 0; font: 16px -apple-system, sans-serif; background: white; color: black; }
+  #edge { position: fixed; top: 0; bottom: 0; right: 0; width: 4px; background: rgb(255, 0, 0); }
+  #width { font-size: 40px; margin: 16px; }
+  #cards { display: grid; gap: 8px; margin: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 480px) { #cards { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 720px) { #cards { grid-template-columns: 1fr 1fr 1fr; } }
+  .card { min-height: 60px; padding: 8px; background: rgb(0, 90, 200); color: white; }
+</style>
+<div id="edge"></div>
+<div id="width"></div>
+<div id="cards"></div>
+<script>
+  window.qa = {resizes: 0, columns: () => getComputedStyle(document.getElementById('cards')).gridTemplateColumns.split(' ').length};
+  const heavy = location.search.includes('heavy');
+  const text = 'A card whose words wrap again at every width the panel takes. ';
+  document.getElementById('cards').innerHTML = Array.from({length: heavy ? 3000 : 6},
+    (_, i) => `<div class="card">${i} ${heavy ? text.repeat(1 + i % 4) : ''}</div>`).join('');
+  const show = () => { document.getElementById('width').textContent = innerWidth + ' px'; };
+  addEventListener('resize', () => { window.qa.resizes++; show(); });
+  show();
+</script>
+</html>'''
+
+# Page reading across frames and shadow roots: an open and a closed shadow root, a frame from this site and one
+# from another (ISSUER, which in turn holds a frame from this site again). Each control reports to the top page,
+# which counts in window.qa what reached it.
+FRAMES = '''<!doctype html><meta charset="utf-8"><title>Frames</title>
+<style>body{font:16px -apple-system,sans-serif;margin:16px} iframe{display:block;margin:12px 0;border:1px solid #888}</style>
+<h1>Frames</h1>
+<div id="open-host"></div>
+<div id="closed-host"></div>
+<iframe id="same" title="Same site frame" src="/frames/inner" style="width:420px;height:90px"></iframe>
+<iframe id="cross" title="Card frame" src="ISSUER/frames/cross" style="width:460px;height:230px;margin-left:40px"></iframe>
+<script>
+  window.qa = {loaded: [], same: 0, cross: 0, nested: 0, shadow: 0, closed: 0, crossValue: '', shadowValue: ''};
+  addEventListener('message', event => {
+    const data = event.data || {};
+    if (data.loaded) window.qa.loaded.push(data.loaded);
+    if (data.clicked) window.qa[data.clicked]++;
+    if (data.value !== undefined) window.qa.crossValue = data.value;
+  });
+  const open = document.getElementById('open-host').attachShadow({mode: 'open'});
+  open.innerHTML = '<button id="shadow-button">Shadow button</button> <input aria-label="Shadow field">';
+  open.getElementById('shadow-button').addEventListener('click', () => window.qa.shadow++);
+  open.querySelector('input').addEventListener('input', event => window.qa.shadowValue = event.target.value);
+  const closed = document.getElementById('closed-host').attachShadow({mode: 'closed'});
+  closed.innerHTML = '<button>Closed shadow button</button>';
+  closed.querySelector('button').addEventListener('click', () => window.qa.closed++);
+</script>'''
+
+FRAMES_INNER = '''<!doctype html><meta charset="utf-8"><title>Same site frame</title>
+<body style="margin:8px;font:16px -apple-system,sans-serif">
+<button onclick="top.postMessage({clicked: 'same'}, '*')">Same-origin button</button>
+<script>top.postMessage({loaded: 'same'}, '*')</script></body>'''
+
+FRAMES_CROSS = '''<!doctype html><meta charset="utf-8"><title>Card frame</title>
+<body style="margin:12px;font:16px -apple-system,sans-serif">
+<button onclick="top.postMessage({clicked: 'cross'}, '*')">Cross-site button</button>
+<input aria-label="Card number" oninput="top.postMessage({value: this.value}, '*')">
+<iframe title="Nested frame" src="MERCHANT/frames/nested" style="display:block;width:300px;height:70px;margin-top:10px"></iframe>
+<script>top.postMessage({loaded: 'cross'}, '*')</script></body>'''
+
+FRAMES_NESTED = '''<!doctype html><meta charset="utf-8"><title>Nested frame</title>
+<body style="margin:8px;font:16px -apple-system,sans-serif">
+<button onclick="top.postMessage({clicked: 'nested'}, '*')">Nested button</button>
+<script>top.postMessage({loaded: 'nested'}, '*')</script></body>'''
+
+# A step only the person can take: a check the page passes once its button is pressed, after which the page
+# says "Verified".
+PERSON_CHECK = '''<!doctype html><meta charset="utf-8"><title>Handoff</title>
+<body style="font:16px -apple-system,sans-serif;margin:24px">
+<h1>Are you a person?</h1><p id="state">Waiting for verification</p>
+<button id="human" onclick="document.getElementById('state').textContent = 'Verified'">I am a person</button></body>'''
+
+
 def icon_png(color):
     """A 32-pixel page icon: a rounded square of one color with a white bar, for the side panel's tabs."""
     import struct, zlib
@@ -870,6 +974,20 @@ class Handler(BaseHTTPRequestHandler):
             payload = large_page().encode()
         elif self.path.startswith('/tall'):
             payload = TALL.encode()
+        elif self.path.startswith('/viewport'):
+            payload = VIEWPORT.encode()
+        elif self.path.startswith('/responsive'):
+            payload = RESPONSIVE.encode()
+        elif self.path.startswith('/frames/inner'):
+            payload = FRAMES_INNER.encode()
+        elif self.path.startswith('/frames/cross'):
+            payload = sites(FRAMES_CROSS).encode()
+        elif self.path.startswith('/frames/nested'):
+            payload = FRAMES_NESTED.encode()
+        elif self.path.startswith('/frames'):
+            payload = sites(FRAMES).encode()
+        elif self.path.startswith('/handoff'):
+            payload = PERSON_CHECK.encode()
         elif self.path.startswith('/pick'):
             payload = PICK.encode()
         elif self.path.startswith('/checkout/frame'):

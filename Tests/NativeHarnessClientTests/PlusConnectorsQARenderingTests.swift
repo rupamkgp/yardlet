@@ -232,12 +232,13 @@ final class PlusConnectorsQARenderingTests: XCTestCase {
         let directory = try WindowlessRender.directory(Self.directory)
         let center = try center([ConnectorsRenderingTests.records[0]])
         XCTAssertEqual(ConnectorSetupGuide.Kind.oneClick.presets.map(\.id),
-                       ["linear", "notion", "atlassian", "sentry", "asana", "clickup", "monday", "todoist", "airtable", "miro",
-                        "dropbox", "intercom", "zapier", "granola", "fireflies", "gamma", "gitlab", "supabase", "neon", "prisma",
-                        "netlify", "cloudflare", "posthog", "semgrep", "postman", "jam", "stripe", "paypal", "square", "webflow",
+                       ["linear", "notion", "apple-calendar", "apple-reminders", "apple-contacts", "atlassian", "sentry", "asana",
+                        "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "granola", "fireflies",
+                        "gamma", "xcode", "gitlab", "supabase", "neon", "prisma",
+                        "netlify", "cloudflare", "posthog", "semgrep", "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow",
                         "wix", "figma-desktop", "tavily", "exa", "huggingface", "context7", "deepwiki", "openai-docs",
                         "microsoft-learn", "aws-knowledge", "cloudflare-docs"])
-        XCTAssertEqual(ConnectorSetupGuide.Kind.key.presets.map(\.id), ["github", "browserbase"])
+        XCTAssertEqual(ConnectorSetupGuide.Kind.key.presets.map(\.id), ["github", "browserbase", "app-store-connect"])
         XCTAssertEqual(ConnectorSetupGuide.Kind.ownApp.presets.map(\.id), ["slack", "gmail", "google-calendar", "google-drive"])
         for preset in ConnectorSetupGuide.Kind.ownApp.presets {
             XCTAssertFalse(ConnectorSetupGuide.guide(for: preset)?.steps.isEmpty ?? true, preset.id)
@@ -249,6 +250,7 @@ final class PlusConnectorsQARenderingTests: XCTestCase {
             var start: ConnectorAddSheet.Start = .directory
             var showsOwnApps = false
             var expandedRow: String? = nil
+            var query = ""
             let expected: [String]
         }
         let github = try XCTUnwrap(ConnectorPreset.preset(id: "github"))
@@ -284,6 +286,8 @@ final class PlusConnectorsQARenderingTests: XCTestCase {
                             L10n.string("Turn on the Gmail, Calendar, and Drive APIs"),
                             L10n.format("Copy %@", L10n.string("Redirect URL")), L10n.string("Save"),
                             L10n.string("Sign in with Google")]),
+            // Mercury, read only: its row says so under its name.
+            Case(name: "add-directory-mercury", query: "Mercury", expected: ["Mercury", L10n.string("Read-only")]),
             Case(name: "add-custom-url", expandedRow: ConnectorAddSheet.customID,
                  expected: [L10n.string("Add by URL"), L10n.string("Sign-in details (optional)"), L10n.string("Add and connect")])
         ]
@@ -291,7 +295,7 @@ final class PlusConnectorsQARenderingTests: XCTestCase {
         for item in cases {
             func sheet() -> ConnectorAddSheet {
                 ConnectorAddSheet(center: center, start: item.start, showsOwnApps: item.showsOwnApps,
-                                  expandedRow: item.expandedRow, onClose: {})
+                                  expandedRow: item.expandedRow, query: item.query, onClose: {})
             }
             let captures = try WindowlessRender.hostedInBothAppearances(item.name, in: directory, size: size, passes: 10) { appearance in
                 sheet().environment(\.colorScheme, appearance.colorScheme)

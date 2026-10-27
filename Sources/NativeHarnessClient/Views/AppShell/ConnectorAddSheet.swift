@@ -36,6 +36,12 @@ struct ConnectorSetupGuide: Equatable {
             return ConnectorSetupGuide(steps: [], links: [
                 Link(title: L10n.string("Find your API key"), url: preset.setupURL!)
             ])
+        case "app-store-connect":
+            return ConnectorSetupGuide(steps: ConnectorSetupAssistant.appStoreConnect(opened: [], keyChosen: false)
+                .steps.map(\.title), links: [
+                    Link(title: L10n.string("Open App Store Connect"), url: ConnectorSetupAssistant.appStoreConnectKeys),
+                    Link(title: L10n.string("Apple's guide to API keys"), url: ConnectorSetupAssistant.appStoreConnectKeyGuide)
+                ])
         default:
             return nil
         }
@@ -53,8 +59,8 @@ struct ConnectorSetupGuide: Equatable {
         static func of(_ preset: ConnectorPreset, gitHubSignIn: Bool = false) -> Kind {
             if gitHubSignIn, preset.id == "github" { return .oneClick }
             return switch preset.signIn {
-            case .oauth, .none: .oneClick
-            case .token: .key
+            case .oauth, .none, .macPermission, .localApp: .oneClick
+            case .token, .appStoreConnectKey: .key
             case .registeredClient, .googleAccount: .ownApp
             }
         }
@@ -87,9 +93,13 @@ struct ConnectorSetupGuide: Equatable {
         if gitHubSignIn, preset.id == "github" { return L10n.string("Sign in with GitHub") }
         switch preset.id {
         case "figma-desktop": return L10n.string("Needs the Figma desktop app")
+        case "xcode": return L10n.string("Needs Xcode open with a project")
+        case "apple-calendar", "apple-reminders", "apple-contacts": return L10n.string("On this Mac · macOS asks once")
+        case "app-store-connect": return L10n.string("API key (.p8 file)")
         case "github": return L10n.string("Personal access token")
         case "browserbase": return L10n.string("API key")
         case "slack": return L10n.string("A Slack app made from Yardlet's manifest")
+        case "mercury": return L10n.string("Read-only")
         case "gmail", "google-calendar", "google-drive":
             return L10n.string("Your own Google OAuth app · personal and Workspace accounts")
         default: break
@@ -242,7 +252,7 @@ struct ConnectorAddSheet: View {
     private var directory: some View {
         let gitHubSignIn = center.canSignInToGitHub
         let oneClick = ConnectorSetupGuide.Kind.oneClick.presets(gitHubSignIn: gitHubSignIn)
-            .filter { ConnectorSetupGuide.matches($0, query: query) }
+            .filter { ConnectorSetupGuide.matches($0, query: query) && center.isAvailable($0) }
         let keys = ConnectorSetupGuide.Kind.key.presets(gitHubSignIn: gitHubSignIn)
             .filter { ConnectorSetupGuide.matches($0, query: query) }
         let googleSignsIn = googleBuiltIn && ConnectorSetupGuide.matchesGoogle(query: query)
@@ -422,9 +432,11 @@ struct ConnectorAddSheet: View {
 
     // MARK: Rows
 
-    /// A service added already; Gmail takes any number of accounts, so it is never "added".
+    /// A service added already; Gmail takes any number of accounts and App Store Connect any
+    /// number of keys, so neither is ever "added". Xcode and the Mac's data are once per Mac.
     private func isAdded(_ preset: ConnectorPreset) -> Bool {
-        guard preset.signIn != .googleAccount else { return false }
+        guard preset.signIn != .googleAccount, preset.signIn != .appStoreConnectKey else { return false }
+        if let service = preset.localService { return center.connectors.contains { $0.localService == service } }
         let address = MCPServerAddress.canonical(preset.serverURL)
         return center.connectors.contains { MCPServerAddress.canonical($0.serverURL) == address }
     }
@@ -457,6 +469,9 @@ struct ConnectorAddSheet: View {
                     case .oneClick:
                         Button(L10n.string("Connect")) { addOneClick(preset) }
                             .controlSize(.small)
+                    case .key where preset.signIn == .appStoreConnectKey:
+                        Button(L10n.string("Set up…")) { open(preset) }
+                            .controlSize(.small)
                     case .key:
                         Button(isOpen ? L10n.string("Cancel") : L10n.string("Connect")) { toggle(preset.id) }
                             .controlSize(.small)
@@ -485,6 +500,8 @@ struct ConnectorAddSheet: View {
         if preset.signIn == .googleAccount, !center.googleAccounts.isEmpty {
             return L10n.format("%lld Google accounts", Int64(center.googleAccounts.count))
         }
+        let keys = center.connectors.filter { $0.localService == .appStoreConnect }.count
+        if preset.signIn == .appStoreConnectKey, keys > 0 { return L10n.format("%lld keys", Int64(keys)) }
         return ConnectorSetupGuide.summary(preset, gitHubSignIn: center.canSignInToGitHub)
     }
 
@@ -586,6 +603,8 @@ struct ConnectorAddSheet: View {
             }
             if google {
                 GoogleSetupPage(center: center, showsSteps: showsGoogleSteps, service: preset.localService)
+            } else if preset.signIn == .appStoreConnectKey {
+                AppStoreConnectSetupPage(center: center)
             } else if preset.id == "slack" {
                 SlackSetupPage(center: center)
             } else if isAdded(preset) {

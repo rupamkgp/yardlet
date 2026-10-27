@@ -22,8 +22,9 @@ struct SideChatContext: Codable, Hashable, Sendable {
         let conversation = entries.compactMap { entry -> Message? in
             switch entry.content {
             case let .user(text, images):
-                // Name the request's images, as its text alone would leave them out.
-                let names = (images ?? []).map { $0.name ?? L10n.string("Image") }
+                // Name the request's images, as its text alone would leave them out, in English as other
+                // words Yardlet sends the model are (`UsageLimitContinuation`).
+                let names = (images ?? []).map { $0.name ?? "Image" }
                 // A bash-mode command reads as `! command` and its output, not as its tags.
                 let text = ClaudeBashMessage.readableText(of: text) ?? text
                 return Message(role: "user", text: ([text].filter { !$0.isEmpty } + names).joined(separator: "\n"))

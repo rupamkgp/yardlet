@@ -69,6 +69,9 @@ import XCTest
         roots.append(root)
         let store = ProviderConnectionStore()
         store.usesFixtureSnapshots = true
+        // The default login keeps the shared history, so the account with its own is left out of
+        // automatic assignment, and says so.
+        store.defaultLoginEnvironment = ["CLAUDE_CONFIG_DIR": root.appending(path: "shared").path]
         let now = Date()
         func account(_ name: String, sharesHistory: Bool = true) throws -> ProviderConnection {
             let home = root.appending(path: name)

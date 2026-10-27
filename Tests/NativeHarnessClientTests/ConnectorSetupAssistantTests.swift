@@ -71,11 +71,13 @@ final class ConnectorSetupAssistantTests: XCTestCase {
         XCTAssertEqual(fresh.current, .project)
         XCTAssertEqual(fresh.doneCount, 0)
         XCTAssertFalse(fresh.isComplete)
-        // Each console step opens its exact page; the APIs page turns all three on at once.
+        // Each console step opens its exact page; the APIs page turns the three services' APIs on at once,
+        // with the Docs, Sheets, and Slides APIs Drive's editing tools call.
         let links = Dictionary(uniqueKeysWithValues: fresh.steps.compactMap { step in step.link.map { (step.id, $0.url.absoluteString) } })
         XCTAssertEqual(links[.project], "https://console.cloud.google.com/projectcreate")
         XCTAssertEqual(links[.apis], "https://console.cloud.google.com/flows/enableapi?apiid="
-            + "gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com")
+            + "gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com,"
+            + "docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com")
         XCTAssertEqual(links[.consent], "https://console.cloud.google.com/auth/overview")
         XCTAssertEqual(links[.publish], "https://console.cloud.google.com/auth/audience")
         XCTAssertEqual(links[.scopes], "https://console.cloud.google.com/auth/scopes")

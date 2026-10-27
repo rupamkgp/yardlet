@@ -91,6 +91,10 @@ final class AgentToolBroker: AgentToolLaunchProviding {
             vault?.onTurnedOff = { [weak tools] in Task { await tools?.disarmAllPasskeys() } }
         }
     }
+    /// The app, which shows a tab the agent hands to the person and tells them (`browser_handoff`).
+    weak var handoffs: (any BrowserHandoffPresenting)? {
+        didSet { tools.handoffs = handoffs }
+    }
     private var endpointStarted = false
     /// Starts the endpoint the first time a task is injected; a failure leaves the task without tools.
     var startEndpoint: @MainActor () throws -> Void = {}
@@ -280,8 +284,10 @@ final class AgentToolBroker: AgentToolLaunchProviding {
         }
     }
 
-    /// The task's turn ended: a change held for it is told now.
+    /// The task's turn ended: what the agent set on its browser tabs for the turn goes, and a change to its tools
+    /// held for the turn is told now.
     func taskTurnEnded(_ localSessionID: UUID) {
+        Task { [tools] in await tools.taskTurnEnded(localSessionID) }
         guard toolListWatches[localSessionID] != nil else { return }
         Task { [weak self] in await self?.tellToolListChanges(to: localSessionID) }
     }

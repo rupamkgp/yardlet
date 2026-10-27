@@ -62,6 +62,11 @@ final class ConnectorIconStore {
 
     private func fetch(_ url: URL) async -> NSImage? {
         if url.scheme?.lowercased() == "data" { return Self.decodeDataURL(url).flatMap(Self.picture) }
+        // An app on this Mac (Calendar, Xcode): the icon macOS gives it, which no network serves.
+        if url.isFileURL {
+            let path = url.path(percentEncoded: false)
+            return path.hasSuffix(".app") && FileManager.default.fileExists(atPath: path) ? NSWorkspace.shared.icon(forFile: path) : nil
+        }
         let file = environment.directory?.appending(path: Self.fileName(for: url))
         let miss = file?.appendingPathExtension("miss")
         if let file, let data = try? Data(contentsOf: file), let image = Self.picture(data) { return image }

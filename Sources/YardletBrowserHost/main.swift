@@ -189,6 +189,9 @@ let initialized = layout.cefFramework.path(percentEncoded: false).withCString { 
     }
 }
 guard initialized == 1 else { fail("cef_initialize returned \(initialized)") }
+#if DEBUG
+if arguments.browserLimit > 0 { yardlet_cef_set_browser_limit(arguments.browserLimit) }
+#endif
 
 CommandReader.start(
     onCommand: { data in

@@ -151,36 +151,82 @@ final class BrowserAgentTabToolsTests: XCTestCase {
     // MARK: Chromium's passkey dialog
 
     func testAToolSaysAPasskeyDialogWaitsAndTheAgentCanCloseIt() async throws {
-        _ = try BrowserAgentTabs { [client] in client }.page(for: task, tabID: nil)
+        let page = try BrowserAgentTabs { [client] in client }.page(for: task, tabID: nil)
         connection.answersDevTools = true
-        // The page asked for a passkey on this device; Chromium says there is none and waits for "Close".
-        connection.eventHandler?(.chromiumWindow(isShown: true, titles: ["패스키 없음"]))
+        func closes() -> [BrowserHostCommand] {
+            connection.sent.filter { if case .closeChromiumWindows = $0 { true } else { false } }
+        }
+        func inputSent(since count: Int) -> Bool {
+            connection.sent.dropFirst(count).contains { if case .devTools(_, let message) = $0 { message.contains("\"Input.") } else { false } }
+        }
+        // Another task's page asked for a passkey (or the person did, in that task's panel): its window is over that
+        // task's tab, so this task's agent neither hears of it nor closes it.
+        let other = try BrowserAgentTabs { [client] in client }.page(for: UUID(), tabID: nil)
+        connection.eventHandler?(.chromiumWindow(isShown: true, titles: ["패스키"], kinds: ["passkey"], ids: [9], tabs: [other.tabID]))
+        let quiet = text(await run(AgentToolCatalog.consoleMessages))
+        XCTAssertFalse(quiet.contains("passkey"), quiet)
+        let notOurs = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)])
+        XCTAssertTrue(text(notOurs).contains("No JavaScript dialog is open"), text(notOurs))
+        XCTAssertTrue(closes().isEmpty, "another task's window stays open")
+        let unblocked = text(await run(AgentToolCatalog.click, ["x": .number(10), "y": .number(10)]))
+        XCTAssertFalse(unblocked.contains("was not sent"), "another task's window is over its own tab: \(unblocked)")
+
+        // This page asked for a passkey on this device; Chromium says there is none and waits for "Close".
+        connection.eventHandler?(.chromiumWindow(isShown: true, titles: ["패스키", "패스키 없음"], kinds: ["passkey", "passkey"],
+                                                 ids: [9, 10], tabs: [other.tabID, page.tabID]))
         let listed = text(await run(AgentToolCatalog.tabList))
         XCTAssertFalse(listed.contains("passkey dialog"), "the tab tools do not act on a page")
         let consoleResult = text(await run(AgentToolCatalog.consoleMessages))
-        XCTAssertTrue(consoleResult.contains("passkey dialog “패스키 없음” is open"), consoleResult)
+        XCTAssertTrue(consoleResult.contains("passkey dialog “패스키 없음” is open over tab \(page.tabID)"), consoleResult)
+        XCTAssertFalse(consoleResult.contains("“패스키”"), "only this task's window: \(consoleResult)")
+        XCTAssertTrue(consoleResult.contains("browser_handoff shows the tab to the person"), consoleResult)
         XCTAssertTrue(consoleResult.contains("browser_handle_dialog with accept false"), consoleResult)
+
+        // Input to the tab under the window would be dropped: it is not sent, and the tool fails saying why and what
+        // comes next. Reading the page still works.
+        let sentBefore = connection.sent.count
+        let refusedClick = await run(AgentToolCatalog.click, ["x": .number(10), "y": .number(10)])
+        XCTAssertTrue(refusedClick.isError)
+        XCTAssertTrue(text(refusedClick).hasPrefix("The click was not sent to tab \(page.tabID). Chromium's passkey dialog “패스키 없음”"),
+                      text(refusedClick))
+        XCTAssertTrue(text(refusedClick).contains("browser_handle_dialog with accept false closes it"), text(refusedClick))
+        XCTAssertTrue(text(refusedClick).contains("browser_handoff shows the tab to the person"), text(refusedClick))
+        for (tool, arguments) in [(AgentToolCatalog.type, ["ref": JSONValue.string("@e1"), "text": .string("x")]),
+                                  (AgentToolCatalog.pressKey, ["key": .string("Enter")]), (AgentToolCatalog.scroll, [:])] {
+            let refused = await run(tool, arguments)
+            XCTAssertTrue(refused.isError && text(refused).contains("was not sent to tab \(page.tabID)"), "\(tool): \(text(refused))")
+        }
+        XCTAssertFalse(inputSent(since: sentBefore), "no input reaches the tab")
+        let read = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertFalse(text(read).contains("was not sent"), text(read))
 
         let accept = await run(AgentToolCatalog.handleDialog, ["accept": .bool(true)])
         XCTAssertTrue(accept.isError, "only the person can complete a passkey request")
-        XCTAssertFalse(connection.sent.contains(.closeChromiumWindows))
+        XCTAssertTrue(closes().isEmpty)
 
         let close = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)])
         XCTAssertFalse(close.isError, text(close))
         XCTAssertTrue(text(close).contains("NotAllowedError"))
-        XCTAssertEqual(connection.sent.last, .closeChromiumWindows)
+        XCTAssertEqual(closes(), [.closeChromiumWindows(tabs: [page.tabID])], "the host closes this task's window alone")
 
         connection.eventHandler?(.chromiumWindow(isShown: false, titles: nil))
         XCTAssertTrue(client.chromiumWindowTitles.isEmpty)
 
         // A site's sign-in window for HTTP authentication is named as one, not as a passkey dialog.
-        connection.eventHandler?(.chromiumWindow(isShown: true, titles: ["로그인"], kinds: ["signIn"]))
+        connection.eventHandler?(.chromiumWindow(isShown: true, titles: ["로그인"], kinds: ["signIn"], ids: [11], tabs: [page.tabID]))
         let signIn = text(await run(AgentToolCatalog.consoleMessages))
         XCTAssertTrue(signIn.contains("sign-in window for the site's HTTP authentication “로그인” is open"), signIn)
         XCTAssertFalse(signIn.contains("passkey"), signIn)
+
+        // The print dialog runs without a tab: no task's agent closes it, and it is mentioned only when a tool fails.
+        connection.eventHandler?(.chromiumWindow(isShown: true, titles: ["Print"], kinds: ["print"], ids: [12], tabs: [-1]))
+        let unmentioned = text(await run(AgentToolCatalog.consoleMessages))
+        XCTAssertFalse(unmentioned.contains("print dialog"), unmentioned)
+        let printing = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)])
+        XCTAssertTrue(text(printing).contains("No JavaScript dialog is open"), text(printing))
+        XCTAssertTrue(text(printing).contains("which tab opened it is not known"), text(printing))
+        XCTAssertEqual(closes().count, 1, "no agent closes a window whose tab is not known")
         connection.eventHandler?(.chromiumWindow(isShown: false, titles: nil))
-        let after = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)])
-        XCTAssertTrue(text(after).contains("No JavaScript dialog is open"))
     }
 
     // MARK: The task's page across turns

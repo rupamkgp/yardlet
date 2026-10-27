@@ -150,6 +150,7 @@ struct SettingsCenterView: View {
         YardletInterfaceSizePreference.standard.rawValue
     /// Read when a task starts or resumes, so a change applies from the next session on.
     @AppStorage(AgentToolPreference.browserToolsKey) private var agentBrowserTools = true
+    @AppStorage(TaskServersPreference.key) private var showsTaskServers = true
     /// Read when a tab opens: its task's own profile, or the default profile every task shares.
     @AppStorage(BrowserTaskProfiles.storageKey) private var cookieStorage = BrowserTaskProfiles.Storage.perTask.rawValue
     /// What Return does while a Codex turn runs; read at each send.
@@ -392,6 +393,23 @@ struct SettingsCenterView: View {
                     Text(L10n.string("Agent browser tools")).font(.callout.weight(.medium))
                     Spacer(minLength: 8)
                     Toggle(L10n.string("Agent browser tools"), isOn: $agentBrowserTools)
+                        .labelsHidden()
+                        .toggleStyle(.paritySwitch)
+                        .controlSize(.small)
+                }
+                .padding(.vertical, 14)
+                Divider().padding(.leading, Self.dividerLeading)
+                HStack(spacing: 12) {
+                    settingsControlIcon("server.rack")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(L10n.string("Show servers tasks start")).font(.callout.weight(.medium))
+                        Text(L10n.string("Show the localhost address of a server a task's harness or terminal starts beside the task's title"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle(L10n.string("Show servers tasks start"), isOn: $showsTaskServers)
                         .labelsHidden()
                         .toggleStyle(.paritySwitch)
                         .controlSize(.small)

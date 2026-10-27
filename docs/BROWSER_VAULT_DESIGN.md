@@ -142,7 +142,7 @@ the secret."이라고 한다. 그래서 Aside에서도 에이전트의 TOTP 채�
 
 | Aside 기능 | 자료 | Yardlet | 이유 |
 |---|---|---|---|
-| 다른 브라우저에서 기록·쿠키·북마크 가져오기(Chrome·Edge·Arc·Comet·Safari) | [브라우저] [변경 B] 06-01 | 일부만 가능 | 다른 브라우저의 쿠키는 그 브라우저의 키체인 항목("Chrome Safe Storage" 등)을 읽어야 해서 사람이 허용 창을 눌러야 한다. 금고와는 별개 일이다 |
+| 다른 브라우저에서 기록·쿠키·북마크 가져오기(Chrome·Edge·Arc·Comet·Safari) | [브라우저] [변경 B] 06-01 | 일부만 가능(쿠키는 2026-10-26 구현) | 쿠키(로그인)는 Chromium 계열(Whale·Chrome·Edge·Brave·Arc·Vivaldi·Opera)에서 사람이 고른 사이트만 가져온다: 브라우저 패널의 페이지 메뉴, 키체인 허용 창은 사람이 누른다([BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) 10절). Safari는 "전체 디스크 접근"이 필요해 넣지 않았다. 기록·북마크는 하지 않는다 |
 | Chrome 확장 프로그램, 툴바 확장 메뉴 | [변경 B] 05-12·06-23 | 어려움 | CEF Alloy 방식과 화면 밖 렌더링에서는 확장 팝업·툴바가 없다 |
 | Google 계정 로그인 | [변경 B] "Fixed Google OAuth2 sign-in getting logged out too often" | 어려움 | Google이 CEF 같은 임베디드 브라우저의 로그인을 막는다. Aside는 Chromium 자체를 고친 완전한 브라우저라 된다 |
 | 프로필 여러 개, 프로필 사이 복사 | [변경 B] 07-13·10-22 | 일부만 가능 | 호스트 하나가 프로필 하나를 잠근다(BROWSER_HOST 10절). 지금은 모든 작업이 프로필 하나를 공유한다 |
@@ -179,10 +179,10 @@ GitHub)로 읽었다. 가입·설치·로그인은 하지 않았다.
 | Space는 "One isolated BrowserContext per task, with its own cookies and storage"이면서 브라우저에 이미 있는 로그인을 에이전트가 이어 받음 | [lite 문서] Space, What is | 그대로 가능(이번 작업) | 작업마다 저장소 격리는 [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md)이 CEF `CefRequestContext`로 구현한다. ego가 로그인을 어떻게 각 Space로 옮기는지는 문서에 없다("profile을 임시 폴더로 복사"하는 방식과는 다르다고만 함) |
 | 작업에 Profile을 지정해 "each task uses its own login state and browsing data", Space를 만들 때 Profile 선택 | [lite 변경] 0.4.4.15·0.4.6.12 | 그대로 가능(이번 작업) | 위와 같은 층 |
 | 명령 없이 30분 지나면 작업 Space가 닫힘, 끝난 작업의 탭은 확인용으로 남김, 고정한 Space는 재시작 뒤에도 | [lite 변경] 0.6.0.12·0.5.0.28 [lite 문서] Space | 그대로 가능(이미 있음) | 작업의 탭은 작업을 보관할 때까지 남고 숨겨진 탭은 그리지 않는다(BROWSER_HOST 3절) |
-| Chrome·Edge·Brave·Safari에서 로그인·쿠키·저장 비밀번호·확장·Profile 가져오기(키체인 허용 창) | [lite 문서] Quick start [lite 변경] 0.6.0.12·0.5.1.11 | 일부만 가능 | 비밀번호는 금고 CSV로 된다. 다른 브라우저의 쿠키는 그 브라우저의 키체인 항목을 사람이 허용하면 읽을 수 있지만 지금은 두지 않았다. 확장은 CEF 화면 밖 렌더링에서 어렵다 |
+| Chrome·Edge·Brave·Safari에서 로그인·쿠키·저장 비밀번호·확장·Profile 가져오기(키체인 허용 창) | [lite 문서] Quick start [lite 변경] 0.6.0.12·0.5.1.11 | 일부만 가능 | 비밀번호는 금고 CSV로 된다. 쿠키(로그인)는 2026-10-26부터 Chromium 계열에서 사람이 고른 사이트만 가져온다(키체인 허용 창, [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) 10절). Safari는 "전체 디스크 접근"이 필요해 넣지 않았다. 확장은 CEF 화면 밖 렌더링에서 어렵다 |
 | `ego-browser` 스킬을 `~/.agents/skills`·`~/.claude/skills`에 쓰고, Node 스크립트 한 번에 여러 동작(`js()`, 원시 `cdp()`) | [lite 문서] Quick start·ego-browser | 일부만 가능 | 여러 동작은 `browser_batch`(50개)로 이미 된다. 하네스 폴더에 스킬을 쓰는 방식은 지운 뒤에도 남고, 상주 스크립트 실행형은 두지 않기로 했다 |
-| Snapshot이 다른 출처 iframe·shadow DOM까지, 한 페이지 200~400 토큰 | [lite 문서] What is | 일부만 가능 | Yardlet snapshot은 main frame 접근성 트리만 읽는다(AGENT_BROWSER_TOOLS 6절). iframe을 넣는 것은 따로 할 수 있는 개선이다 |
-| CAPTCHA·QR 로그인·결제 확인에서 에이전트가 멈추고 사람이 Space에 들어와 처리 | [lite 문서] Space | 일부만 가능 | 패널에서 같은 탭을 볼 수 있다. 사람이 자리에 없을 때 부르는 길은 0.1절의 다음 층 "넘기고 기다리기"다 |
+| Snapshot이 다른 출처 iframe·shadow DOM까지, 한 페이지 200~400 토큰 | [lite 문서] What is | 그대로 가능(2026-10-26) | 다른 사이트 iframe(그 안의 것까지)과 shadow DOM을 읽고 참조로 클릭·입력한다. 한 페이지 크기도 줄였다(HN 첫 화면 36,203 → 19,961자). 200~400 토큰은 본문을 빼는 방식이라 따르지 않았다 |
+| CAPTCHA·QR 로그인·결제 확인에서 에이전트가 멈추고 사람이 Space에 들어와 처리 | [lite 문서] Space | 그대로 가능(2026-10-26) | `browser_handoff`가 작업의 패널을 그 탭으로 열고 막대와 알림으로 부른 뒤, 사람의 "다 했어요"·"거절"이나 페이지의 글자를 기다린다 |
 | macOS iCloud 키체인 패스키와 Touch ID로 로그인 | [lite 변경] 0.5.1.12 | 어려움 | Touch ID 프로필 패스키는 된다. iCloud 키체인 패스키는 Apple 승인 권한과 웹 콘텐츠의 NSWindow가 필요한데 CEF 창 없는 탭에는 창이 없다(BROWSER_HOST 3절 "패스키"). ego(lite)는 창이 있는 완전한 Chromium이라 된다 |
 | 성공한 작업의 방법을 사이트별 Skill로 저장("coming soon"), `learnings/` | [lite 문서] What is·ego-browser | 어려움 | 에이전트의 판단을 바꾸는 기억 층이라 하네스 몫으로 둔다 |
 | 탭 그룹·창·Profile·다운로드·시크릿·확장 | [lite 문서] What is | 일부만 가능 | 다운로드·탭은 있다. 나머지는 CEF 제약과 화면 상한(3.0절) |
@@ -209,7 +209,7 @@ GitHub)로 읽었다. 가입·설치·로그인은 하지 않았다.
 - **Aside에만 있는 것:** 에이전트용 비밀번호 관리자(값을 숨긴 채우기, 접근 정책, TOTP 채우기), Slack·Telegram 원격 조종, 루틴. Aside의 작업은 기본
   프로필을 함께 쓰고 "시크릿" 작업만 프로필 상태 없이 돈다([작업]).
 - **Yardlet이 가져올 것(추천 순서):** ① 작업마다 저장소 격리와 금고로 로그인 이어 가기(이번 작업, ego Space와 Aside Vault를 합친 모양), ② "넘기고 기다리기",
-  ③ snapshot의 iframe, ④ 다른 브라우저 쿠키 가져오기(사람이 키체인 허용). 하네스 폴더 스킬 설치·기억 층·상주 스크립트 실행은 원칙상 하지 않는다.
+  ③ snapshot의 iframe, ④ 다른 브라우저 쿠키 가져오기(사람이 키체인 허용, 2026-10-26 구현: [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) 10절). ②와 ③은 2026-10-26에 넣었다([AGENT_BROWSER_TOOLS](AGENT_BROWSER_TOOLS.md) 2절의 `browser_handoff`와 `browser_snapshot`). 하네스 폴더 스킬 설치·기억 층·상주 스크립트 실행은 원칙상 하지 않는다.
 
 ## 3. 하지 않을 것
 
@@ -272,7 +272,7 @@ GitHub)로 읽었다. 가입·설치·로그인은 하지 않았다.
 | 인자 | 뜻 |
 |---|---|
 | `ref` | 마지막 snapshot의 입력 칸 참조. 로그인이면 그 칸이 속한 폼의 사용자 이름 칸·비밀번호 칸을 Yardlet이 찾는다 |
-| `item` | 항목 이름(선택). 비우면 이 탭의 origin에 맞는 항목이 하나일 때 그것을 쓰고, 여럿이면 이름 목록과 함께 오류 |
+| `item` | 항목 이름이나 사용자 이름(선택, 2026-10-27부터 사용자 이름도). 비우면 이 탭의 origin에 맞는 항목이 하나일 때 그것을 쓰고, 여럿이면 "이름 (사용자 이름)" 목록과 함께 오류. 가져오기가 사이트 이름으로 지은 같은 이름 항목도 사용자 이름으로 고른다 |
 | `kind` | `login`(기본, 사용자 이름·비밀번호), `one_time_code`(TOTP), `passkey`(가상 인증기를 이 탭에 잠시 준비) |
 | `submit` | 채운 뒤 폼 제출(선택) |
 | `tabId` | 다른 페이지 도구와 같다 |

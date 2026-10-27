@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 import YardletAgentTools
 
-/// One Google REST API (Calendar v3, Drive v3) for one account, through the account's
+/// One Google REST API (Calendar v3, Drive v3, Docs, Sheets, Slides) for one account, through the account's
 /// `GoogleAPISession`: JSON in and out, and the raw bytes a download or an upload needs. Nothing
 /// here logs or keeps what a calendar or a drive holds; a failure carries Google's own error
 /// message, never a request or response body.
@@ -50,6 +50,10 @@ struct GoogleREST: Sendable {
 
     func patch(_ path: [String], _ body: ToolJSON, _ query: [URLQueryItem] = []) async throws -> ToolJSON {
         try await json("PATCH", path, query, body: body)
+    }
+
+    func put(_ path: [String], _ body: ToolJSON, _ query: [URLQueryItem] = []) async throws -> ToolJSON {
+        try await json("PUT", path, query, body: body)
     }
 
     func delete(_ path: [String], _ query: [URLQueryItem] = []) async throws {

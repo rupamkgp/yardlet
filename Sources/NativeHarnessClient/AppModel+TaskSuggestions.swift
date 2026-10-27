@@ -160,8 +160,9 @@ extension AppModel: TaskSuggestionToolHandling {
 
     /// Start on a chip, as the Claude app's Start: the task starts now, nested under the task that
     /// suggested it or the one the agent named, in its place (`suggestedTaskStart`; a folder outside
-    /// Git starts locally), with that task's harness, account, model, effort and permission mode or
-    /// what the person chose in Options (`suggestedTaskChoice`), the suggestion's prompt as its first
+    /// Git starts locally), with that task's harness, model, effort and permission mode and the account
+    /// automatic assignment picks, or what the person chose in Options (`suggestedTaskChoice`),
+    /// the suggestion's prompt as its first
     /// message and its title as its name. Pressing Start is the person's approval, another project's
     /// folder or task included. The window stays where it is; the chip's row reads "Starting…", then
     /// "Started", which opens the new task. A start that fails says why on the row, and Start tries again.
@@ -185,9 +186,19 @@ extension AppModel: TaskSuggestionToolHandling {
             return
         }
         taskSuggestions.setProgress(.starting, of: suggestion.id, in: sourceID)
+        // An account the person chose in Options stands; otherwise automatic assignment picks one, as for a
+        // child an agent starts.
+        var connection = choice.connection
+        var assignment: AccountAssignment?
+        if taskSuggestions.choice(of: suggestion.id, in: sourceID) == nil,
+           case let .success(start) = await assignAccount(
+            harness: harness, model: Self.modelOption(choice.providerOptions, harness: harness), requested: nil) {
+            connection = start.connection
+            assignment = start.assignment
+        }
         let submission = NewTaskDraft.Submission(
             originalText: suggestion.prompt, attachments: [], harness: harness, workspaceURL: place.folder,
-            projectID: place.project?.id, runtimeURL: runtime, connection: choice.connection,
+            projectID: place.project?.id, runtimeURL: runtime, connection: connection,
             startsInNewWorktree: place.folder != nil && place.startsInNewWorktree,
             providerOptions: choice.providerOptions,
             suggestion: NewTaskSuggestionOrigin(sourceTaskID: sourceID, suggestionID: suggestion.id,
@@ -197,7 +208,9 @@ extension AppModel: TaskSuggestionToolHandling {
         let previousError = bootstrapError
         let failure: String?
         do {
-            failure = try await createTask(submission) == nil
+            let created = try await createTask(submission)
+            if let created, let assignment { accountAssignments.record(assignment, for: created.id) }
+            failure = created == nil
                 ? (bootstrapError != previousError ? bootstrapError : nil) ?? L10n.string("The task could not start.")
                 : nil
         } catch {

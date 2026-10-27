@@ -8,7 +8,9 @@
 - 커넥터는 외부 서비스가 운영하는 원격 MCP 서버(Streamable HTTP)다. Yardlet이 한 번 로그인해 자격 증명을 Keychain에
   두고, 그 서버의 도구를 Yardlet MCP 서버(`yardlet`)로 Claude Code·Codex·ACP 하네스에 제공한다. 예외로 Gmail·Google
   Calendar·Google Drive는 Yardlet이 앱 안에서 돌리는 서버다. Google 계정마다 한 번 로그인하고 공개 Google REST API를
-  부른다("Google" 절).
+  부른다("Google" 절). Apple 커넥터(App Store Connect, Mac의 캘린더·미리 알림·연락처, Xcode)도 앱 안의 서버다. App Store
+  Connect는 사람의 API 키로 Apple의 REST API를 부르고, Mac 셋은 macOS가 허용한 뒤 Mac의 데이터를 쓰며, Xcode는 Xcode의
+  `mcpbridge`를 거친다("Apple" 절).
 - **모든 하네스와 계정이 같은 커넥터를 받는다.** Claude Code는 설정 폴더(`CLAUDE_CONFIG_DIR`)마다 claude.ai 커넥터와
   `claude mcp add` 항목이 따로라, Claude 계정을 여럿 쓰면 계정마다 연결이 다르다. Yardlet 커넥터는 프로세스마다
   넣으므로(Claude `--mcp-config`, Codex 스레드 `config`, ACP `mcpServers`) 어느 하네스·계정의 작업이든 같은 커넥터를 받는다.
@@ -28,6 +30,9 @@
 | 주소의 키 | 키를 쿼리로 받는 서버(Browserbase `browserbaseApiKey`) | 요청마다 주소에 붙인다. 저장된 주소·헤더에는 없다 |
 | 인증 없음 | 서버가 401 없이 답할 때 | 그대로 연결한다 |
 | Google 계정 | Gmail·Google Calendar·Google Drive | "Google" 절 |
+| App Store Connect API 키 | App Store Connect | `.p8` 키 파일·키 ID·(팀 키는) 발급자 ID. "Apple" 절 |
+| macOS 권한 | Apple Calendar·Apple Reminders·Apple Contacts | 켤 때 macOS가 한 번 묻는다. "Apple" 절 |
+| 이 Mac의 앱 | Xcode | 로그인 없음. Xcode의 `mcpbridge`가 도구를 준다. "Apple" 절 |
 
 OAuth 순서(MCP 인증 규약):
 
@@ -86,16 +91,25 @@ MCP 세션: 서버가 준 `Mcp-Session-Id`와 협상한 `MCP-Protocol-Version`�
 
 | 로그인 | 서비스 |
 |---|---|
-| 동적 등록 OAuth | Linear, Notion, Atlassian, Sentry, Asana, ClickUp, monday.com, Todoist, Airtable, Miro, Dropbox, Intercom, Zapier, Granola, Fireflies, Gamma, GitLab, Supabase, Neon, Prisma Postgres, Netlify, Cloudflare, PostHog, Semgrep, Postman, Jam, Stripe, PayPal, Square, Webflow, Wix, Tavily |
+| 동적 등록 OAuth | Linear, Notion, Atlassian, Sentry, Asana, ClickUp, monday.com, Todoist, Airtable, Miro, Dropbox, Intercom, Zapier, Granola, Fireflies, Gamma, GitLab, Supabase, Neon, Prisma Postgres, Netlify, Cloudflare, PostHog, Semgrep, Postman, Jam, Stripe, PayPal, Square, Mercury(읽기 전용), Webflow, Wix, Tavily |
 | 인증 없음 | Exa, Hugging Face, Context7, DeepWiki, OpenAI Docs, Microsoft Learn, AWS Knowledge, Cloudflare Docs, Figma 데스크톱 앱 서버(`http://127.0.0.1:3845/mcp`, Dev Mode에서 켬). Exa·Hugging Face·Context7은 로그인하면 더 쓸 수 있지만 Yardlet은 묻지 않는다 |
 | 직접 만든 OAuth 앱 | Slack("Slack" 절) |
 | Google 계정 | Gmail, Google Calendar, Google Drive("Google" 절) |
+| Apple | App Store Connect(API 키), Apple Calendar·Apple Reminders·Apple Contacts(macOS 권한), Xcode(이 Mac의 `mcpbridge`)("Apple" 절) |
 | GitHub | GitHub(`https://api.githubcopilot.com/mcp/`): 기기 코드 로그인("GitHub 로그인" 절), 개인 액세스 토큰, 직접 만든 OAuth 앱 |
 | 주소의 키 | Browserbase(`https://mcp.browserbase.com/mcp`, 키는 Keychain에) |
 
-- 순서: 많이 쓰는 서비스(Linear, Notion, Slack, Google 셋, GitHub, Browserbase, Atlassian, Sentry) → 일·계획 → 개발·운영 →
-  결제·사이트 → Figma 데스크톱 → 검색·문서. 항목의 기호(SF Symbol)는 서비스 아이콘을 받기 전과 받지 못했을 때 쓴다("아이콘" 절).
+- 순서: 많이 쓰는 서비스(Linear, Notion, Slack, Google 셋, Mac 셋, GitHub, Browserbase, Atlassian, Sentry) → 일·계획 → 개발·운영
+  (Xcode, App Store Connect 먼저) → 결제·사이트 → Figma 데스크톱 → 검색·문서. 항목의 기호(SF Symbol)는 서비스 아이콘을 받기 전과
+  받지 못했을 때 쓴다("아이콘" 절).
+- Xcode는 이 Mac에 `mcpbridge`가 있을 때만, App Store Connect는 빌드가 토큰에 서명할 수 있을 때만 목록에 보인다
+  (`ConnectorCenter.isAvailable`).
 - Asana는 동적 등록이 되는 `/mcp`를 쓴다. 새 주소(`/v2/mcp`)는 앱 등록이 필요하다.
+- Mercury(`https://mcp.mercury.com/mcp`)는 읽기 전용이다. 디렉터리 항목의 범위가 `read offline_access`라서, 서버가 쓰기 범위를
+  함께 알려도 Yardlet은 읽기와 갱신 토큰만 요청한다(docs.mercury.com/docs/connecting-mercury-mcp). 송금 요청·계좌 간 이체 요청·분류
+  만들기와 고치기·거래 메모 도구는 그 범위가 없어 목록에 오지 않는다. 커넥터 추가 시트의 Mercury 줄 아래에 "읽기 전용"이 보인다.
+  로그인은 "연결 방식" 절의 OAuth 순서 그대로다. Mercury는 공개 클라이언트 동적 등록과 PKCE `S256`을 받고, 보호 자원 메타데이터는
+  루트(`/.well-known/oauth-protected-resource`)에만 둔다.
 - 목록에 없는 서버는 커넥터 추가의 "다른 MCP 서버"에 주소로 더한다.
 
 넣지 않은 것:
@@ -106,6 +120,8 @@ MCP 세션: 서버가 준 `Mcp-Session-Id`와 협상한 `MCP-Protocol-Version`�
 - Google 공식 MCP 서버(`gmailmcp`·`calendarmcp`·`drivemcp.googleapis.com`): Workspace Developer Preview가 필요하다. 대신 Yardlet이
   같은 도구 이름의 서버를 직접 돌린다("Google" 절).
 - Google의 비공식 주소, 다른 회사가 띄운 Gmail·Drive 중계 서버, Slack·GitHub 토큰을 다른 앱에서 읽어 오기.
+- 다른 회사가 만든 App Store Connect MCP 서버: API 키를 그 코드가 쥐게 된다. Yardlet이 Apple의 API를 직접 부른다("Apple" 절).
+- Mac의 메모·메시지: macOS에 앱이 그 데이터를 읽는 공개 방법이 없다.
 - Codex 런타임 플러그인(documents, spreadsheets, presentations, pdf, browser 등), computer-use, node_repl: 커넥터가 아니므로
   Codex에 그대로 둔다.
 
@@ -123,7 +139,8 @@ MCP 세션: 서버가 준 `Mcp-Session-Id`와 협상한 `MCP-Protocol-Version`�
 - 주입: 주입 경로가 있는 하네스에는 Yardlet MCP 서버를 늘 넣는다. 브라우저 도구가 꺼진 채 시작한 작업은 나머지 도구만 받고,
   브라우저 도구를 부르면 설정을 안내하는 오류가 된다.
 - 도구 목록은 `connectors.json`에 두어 세션 시작 때 네트워크를 기다리지 않는다. 12시간이 지난 목록은 세션이 목록을
-  요청할 때 백그라운드에서 다시 읽는다.
+  요청할 때 백그라운드에서 다시 읽는다. 도구가 앱에 들어 있는 Google·Apple 서비스는 서버에 묻지 않고, Xcode는 그것만으로 Xcode가
+  뜨지 않게 다시 읽지 않는다("Apple" 절).
 - 이 작업에서 끈 커넥터의 호출은 바로 "이 작업에서 꺼짐" 도구 오류가 된다. 로그인이 필요한 커넥터의 호출은 "Yardlet 설정 →
   커넥터에서 다시 로그인하면 같은 도구가 다시 된다"는 오류다.
 - 도구 줄: 대화의 도구 줄은 `yardlet` 서버 이름 대신 커넥터 이름과 아이콘을 보인다. Claude `mcp__yardlet__linear_create_issue`
@@ -174,7 +191,7 @@ MCP 세션: 서버가 준 `Mcp-Session-Id`와 협상한 `MCP-Protocol-Version`�
 
 작업을 주입할 때(`AppModel.configureAgentTools` → `AppModel.connectorScope(for:)`) 그 작업의 하네스가 스스로 싣는 원격 서버의 이름과
 주소를 읽는다(`ConnectorCenter.scope(for:)` → `NativeMCPInventory.loadedRemoteServerEntries`). 주소는 소문자 scheme·host로 맞추고 기본
-포트·끝 `/`·쿼리를 뺀다.
+포트·끝 `/`·쿼리를 뺀다. 주소가 없는 stdio 서버(하네스가 싣는 Xcode `mcpbridge` 등)는 아래의 대신하기와 중복 제외 대상이 아니다.
 
 - Claude Code: 작업 계정의 `.claude.json`(`CLAUDE_CONFIG_DIR`이 있으면 그 안, 없으면 `~/.claude.json`)의 사용자 서버, 작업 폴더(와
   작업 트리의 원래 폴더) 항목의 로컬 서버에서 `disabledMcpServers`를 뺀 것, 폴더 `.mcp.json` 중 승인된 것(`enabledMcpjsonServers`·
@@ -254,14 +271,16 @@ Antigravity 작업에는 커넥터를 넣지 않는다(`ConnectorTaskScope.carri
     도구 목록" 절).
   - 행의 `…`: 도구 목록 다시 읽기, 다시 로그인, 연결 해제, 제거. 액세스 토큰·직접 만든 OAuth 클라이언트로 연결은 그 서비스가 받는
     경우(디렉터리의 토큰·클라이언트 서비스, 또는 디렉터리 밖 서버)에만 있다. Google 서비스는 연결 해제 대신 "Google 계정과
-    서비스…"가 Google 페이지를 연다.
+    서비스…"가 Google 페이지를 연다. App Store Connect는 "App Store Connect 키…"가 키 페이지를, Mac 셋은 "개인정보 보호 및 보안
+    열기…"가 시스템 설정의 그 패널을 연다. 도구가 앱에 들어 있는 Google·Apple 서비스에는 도구 목록 다시 읽기가 없다(Xcode는 있다).
   - 연결된 커넥터는 다시 로그인하거나 도구를 다시 읽는 동안에도 자리를 지킨다. 그 시도가 실패해도 "연결됨"으로 남고, 이유는 회색
     한 줄(`ConnectorSettingsState.note`, 다 보이지 않으면 도움말)이다. Codex 앱과 Claude 앱도 이때 행을 그대로 둔다. Google 페이지의
     계정 행과 Slack 페이지도 같다.
 - **커넥터 추가 시트(`ConnectorAddSheet`):** 맨 위 서비스 검색(이름이나 ID, 대소문자 무시; "Gmail"·"Calendar"·"Drive"도 Google 줄을
-  찾음) → "한 번에 연결"(동적 등록·인증 없음 서비스, 누르면 추가하고 연결) → "키나 토큰 붙여 넣기"(GitHub·Browserbase, 행 안에 칸과
-  "GitHub에서 토큰 만들기"·"API 키 찾기") → "직접 만든 OAuth 앱 필요"(기본 접힘) → "다른 MCP 서버"(URL로 추가, 로그인 정보는 접힌
-  선택 칸). 검색이 한 곳도 못 찾으면 안내 한 줄과 URL로 추가만 남는다.
+  찾음) → "한 번에 연결"(동적 등록·인증 없음 서비스와 Mac 셋·Xcode, 누르면 추가하고 연결) → "키나 토큰 붙여 넣기"(GitHub·Browserbase는
+  행 안에 칸과 "GitHub에서 토큰 만들기"·"API 키 찾기", App Store Connect는 "설정…"이 자기 페이지를 연다) → "직접 만든 OAuth 앱
+  필요"(기본 접힘) → "다른 MCP 서버"(URL로 추가, 로그인 정보는 접힌 선택 칸). 검색이 한 곳도 못 찾으면 안내 한 줄과 URL로 추가만
+  남는다.
   - 빌드에 Google 앱이 들어 있으면 Google 줄이 "한 번에 연결" 맨 위에 오고, "직접 만든 OAuth 앱 필요" 아래에는 Slack만 남는다.
     없으면 그 아래에 Google과 Slack이 있고, Google 안내가 claude.ai 스위치를 대안으로 말한다.
   - 빌드에 GitHub client ID가 있으면 GitHub가 "한 번에 연결"로 옮겨 "GitHub로 로그인"을 보인다.
@@ -290,7 +309,7 @@ Antigravity 작업에는 커넥터를 넣지 않는다(`ConnectorTaskScope.carri
   브라우저에서 로그인·허용.
 - 인증 없음: 같은 곳의 "연결". Figma는 먼저 Figma 데스크톱 앱 → Dev Mode에서 MCP 서버를 켠다.
 - 키·토큰: "키나 토큰 붙여 넣기"의 "연결" → 서비스에서 토큰이나 키를 만들어 붙여 넣기.
-- Google: "Google" 절, Slack: "Slack" 절, GitHub: "GitHub 로그인" 절.
+- Google: "Google" 절, Apple(App Store Connect, Mac 셋, Xcode): "Apple" 절, Slack: "Slack" 절, GitHub: "GitHub 로그인" 절.
 - 그다음 실행 중인 Claude Code 작업은 다음 턴부터, 다른 하네스의 작업은 다음에 시작하거나 재개하면 도구가 보인다.
 
 ## 8. 저장
@@ -298,24 +317,28 @@ Antigravity 작업에는 커넥터를 넣지 않는다(`ConnectorTaskScope.carri
 - `~/.yardlet/connectors.json`: 이름, slug, 서버 주소, 인증 방식, 상태, 도구 목록과 읽은 시각(`toolsUpdatedAt`), 디렉터리 ID
   (`presetID`), 직접 만든 OAuth 클라이언트 ID(`oauthClientID`, 비밀 아님), scope, 추가 인가 인자, 키 쿼리 이름(`tokenQueryParameter`),
   서버 아이콘(`serverIcons`), 작업별로 끈 커넥터(`offInTasks`: 작업 ID → 커넥터 ID). Google 서비스는 `localService`·`account`(주소)·
-  `googleAccountID`, 파일 맨 위에 사용자가 저장한 Google 앱의 `googleOAuthClientID`(비밀 아님). 비밀은 쓰지 않는다. 예전 파일은 그대로
+  `googleAccountID`, 파일 맨 위에 사용자가 저장한 Google 앱의 `googleOAuthClientID`(비밀 아님). Apple 서비스는 `localService`, App
+  Store Connect는 `account`(키 ID)도 둔다. 서버 주소는 Mac 셋이 그 데이터를 가진 Mac 앱(`/System/Applications/Calendar.app` 등),
+  Xcode가 찾은 `mcpbridge`의 경로다. 비밀은 쓰지 않는다. 예전 파일은 그대로
   읽힌다(새 필드는 없으면 비어 있음).
 - Keychain: generic password, service `<번들 ID>.connectors`, account 커넥터 UUID(Google은 계정 로그인의 ID), 값은 JSON(종류
-  `oauth`·`token`·`client`, access·refresh 토큰, 만료, client ID·secret, 토큰 엔드포인트와 인증 방식, resource). `client`는 로그인
-  전이나 연결 해제 뒤 직접 만든 클라이언트만 남긴 것이다. 사용자가 저장한 Google 앱의 ID·secret은 같은 service의 고정 account
-  (`GoogleOAuth.appCredentialID`) 항목 하나다. 빌드에 든 Google 앱은 Keychain에 쓰지 않는다.
+  `oauth`·`token`·`client`·`signingKey`, access·refresh 토큰, 만료, client ID·secret, 토큰 엔드포인트와 인증 방식, resource;
+  `signingKey`는 App Store Connect의 키 ID·발급자 ID·PEM). `client`는 로그인 전이나 연결 해제 뒤 직접 만든 클라이언트만 남긴 것이다.
+  사용자가 저장한 Google 앱의 ID·secret은 같은 service의 고정 account(`GoogleOAuth.appCredentialID`) 항목 하나다. 빌드에 든 Google
+  앱은 Keychain에 쓰지 않는다.
 - ad-hoc 빌드도 identifier 기반 designated requirement라서 업데이트 뒤에도 키체인 허용 창이 뜨지 않는다. QA 번들은 번들 ID가 달라
   항목이 섞이지 않는다.
 - Keychain 호출은 메인 스레드 밖에서 한다. 키체인이 시스템 창을 기다리는 동안 화면이 멈추지 않게 하려는 것이다.
 - 연결 해제는 토큰을 지운다(직접 만든 클라이언트는 남김). 제거는 Keychain 항목을 지운다. 서버에 토큰 폐기(RFC 7009)를 요청하지는
-  않는다.
+  않는다. macOS가 Mac 셋에 준 권한은 제거해도 남는다("Apple" 절).
 - 아이콘 캐시는 `~/Library/Caches/<번들 ID>/ConnectorIcons/`에 있다("아이콘" 절).
 
 ## 9. Google
 
 Gmail·Google Calendar·Google Drive는 원격 MCP 서버가 아니라 Yardlet이 앱 안에서 돌리는 서버다. 하네스는 다른 커넥터와 같이
 `yardlet` MCP 서버(`yardlet-mcp` → 소켓 → 앱)로 받으므로, 토큰이 Yardlet 밖으로 나가지 않고 주입·작업별 스위치·Antigravity 제외도
-같다. 도구 이름과 인자는 Google 공식 MCP 서버(claude.ai의 Google 커넥터가 쓰는 것)를 따랐다.
+같다. 도구 이름과 인자는 Google 공식 MCP 서버(claude.ai의 Google 커넥터가 쓰는 것)를 따랐다. Google Drive 커넥터는 Docs·Sheets·Slides
+파일 안의 구조를 읽고 고치는 도구도 준다(아래 "도구").
 
 ### Google 앱
 
@@ -340,8 +363,9 @@ Gmail·Google Calendar·Google Drive는 원격 MCP 서버가 아니라 Yardlet�
 
 ### 계정과 서비스
 
-- `LocalConnectorService`는 `gmail`·`googleCalendar`(`google-calendar`)·`googleDrive`(`google-drive`) 셋이다. 디렉터리 항목은
-  `SignIn.googleAccount`, 주소는 `https://gmail.googleapis.com/gmail/v1/`·`https://www.googleapis.com/calendar/v3/`·`…/drive/v3/`이다.
+- Google 서비스는 `LocalConnectorService`의 `gmail`·`googleCalendar`(`google-calendar`)·`googleDrive`(`google-drive`) 셋이다
+  (`LocalConnectorService.google`, `isGoogle`; 나머지는 Apple 서비스, "Apple" 절). 디렉터리 항목은 `SignIn.googleAccount`, 주소는
+  `https://gmail.googleapis.com/gmail/v1/`·`https://www.googleapis.com/calendar/v3/`·`…/drive/v3/`이다.
 - **계정 하나, 서비스마다 커넥터 하나:** Google 계정의 서비스는 각자 `ConnectorRecord`(작업별 스위치·도구 줄·다시 연결이 서비스마다)이고
   로그인은 하나를 나눠 쓴다: `ConnectorRecord.googleAccountID`(그 계정 로그인의 Keychain 항목), `credentialID = googleAccountID ?? id`.
   계정의 첫 서비스는 자기 ID 아래에 둔다. `ConnectorCenter.googleAccounts`가 `credentialID`로 묶는다.
@@ -377,14 +401,28 @@ Gmail·Google Calendar·Google Drive는 원격 MCP 서버가 아니라 Yardlet�
 | Calendar | `calendar.calendarlist.readonly` | 민감 | `list_calendars`(calendarList.list) |
 | Calendar | `calendar.events` | 민감 | 모든 캘린더의 일정 읽기·만들기·바꾸기·지우기·답하기 |
 | Calendar | `calendar.events.freebusy` | 민감 | `suggest_time`(freeBusy.query) |
-| Drive | `drive.readonly` | 제한 | 모든 파일 읽기·내보내기 |
-| Drive | `drive.file` | 비민감 | 만들기·복사, Yardlet이 만든 파일만 바꾸기 |
+| Drive | `drive.readonly` | 제한 | 모든 파일 읽기·내보내기, Docs·Sheets·Slides 안의 구조 읽기 |
+| Drive | `drive.file` | 비민감 | 만들기·복사, Yardlet이 만든 파일만 바꾸기(Docs·Sheets·Slides 고치기 포함) |
 
 - 범위는 앞에 `https://www.googleapis.com/auth/`가 붙는다. 전체 `drive`·`calendar`·`https://mail.google.com/`은 요청하지 않는다.
   그래서 Yardlet은 사람이 가진 다른 Drive 파일을 바꾸거나 지울 수 없고, Drive 도구에 지우기는 없다.
+- **Docs·Sheets·Slides도 Drive의 두 범위로 부른다.** 읽는 메서드(Docs `documents.get`, Sheets `spreadsheets.get`·
+  `spreadsheets.values.get`, Slides `presentations.get`·`presentations.pages.get`·`presentations.pages.getThumbnail`)는 `drive.readonly`를,
+  고치는 메서드(Docs `documents.batchUpdate`, Sheets `spreadsheets.values.update`·`spreadsheets.batchUpdate`, Slides
+  `presentations.batchUpdate`)는 `drive.file`을 받는다(메서드마다 "Authorization scopes"). 그래서 `documents`·`spreadsheets`·
+  `presentations` 범위(민감)는 요청하지 않고, 이 도구들 때문에 동의 화면의 범위가 늘지 않는다.
+- **고칠 수 있는 Docs·Sheets·Slides:** `drive.file`은 앱으로 만들었거나 앱으로 연 파일, Google Picker나 앱의 파일 선택기로 앱에
+  공유한 파일에만 닿는다. Yardlet에는 Picker가 없으므로 고칠 수 있는 것은 Yardlet이 만들거나 복사한 파일이다. 다른 파일은 Google의
+  403("The caller does not have permission")이 그대로 도구 오류가 된다. 그런 파일은 `copy_file`로 사본을 만들어 고친다.
+- **API 켜기:** 범위와 따로, OAuth 클라이언트가 속한 Cloud 프로젝트에서 Docs API(`docs.googleapis.com`)·Sheets API
+  (`sheets.googleapis.com`)·Slides API(`slides.googleapis.com`)가 켜져 있어야 한다. 꺼져 있으면 Google의 403("… API has not been used
+  in project … before or it is disabled")이 그 도구의 오류가 된다. API를 켜도 범위와 동의 화면은 바뀌지 않는다. "직접 만든 Google
+  앱"의 API 단계는 여섯 API를 한 페이지에서 켠다(`ConnectorSetupAssistant.googleAPIs`).
 - 출처: 제한 범위 목록 support.google.com/cloud/answer/13464325, Gmail 범위 developers.google.com/workspace/gmail/api/auth/scopes,
   Drive 범위 developers.google.com/workspace/drive/api/guides/api-specific-auth, Calendar 범위 developers.google.com/workspace/calendar/api/auth
-  (분류 열이 없다; 제한 목록에 없고 Cloud 콘솔이 민감으로 표시한다).
+  (분류 열이 없다; 제한 목록에 없고 Cloud 콘솔이 민감으로 표시한다), Docs·Sheets·Slides 메서드
+  developers.google.com/workspace/docs/api/reference/rest/v1/documents, …/sheets/api/reference/rest/v4/spreadsheets,
+  …/slides/api/reference/rest/v1/presentations, 그 범위의 분류 …/docs/api/auth, …/sheets/api/scopes, …/slides/api/scopes.
 
 ### 도구
 
@@ -437,8 +475,39 @@ Drive(`GoogleDriveToolRunner`, Drive API v3, `supportsAllDrives`):
 | `copy_file` | `POST files/{id}/copy` | |
 | `update_file` | `PATCH` (multipart) | Yardlet 추가 도구: 이름·설명·폴더·내용. `drive.file`이라 Yardlet이 만들거나 복사한 파일만 바뀌고, 다른 파일은 Google의 403 문구가 그대로 오류가 된다 |
 
+Docs·Sheets·Slides(`GoogleEditorsToolCatalog`, `GoogleEditorsToolRunner`, Docs API v1·Sheets API v4·Slides API v1):
+
+- **Drive 커넥터의 도구다.** 범위가 Drive와 같고 파일이 Drive 파일이라 서비스 행·칩·로그인·작업별 스위치가 따로 없다. Drive
+  커넥터는 위 아홉과 이 열두, 모두 21개(`drive_*`)를 준다. 첫 계정은 `drive_read_doc`, 다음 계정은 `drive_<앞부분>_read_doc`이다.
+- **이름과 인자:** Google 공식 Docs·Sheets·Slides MCP 서버(`docsmcp`·`sheetsmcp`·`slidesmcp.googleapis.com`)의 도구 이름과 인자 이름
+  (`documentId`·`requests`·`writeControl`·`spreadsheetId`·`range`·`values`·`formulas`·`sheetId`·`presentationId`·`pageId`·`fields`·
+  `commentsIncluded`·`thumbnailProperties`)을 따랐다. 나눠 읽기 인자와 `valueRenderOption`은 Yardlet이 더한 것이다.
+
+| 도구 | API | 메모 |
+|---|---|---|
+| `read_doc` | `GET documents/{id}?includeTabsContent=true` | 문단마다 시작·끝 색인(UTF-16), 글, 스타일(`HEADING_1`…; 보통 글은 생략), 목록(`listId`·`nestingLevel`), 웹 링크. 표는 칸마다 글과 그 글의 색인. 이미지·각주 표시 같은 개체는 색인 하나마다 U+FFFC라 글 길이가 색인 길이와 같다. 탭이 여럿이면 `tabs` 목록과 `tabId`로 고르기(하위 탭 포함). `revisionId`, `commentsIncluded`면 Drive 댓글 |
+| `update_doc` | `POST documents/{id}:batchUpdate` | 요청 목록 그대로(`insertText`·`deleteContentRange`·`replaceAllText`·`updateParagraphStyle`·`createParagraphBullets`·`insertTable` 등), 전부 아니면 아무것도. `writeControl`(`requiredRevisionId`, `writeMode: SUGGEST`)도 그대로 |
+| `get_spreadsheet` | `GET spreadsheets/{id}` | 기본은 필드 마스크로 제목·로캘·시간대·시트마다 ID·이름·크기·고정 행/열·숨김·종류, 이름 있는 범위. `fields`나 `includeGridData`면 Sheets API의 JSON 그대로(100,000자를 넘으면 범위를 좁히라는 오류) |
+| `get_values` | `GET spreadsheets/{id}/values/{range}` | 행 단위. `valueRenderOption` `FORMATTED_VALUE`(기본)·`UNFORMATTED_VALUE`·`FORMULA`(수식 읽기) |
+| `update_values` | `PUT …/values/{range}?valueInputOption=RAW` | 값 그대로: 숫자는 숫자, `=`로 시작하는 글도 글. null은 그 칸을 두고, `""`는 비운다 |
+| `update_formulas` | `PUT …/values/{range}?valueInputOption=USER_ENTERED` | 수식과 사람이 입력하듯 읽힐 값 |
+| `insert_dimension` | `POST spreadsheets/{id}:batchUpdate`(`insertDimension`) | 빈 행·열 넣기(0부터, 끝은 포함 안 함) |
+| `update_spreadsheet` | `POST spreadsheets/{id}:batchUpdate` | 요청 목록 그대로(`addSheet`·`deleteSheet`·`updateSheetProperties`·`repeatCell`·`mergeCells`·`sortRange` 등). 답의 `replies`(새 시트 ID 등) |
+| `read_presentation` | `GET presentations/{id}?fields=…` | 슬라이드마다 ID·순서·레이아웃 이름·건너뜀, 요소마다 ID·종류(shape·table·image·group·sheetsChart·wordArt…)·자리 표시자(`TITLE`·`BODY`)·글, 표는 칸 글, 발표자 노트와 그 개체 ID. `fields`면 Slides API의 JSON 그대로 |
+| `read_slide_page` | `GET presentations/{id}/pages/{pageId}` | 한 쪽(슬라이드·레이아웃·마스터)의 요소에 크기·위치(`size`·`transform`)까지 |
+| `read_slide_page_thumbnail` | `GET …/pages/{pageId}/thumbnail` | PNG, `thumbnailProperties.thumbnailSize`(SMALL·MEDIUM·LARGE, 기본 MEDIUM). 크기와 주소, 그리고 PNG 자체를 이미지 내용으로(5 MB까지). 그림 주소는 Google이 계정용으로 서명한 30분짜리라 Google 토큰을 붙이지 않고 받는다 |
+| `update_presentation` | `POST presentations/{id}:batchUpdate` | 요청 목록 그대로(`createSlide`·`insertText`·`deleteText`·`replaceAllText`·`createShape`·`updateTextStyle`·`deleteObject` 등), `writeControl` |
+
+- **나눠 읽기:** 답이 100,000자(`read_file_content`와 같은 한도)를 넘지 않게 자른다. 문서는 요소 단위로 자르고 `nextStartIndex`를
+  준다(`startIndex`로 다시 부름; 표는 행 단위로 이어지고, 처음이 아니면 `firstRow`). 시트는 행 단위로 `rowsReturned`와, Google이
+  돌려준 범위에서 계산한 `nextRange`를 준다(예: `Data!A1:D3000`에서 1,850행을 주면 `Data!A1851:D3000`). 슬라이드는 장 단위로
+  `nextStartSlide`를 준다(`startSlide`로 다시 부름).
+- **ID:** 링크(`…/document/d/<ID>/edit`)를 넣어도 ID만 쓴다. 요청 전에 인자를 확인한다(빈 `requests`, 칸이 배열이 아닌 행, 시작
+  이상인 끝, 틀린 `valueRenderOption`은 요청 없이 오류).
+- 고치는 도구가 닿는 파일과 켜야 하는 API는 "범위"에 있다.
+
 - 설명은 하는 일만 260자 아래다. 주석은 읽기 `readOnlyHint: true`·`openWorldHint: false`, 보내기와 쓰기는 `openWorldHint: true`,
-  `modify_labels`·`delete_event`·`update_file`은 `destructiveHint: true`다.
+  `modify_labels`·`delete_event`·`update_file`과 `insert_dimension`을 뺀 Docs·Sheets·Slides 쓰기는 `destructiveHint: true`다.
 - 본문·요청·응답을 로그에 쓰지 않는다. 오류는 Google의 `error.message`와 HTTP 상태만 보인다("Gmail: Requested entity was not found.
   (HTTP 404)").
 
@@ -447,10 +516,13 @@ Drive(`GoogleDriveToolRunner`, Drive API v3, `supportsAllDrives`):
 - 묻는 도구는 하네스의 승인 설정을 따른다. Yardlet은 승인 규칙을 따로 두지 않고, 쓰기 도구에 주석(`destructiveHint` 등)을 단다.
 - Claude Code: 커넥터 도구는 `--allowedTools`에 없으므로 CLI가 작업의 권한 모드대로 묻는다. 쓰기 도구(Gmail `send_draft`·
   `send_message`·`modify_labels`, Calendar `create_event`·`update_event`·`delete_event`·`respond_to_event`, Drive `create_file`·
-  `copy_file`·`update_file`; `LocalConnectorService.approvalRequiredTools`)의 요청 카드는 Yardlet 문구이고 "항상 허용"이 없다
+  `copy_file`·`update_file`·`update_doc`·`update_values`·`update_formulas`·`insert_dimension`·`update_spreadsheet`·
+  `update_presentation`; `LocalConnectorService.approvalRequiredTools`)의 요청 카드는 Yardlet 문구이고 "항상 허용"이 없다
   (`GmailToolApproval`, `GoogleToolApproval`): 메일은 받는 사람·참조·숨은 참조·제목·본문 앞 1,200자, 라벨은 스레드·추가·제거·
-  보관/읽음/안 읽음, 일정은 제목·일시·초대·Meet·Google이 메일을 보내는지, Drive는 제목·유형·폴더·내용 앞 600자. 나머지는 CLI의
-  보통 카드다. 권한 우회 모드에서는 묻지 않는다(하네스 그대로).
+  보관/읽음/안 읽음, 일정은 제목·일시·초대·Meet·Google이 메일을 보내는지, Drive는 제목·유형·폴더·내용 앞 600자. Docs·Sheets·Slides는
+  "Claude가 {주소}의 Drive 문서를(스프레드시트를, 프레젠테이션을) 바꾸도록 허용할까요?" 아래 파일 ID, 범위, 바꿀 것("insertText ×2,
+  updateParagraphStyle"), 넣는 글이나 칸 값 앞 600자이고, 행·열 넣기는 "행 2개를 넣습니다."처럼 수를 말한다. 나머지는 CLI의 보통
+  카드다. 권한 우회 모드에서는 묻지 않는다(하네스 그대로).
 - Codex: Yardlet 서버의 도구에 `approval_mode`를 넣지 않는다. 묻는지는 작업의 승인 설정과 도구 주석으로 Codex가 정한다.
 - ACP: 그 하네스의 MCP 승인 그대로.
 
@@ -460,8 +532,8 @@ Drive(`GoogleDriveToolRunner`, Drive API v3, `supportsAllDrives`):
 아래 단계를 차례로 연다.
 
 1. **새 프로젝트**(console.cloud.google.com/projectcreate)에서 프로젝트 만들기.
-2. **API 켜기**: 한 페이지(`flows/enableapi?apiid=gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com`)에서 세 API를
-   켠다.
+2. **API 켜기**: 한 페이지(`flows/enableapi?apiid=gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com`)에서
+   여섯 API를 켠다. 뒤의 셋은 Drive 커넥터의 Docs·Sheets·Slides 도구가 쓴다.
 3. **Google 인증 플랫폼**: 앱 이름(복사 버튼), 지원 이메일, 대상, 연락처. 개인 Gmail 계정을 쓰려면 대상은 **외부**다. 한 Workspace
    조직의 계정만 쓰고 프로젝트가 그 조직 안에 있으면 **내부**도 된다(확인 화면과 100명 한도가 없음).
 4. **대상** → 앱 게시 → "프로덕션 단계"(외부일 때). "테스트"로 두면 7일마다 다시 로그인해야 한다.
@@ -478,10 +550,169 @@ Workspace 관리 콘솔에서 확인되지 않은 서드파티 앱의 Gmail 접�
 
 - Gmail: 첨부 내려받기·첨부해 보내기, 휴지통·스팸, 라벨 만들기·고치기, 임시보관 목록·수정·삭제.
 - Drive: PDF·Office·이미지 본문 읽기(내려받아 따로 읽어야 함), 파일 지우기, 공유 바꾸기.
+- Docs·Sheets·Slides: Yardlet이 만들거나 복사하지 않은 파일을 그 자리에서 고치기. 그러려면 `documents`·`spreadsheets`·`presentations`
+  범위(민감)나 전체 `drive`(제한)를 더 요청하거나, 사람이 파일을 고르는 Google Picker 화면이 있어야 한다. 지금은 사본을 고친다.
 - Calendar: `search_events`는 의미 검색이 아니라 단어 검색이다. 시간대는 이 Mac의 것이다(캘린더 설정의 시간대를 읽으려면 범위가 더
   필요).
 
-## 10. Slack
+## 10. Apple
+
+App Store Connect, Mac의 캘린더·미리 알림·연락처, Xcode도 원격 MCP 서버가 아니라 Yardlet이 앱 안에서 돌리는 서버다
+(`LocalConnectorService`의 `appStoreConnect`·`appleCalendar`·`appleReminders`·`appleContacts`·`xcode`). Google처럼 `yardlet` MCP 서버
+하나로 모든 하네스·계정의 작업에 들어가고, 작업별 스위치·도구 줄 이름표·Antigravity 제외가 다른 커넥터와 같다.
+
+### 구조
+
+| 커넥터 | 디렉터리 로그인 방식 | 무엇을 부르나 | 도구 이름 |
+|---|---|---|---|
+| App Store Connect | `appStoreConnectKey`(API 키) | Apple의 App Store Connect API(`https://api.appstoreconnect.apple.com/`, JSON:API) | `app_store_connect_*`, 키를 둘 넣으면 두 번째는 `app_store_connect2_*` |
+| Apple Calendar | `macPermission`(macOS 권한) | EventKit(`EKEventStore`)의 캘린더 | `apple_calendar_*` |
+| Apple Reminders | `macPermission` | EventKit의 미리 알림 | `apple_reminders_*` |
+| Apple Contacts | `macPermission` | Contacts(`CNContactStore`) | `apple_contacts_*` |
+| Xcode | `localApp`(이 Mac의 앱) | Xcode의 MCP 서버(Xcode 26.3부터), stdio 다리 `mcpbridge`를 거쳐 | `xcode_<Xcode의 도구 이름>`(`xcode_BuildProject`) |
+
+- App Store Connect와 Mac 셋의 도구는 앱에 들어 있어 서버에 묻지 않는다. Xcode의 도구는 Xcode 서버가 주는 목록 그대로이고, 연결할
+  때 읽어 `connectors.json`에 둔다. 도구 설명은 260자 아래다.
+- 아이콘: Mac 셋과 Xcode는 macOS가 그 앱에 주는 아이콘(네트워크 없음), App Store Connect는 Apple 개발자 사이트의 아이콘("아이콘" 절).
+
+### App Store Connect
+
+- Apple의 공식 API를 Yardlet이 사람의 API 키로 직접 부른다. 다른 회사의 MCP 서버를 거치지 않는다.
+- **키 종류**(Apple "Creating API Keys for App Store Connect API"): 팀 키는 Account Holder·Admin만 만들고, 만들 때 역할을 고르며 모든
+  앱에 닿는다. 개인 키는 그 사용자의 권한을 따르고 인증서·프로필, 판매·재무, 공증(`notaryTool`)에 쓸 수 없다. `.p8` 파일은 한 번만
+  내려받을 수 있다.
+- **토큰**(Apple "Generating Tokens for API Requests"): 머리 `alg: ES256`·`kid`(키 ID)·`typ: JWT`, 본문 `aud: appstoreconnect-v1`·`iat`·
+  `exp`, 팀 키는 `iss`(발급자 ID), 개인 키는 `sub: "user"`이고 `iss`가 없다. Apple의 수명 한도가 20분이라 15분짜리로 만들고 끝나기
+  1분 전에 새로 만든다. 서명은 P-256의 R‖S(64바이트)다. 엔진에는 계약(`ES256Signing`)만 있고 CryptoKit 구현(`MacES256Signer`)은
+  macOS 층에 있다. 서명할 수 없는 빌드에는 디렉터리에 App Store Connect가 없다.
+- **거절:** 401이면 새 토큰으로 한 번 더 보낸다. 또 401이면 키가 취소됐거나 ID가 틀린 것이라 커넥터는 "로그인 필요"가 되고, 행의 할
+  일은 키를 다시 넣는 페이지를 여는 "설정…"이다.
+- **키 저장:** 페이지에서 고른 `.p8` 파일을 "연결"을 누를 때 읽어 키인지 확인한 뒤 Keychain에 둔다("저장" 절의 `signingKey`).
+  `connectors.json`에는 키 ID만 있다. 키 값은 화면·로그·모델·일반 파일에 없다. 앱 목록을 한 번(`GET /v1/apps?limit=1`) 읽어 키를
+  확인하고, 되면 페이지 안의 한 줄로 그 `.p8` 파일을 휴지통으로 옮길지 묻는다(휴지통으로 옮기기·파일 그대로 두기). 시트 위에
+  대화상자를 겹치지 않는다. 키 ID는 파일 이름(`AuthKey_<키 ID>.p8`)에서 채운다. 같은 키 ID를 다시 넣으면 그 키를 바꾼다.
+- **도구 14개**(읽기 9, 쓰기 5, `AppStoreConnectToolCatalog`, `AppStoreConnectToolRunner`):
+
+| 도구 | API | 메모 |
+|---|---|---|
+| `list_apps` | `GET /v1/apps` | 이름·번들 ID·SKU·기본 언어, `bundleId`·`name` 거르기 |
+| `list_builds` | `GET /v1/builds?filter[app]` + `include=preReleaseVersion,buildBetaDetail` | 최근 올린 것 먼저. `version`(마케팅 버전)·`buildNumber`·처리 상태·만료·TestFlight 내부/외부 상태 |
+| `list_beta_groups` | `GET /v1/betaGroups?filter[app]` | 내부·외부, 공개 링크 |
+| `list_beta_testers` | `GET /v1/betaTesters?filter[betaGroups]` 또는 `filter[apps]` | 이름·이메일·초대 방식·상태 |
+| `list_beta_feedback` | `GET /v1/apps/{id}/betaFeedbackScreenshotSubmissions`·`…CrashSubmissions` | 둘을 합쳐 최신순, 기기·빌드·댓글·스크린샷 주소 |
+| `get_beta_crash_log` | `GET /v1/betaFeedbackCrashSubmissions/{id}/crashLog` | `logText` 100,000자까지 |
+| `list_customer_reviews` | `GET /v1/apps/{id}/customerReviews?include=response` | 별점·국가·답글 여부 거르기, 최신·오래된·높은·낮은 순 |
+| `list_app_store_versions` | `GET /v1/apps/{id}/appStoreVersions?include=build` | `appVersionState`(심사 중·거절·배포 준비…)·출시 방식·빌드 |
+| `list_review_submissions` | `GET /v1/reviewSubmissions?filter[app]` | 제출 상태와 든 버전 |
+| `add_beta_tester` | `POST /v1/betaTesters`(새 이메일, Apple이 초대 메일을 보냄) 또는 `POST /v1/betaGroups/{id}/relationships/betaTesters` | 묻는 도구 |
+| `remove_beta_tester` | `DELETE /v1/betaGroups/{id}/relationships/betaTesters` | 묻는 도구, destructive |
+| `add_build_to_group` | `POST /v1/betaGroups/{id}/relationships/builds` | 묻는 도구. 외부 그룹은 베타 심사 승인 뒤에 받는다 |
+| `reply_to_review` | `POST /v1/customerReviewResponses` | 묻는 도구. 이전 답글이 있으면 바꾼다 |
+| `submit_for_review` | 버전 읽기 → 그 앱·플랫폼의 아직 안 보낸 제출(`READY_FOR_REVIEW`) 또는 새 `POST /v1/reviewSubmissions` → `POST /v1/reviewSubmissionItems` → `PATCH …{submitted: true}` | 묻는 도구. App Store Connect에서 시작해 둔 제출이 이미 그 버전을 가지면(409) 그대로 보낸다 |
+
+- 답은 리소스의 ID와 속성으로 펴고, 다음 쪽은 Apple의 `links.next`에서 꺼낸 `cursor`를 `nextCursor`로 준다. 오류는 Apple의
+  `errors[].detail`과 HTTP 상태("App Store Connect: There is no resource of type 'apps' with id '404' (HTTP 404)")이고, 경로에 넣을 수
+  없는 ID는 요청 전에 거절한다. 엔드포인트는 Apple의 App Store Connect API OpenAPI 명세(4.5.1)를 따랐다.
+- **키의 역할**(Apple "Role permissions", developer.apple.com/support/roles): 심사 제출·외부 TestFlight 그룹과 빌드 배포는 Account
+  Holder·Admin·App Manager, 리뷰 답글은 Account Holder·Admin·Customer Support만 된다. 그래서 다섯 쓰기 도구가 모두 되는 하나의 역할은
+  Admin이다. App Manager 키로는 `reply_to_review`만 Apple의 403 문구로 실패한다.
+
+### Mac의 캘린더·미리 알림·연락처
+
+- iCloud는 이 데이터의 OAuth API를 열어 두지 않아, Mac이 동기화해 둔 것을 쓴다(`MacDataStoring`, `MacEventKitStore`,
+  `MacDataToolRunner`). 캘린더는 Calendar 앱에 있는 iCloud와 다른 계정의 캘린더다. 캘린더·미리 알림은 EventKit(macOS 14부터의
+  `requestFullAccessToEvents`·`requestFullAccessToReminders`), 연락처는 Contacts다.
+- **권한:** 셋은 따로 켠다. 켤 때(연결) 권한이 정해지지 않았으면 macOS가 한 번 묻고, 이미 허용됐으면 묻지 않는다. 거절했거나 기기
+  정책이 막으면 묻지 않고 "macOS가 Yardlet의 캘린더 사용을 허용하지 않았습니다. 시스템 설정 → 개인정보 보호 및 보안 → 캘린더에서
+  Yardlet을 켠 뒤 다시 시도하세요."가 이유로 보인다. 도구 호출은 권한을 읽기만 하고 묻지 않는다. 나중에 권한을 끄면 호출이 같은 안내를 돌려준다.
+- Info.plist에 사용 설명이 없는 빌드(`swift run`)는 묻지 않는다. macOS는 설명 없이 묻는 앱을 끝내기 때문이다.
+- **도구:**
+  - Apple Calendar: `list_calendars`, `list_events`(기본 지금부터 7일, 모든 캘린더 또는 하나, 단어 거르기, 4년까지), `search_events`
+    (앞뒤 1년), `get_event`, `create_event`·`update_event`·`delete_event`(묻는 도구). 인자 이름은 Google Calendar의 것(`summary`·
+    `startTime`·`endTime`·`allDay`·`timeZone`·`calendarId`·`location`·`description`)에 `url`·`alertMinutes`·`span`(반복 일정의
+    `thisEvent`·`futureEvents`)을 더했다. EventKit은 참석자를 초대하거나 초대에 답할 수 없어 그 인자와 `respond_to_event`·
+    `suggest_time`이 없다. 반복 일정의 한 번은 `<일정 ID>@<원래 시작 UTC>`로 가리킨다. 오프셋 없는 시각은 인자 `timeZone`, 없으면 Mac
+    시간대로 읽는다(`CalendarTime`).
+  - Apple Reminders: `list_reminder_lists`, `list_reminders`(기본 안 끝난 것, 목록·마감 범위·단어), `create_reminder`(날짜만 또는 날짜와
+    시각, 우선순위 none·low·medium·high = EventKit 0·9·5·1), `complete_reminder`(되돌리기는 `completed: false`). 뒤 둘이 묻는 도구다.
+  - Apple Contacts: `search_contacts`(이름·이메일·전화번호; `@`가 있으면 이메일, 숫자가 4개 이상이면 전화번호), `get_contact`. 읽기만
+    한다. 연락처의 메모는 읽지 않는다(따로 entitlement가 필요하다).
+- EventKit 호출은 메인 스레드 밖에서 하고, 저장소는 잠금 하나로 한 번에 하나씩 다룬다.
+- **앱 묶음:** Info.plist에 `NSCalendarsFullAccessUsageDescription`·`NSRemindersFullAccessUsageDescription`·`NSContactsUsageDescription`
+  (영어), `ko.lproj/InfoPlist.strings`에 한국어. `Packaging/Entitlements/Yardlet.entitlements`에 하드닝 런타임의
+  `com.apple.security.personal-information.calendars`(미리 알림 포함)·`com.apple.security.personal-information.addressbook`. Yardlet이
+  띄운 명령이 이 데이터를 쓸 때도 macOS는 Yardlet의 이름으로 묻는다. `DeveloperIDSigningTests`가 entitlement마다 두 언어의 사용
+  설명이 있는지 본다.
+
+### Xcode
+
+- Apple의 MCP 서버(Xcode 26.3부터)는 stdio 다리 `mcpbridge`가 열린 Xcode의 도구 서비스에 잇는다. Yardlet은 `mcpbridge`를 자기 자식
+  프로세스로 띄우고 JSON-RPC를 주고받는다(`XcodeBridge`, `MCPStdioClient`). 그래서 Xcode가 접근을 묻는 상대는 하네스마다가 아니라
+  Yardlet 하나다.
+- **찾기(`XcodeBridge.locate`):** `DEVELOPER_DIR`, `/var/db/xcode_select_link`가 가리키는 폴더, `/Applications/Xcode.app`·`Xcode-beta.app`
+  순으로 `Contents/Developer/usr/bin/mcpbridge`를 본다. 경로만 읽는다. 개발 도구가 없는 Mac에서 `xcrun`·`xcode-select`를 실행하면
+  설치 창이 뜨기 때문이다.
+- **다리를 띄우는 때:** 사람이 "연결"(도구 목록 읽기)이나 "도구 목록 다시 읽기"를 누를 때와 Xcode 도구를 부를 때뿐이다. 앱이나
+  작업을 시작할 때는 띄우지 않고(도구 목록은 `connectors.json`에 둔 것), 12시간마다 다시 읽지도 않는다. 그것만으로 Xcode가 뜨지 않게
+  하려는 것이다. 한 번 띄운 다리는 Yardlet이 끝나거나 커넥터를 지울 때까지 두고, 다리가 끝나면 다음 호출이 한 번 다시 띄운다.
+  Yardlet이 끝나면 표준 입력이 닫혀 다리도 끝난다.
+- **클라이언트:** 줄 단위 JSON-RPC, 요청 ID로 답을 맞춰 동시 호출, 서버의 `ping`에는 답하고 그 밖의 서버 요청은 거절, 취소한 호출은
+  `notifications/cancelled`. 줄은 줄바꿈 바이트로만 나눈다(JSON 문자열 안의 U+2028에서 끊지 않게). 빌드·검사가 몇 분 걸리므로 호출에
+  따로 시간 제한을 두지 않고 하네스의 도구 시간 제한을 따른다. 다리가 끝나며 표준 오류에 남긴 마지막 줄이 오류가 된다("Xcode MCP
+  access is disabled; turn it on in Xcode Settings > Intelligence > Model Context Protocol…", "No running Xcode found and could not launch
+  one automatically.").
+- **조건 안내:** 커넥터 추가 타일은 Xcode에서 프로젝트를 열어 두어야 한다고 말하고, 설정 행은 "Xcode 27.1 · 프로젝트를 연 동안"처럼
+  버전과 조건을 보인다. 실패하면 그 이유와 "Xcode에서 프로젝트를 열고, Xcode 설정 → Intelligence에서 다른 에이전트가 Xcode 도구를
+  쓰도록 허용하세요."가 보인다.
+- **가져오기 제안:** 하네스 설정에 `xcrun mcpbridge`가 있으면 "다른 곳에서 쓰는 서비스"에 Xcode가 보인다(`packages: ["mcpbridge"]`).
+  하네스가 스스로 싣는 stdio Xcode 서버는 주소가 없어 "하네스 자체 서버" 절의 대신하기와 중복 제외 대상이 아니다. 그래서 한 작업이
+  하네스 쪽 Xcode와 Yardlet 쪽 Xcode를 함께 받을 수 있다.
+
+### 하네스가 묻기
+
+- 묻는 도구(`LocalConnectorService.approvalRequiredTools`): App Store Connect `add_beta_tester`·`remove_beta_tester`·
+  `add_build_to_group`·`reply_to_review`·`submit_for_review`, Apple Calendar `create_event`·`update_event`·`delete_event`, Apple Reminders
+  `create_reminder`·`complete_reminder`. Apple Contacts는 읽기만 한다. Xcode에는 Yardlet이 정한 묻는 도구가 없다.
+- Claude Code: Google과 같이 커넥터 도구가 허용 목록에 없어 부를 때마다 묻는다. 위 쓰기의 요청 카드는 Yardlet 문구이고 "항상 허용"이
+  없다(`AppleToolApproval`): 테스터 초대(Apple이 초대 메일을 보낸다는 말)·빼기, 빌드 배포(그룹의 테스터가 설치할 수 있다는 말), 리뷰
+  답글(App Store에 보이고 이전 답글을 바꾼다는 말과 답글 앞 1,200자), 심사 제출, 이 Mac의 캘린더 일정 만들기·바꾸기·지우기, 미리 알림
+  추가·완료와 되돌리기. Xcode 도구는 CLI의 보통 카드다.
+- Codex: 주석을 따른다. 쓰기는 모두 `readOnlyHint: false`·`openWorldHint: true`(계정 서버로 동기화되거나 공개되므로), 일정 지우기와
+  테스터 빼기는 `destructiveHint: true`다. Xcode 도구는 Xcode 서버가 준 주석 그대로다.
+- ACP: 그 하네스의 MCP 승인 그대로.
+
+### 끄기와 지우기
+
+- 작업별 스위치로 그 작업에서 끄고, 설정 행 `…` → 제거로 지운다. 제거는 레코드와 Keychain 항목(App Store Connect 키)을 지우고
+  Xcode의 `mcpbridge`를 끝낸다. 하네스 설정 파일에는 아무것도 쓰지 않는다.
+- macOS 권한(시스템 설정 → 개인정보 보호 및 보안의 Yardlet 허용)은 Google 범위처럼 제거해도 남는다. Yardlet은 권한을 되돌리지
+  않으므로 사람이 시스템 설정에서 끈다(행 `…` → "개인정보 보호 및 보안 열기…").
+
+### 사람이 할 일
+
+- **App Store Connect**(팀 키, 역할 Admin 권장):
+  1. appstoreconnect.apple.com → 사용자 및 액세스 → 통합 → App Store Connect API → 팀 키 → "API 키 생성"(또는 +). Account Holder·
+     Admin에게만 보인다.
+  2. 이름(예: "Yardlet"), 액세스는 **Admin**(리뷰 답글이 필요 없으면 App Manager). 생성.
+  3. 새 키 줄의 "API 키 다운로드"(한 번만 된다) → `AuthKey_<키 ID>.p8`이 다운로드 폴더에 생긴다. 키 목록 위의 발급자 ID를 복사한다.
+  4. Yardlet 설정 → 커넥터 → 커넥터 추가 → "키나 토큰 붙여 넣기"의 App Store Connect "설정…" → 팀 키 → ".p8 파일 고르기…"(키 ID는
+     파일 이름에서 채워진다) → 발급자 ID 붙여 넣기 → "연결" → 키 파일을 휴지통으로 옮길지 고른다.
+  - 개인 키라면 1~2 대신 App Store Connect의 내 프로필 → 개인 API 키 → "API 키 생성"(권한이 없으면 Admin이 "개인 API 키 생성" 권한을
+    줘야 한다). 4에서 "개인 키"를 고르고 발급자 ID는 넣지 않는다.
+- **Mac의 캘린더·미리 알림·연락처:** 커넥터 추가 → "한 번에 연결"의 Apple Calendar(또는 Apple Reminders·Apple Contacts) "연결" →
+  macOS 창에서 "허용"(셋 각각 한 번). 나중에 끄려면 시스템 설정 → 개인정보 보호 및 보안 → 캘린더(미리 알림·연락처)에서 Yardlet을 끈다.
+- **Xcode:** Xcode → Settings → Intelligence → Model Context Protocol에서 외부 에이전트가 Xcode 도구를 쓰도록 켠다. 프로젝트를 연다.
+  커넥터 추가 → "한 번에 연결"의 Xcode "연결" → Xcode가 Yardlet의 접근을 물으면 허용.
+- 그다음 Claude Code 작업은 다음 턴부터, 다른 하네스의 작업은 다음에 시작하거나 재개할 때 도구가 보인다("실행 중인 작업의 도구
+  목록" 절).
+
+### 없는 것
+
+- App Store Connect: 인증서·프로필·판매 보고서·공증, 메타데이터·스크린샷 편집, 단계적 출시, 베타 심사 제출, 크래시 로그 밖의 진단.
+- Mac: 일정의 첨부·참석자·반복 규칙 만들기, 미리 알림 고치기·지우기, 연락처 쓰기와 메모 읽기, 메모·메시지 앱의 데이터.
+- Xcode: 하네스가 스스로 싣는 stdio Xcode 서버를 Yardlet 쪽이 대신하지 않는다(위 "Xcode").
+
+## 11. Slack
 
 Slack MCP 서버(`https://mcp.slack.com/mcp`)는 동적 등록이 없고, Slack Marketplace에 게시된 앱과 그 워크스페이스의 내부 앱만 받는다.
 그래서 Google처럼 빌드에 앱을 넣을 수 없고, 워크스페이스마다 Yardlet 매니페스트로 앱을 하나 만든다.
@@ -503,7 +734,7 @@ Slack MCP 서버(`https://mcp.slack.com/mcp`)는 동적 등록이 없고, Slack 
 2. 새 앱의 Basic Information → App Credentials → **Client ID** 복사 → Yardlet 칸에 붙여 넣기(형식 `숫자.숫자` 확인).
 3. **Slack에 로그인** → 브라우저에서 Yardlet 허용(워크스페이스가 관리자 승인을 요구하면 승인 요청).
 
-## 11. GitHub 로그인
+## 12. GitHub 로그인
 
 GitHub의 원격 MCP 서버(`https://api.githubcopilot.com/mcp/`)는 동적 등록이 없어, 등록된 OAuth 앱이 있는 호스트만 로그인 단추를 쓸 수
 있다. Yardlet은 GitHub OAuth 앱의 기기 코드 방식(device flow)으로 로그인한다.
@@ -524,7 +755,7 @@ GitHub의 원격 MCP 서버(`https://api.githubcopilot.com/mcp/`)는 동적 등�
 - 기기 코드 로그인이 없는 빌드에서는 "키나 토큰 붙여 넣기"의 GitHub에 개인 액세스 토큰을 넣거나, 추가한 뒤 행의 `…` → "직접 만든
   OAuth 클라이언트로 연결…"에 GitHub OAuth 앱(콜백 `http://127.0.0.1:47823/callback`)을 넣는다.
 
-## 12. 아이콘
+## 13. 아이콘
 
 - **순서(`ConnectorIconSources`):** 그 커넥터 MCP 서버가 `initialize`의 `serverInfo.icons`로 준 아이콘(서버 주소와 같은 등록 도메인의
   `https`, 또는 `data:image/`; light 화면은 light → 테마 없음 → dark, dark 화면은 반대, 각 테마에서 가장 큰 것) → 디렉터리 항목의
@@ -534,59 +765,72 @@ GitHub의 원격 MCP 서버(`https://api.githubcopilot.com/mcp/`)는 동적 등�
   수 있으므로 이름으로 디렉터리 항목을 찾아(`ConnectorPreset.preset(forServerNamed:)`) 그 아이콘을 쓴다.
 - **디렉터리 아이콘(`ConnectorPreset.iconAddresses`):** 각 서비스 홈페이지의 `<link rel=icon|apple-touch-icon>`과 루트의
   `apple-touch-icon.png`·`favicon.ico` 중, 그 서비스 도메인에 있고 32 px 이상인 것이다. 홈페이지가 직접 연결한 그 회사 정적 호스트와
-  사이트가 돌려보내는 곳은 그대로 따른다. Google 서비스는 Google 자신의 `www.gstatic.com/images/branding/product/` 그림이다. 쓸 만한
-  아이콘이 없는 곳(16 px뿐이거나 다른 회사 호스트에만 있는 곳)은 기호로 남는다.
+  사이트가 돌려보내는 곳은 그대로 따른다. Google 서비스는 Google 자신의 `www.gstatic.com/images/branding/product/` 그림, App Store
+  Connect는 Apple 개발자 사이트(`developer.apple.com/assets/elements/icons/app-store-connect/`)의 그림이다. 쓸 만한 아이콘이 없는
+  곳(16 px뿐이거나 다른 회사 호스트에만 있는 곳)은 기호로 남는다.
+- **이 Mac의 앱:** Apple Calendar·Apple Reminders·Apple Contacts·Xcode의 디렉터리 아이콘은 그 앱의 `file://` 주소
+  (`/System/Applications/Calendar.app` 등, `/Applications/Xcode.app`)이고, `ConnectorIconStore`가 macOS가 그 앱에 주는 아이콘
+  (`NSWorkspace.icon(forFile:)`)을 그린다. 네트워크에 가지 않고, 앱이 없으면 기호다.
 - **받기·캐시(`ConnectorIconStore`):** 쿠키·URL 캐시·자격 증명 저장소 없는 ephemeral `URLSession`으로 `https`만, 15초, 1 MB까지,
   `NSImage`가 읽는 그림(PNG·ICO·SVG·JPEG)만 받는다. `~/Library/Caches/<번들 ID>/ConnectorIcons/<FNV-1a 64>`에 두고 다음 실행부터
   디스크에서 읽는다. 실패하면 표시를 두고 하루 동안 다시 묻지 않는다. 캐시를 지우면 다시 받는다(설정 파일에는 아무것도 쓰지 않는다).
   검사 프로세스의 앱 저장소는 네트워크에 가지 않는다.
 - **그리기(`ConnectorIcon`):** 20 pt 이상은 옅은 상자에 상자의 2/3 크기 그림, 도구 줄(16 pt)은 그림만. 받기 전·실패 때는 기호나 첫 글자.
 
-## 13. 보안과 한계
+## 14. 보안과 한계
 
 - 같은 사용자의 다른 프로세스가 `yardlet-mcp`의 작업 토큰을 얻으면 커넥터 도구도 부를 수 있다. 브라우저 도구와 같은
   경계다([AGENT_BROWSER_TOOLS](AGENT_BROWSER_TOOLS.md) 6절).
-- 도구 승인은 하네스 몫이다. Yardlet은 따로 묻지 않는다. Claude Code의 Google 쓰기 요청 카드만 Yardlet 문구로 보이고 "항상 허용"을
-  뺀다("Google" 절).
-- 커넥터로 읽은 내용은 그 작업의 하네스를 거쳐 그 제공자에게 간다. Yardlet은 서비스에서 받은 본문·요청·응답을 로그에 쓰지 않는다.
+- 도구 승인은 하네스 몫이다. Yardlet은 따로 묻지 않는다. Claude Code의 Google·Apple 쓰기 요청 카드만 Yardlet 문구로 보이고 "항상
+  허용"을 뺀다("Google" 절, "Apple" 절).
+- 커넥터로 읽은 내용은 그 작업의 하네스를 거쳐 그 제공자에게 간다. Mac의 캘린더·미리 알림·연락처와 App Store Connect의 데이터도
+  같다. Yardlet은 서비스에서 받은 본문·요청·응답을 로그에 쓰지 않는다.
+- App Store Connect API 키는 Keychain에만 있고, Yardlet이 그 키로 15분짜리 토큰을 만들어 Apple에 보낸다. 에이전트가 그 키로 할 수
+  있는 일의 범위는 키의 종류와 역할이 정한다("Apple" 절).
 - Browserbase 키는 Browserbase가 정한 대로 요청 주소에 실린다(서버 로그에 남을 수 있음). Yardlet의 파일·화면·오류 문구에는 없다.
 - 지원하지 않는 것: 옛 HTTP+SSE 전송(2024-11-05), Client ID Metadata Document(Yardlet에 https 문서 주소가 없음), resources·prompts,
   서버가 stream 안에서 보내는 요청(elicitation, sampling, roots), 진행 알림 표시, 도구별 막기, 커넥터 서버(원격 MCP)가 스스로 보내는
   `notifications/tools/list_changed`(서버 목록은 연결할 때와 12시간마다 다시 읽는다).
-- stdio 커넥터(Yardlet이 `npx` 같은 프로세스를 띄우고 비밀을 환경으로 넘기는 것)는 없다. 원격 서버가 있는 서비스는 원격이 더
-  단순하고, stdio는 Yardlet이 서드파티 프로세스의 수명·업데이트·샌드박스를 맡게 된다. 필요하면 같은 브로커 뒤에 stdio 클라이언트를
-  더하는 방식으로 할 수 있다.
-- 루프백 수신기, Keychain, 브라우저 열기, SHA-256은 macOS 플랫폼 층이다. Windows는 같은 규약으로 Credential Manager와 루프백
-  수신기를 따로 만들어야 한다.
+- 사용자가 더하는 stdio 커넥터(Yardlet이 `npx` 같은 프로세스를 띄우고 비밀을 환경으로 넘기는 것)는 없다. 원격 서버가 있는 서비스는
+  원격이 더 단순하고, stdio는 Yardlet이 서드파티 프로세스의 수명·업데이트·샌드박스를 맡게 된다. 같은 브로커 뒤의 stdio 클라이언트
+  (`MCPStdioClient`)는 Xcode에 든 Apple의 `mcpbridge` 하나만 띄우고, 비밀을 넘기지 않는다("Apple" 절).
+- 루프백 수신기, Keychain, 브라우저 열기, SHA-256, App Store Connect의 ES256 서명(CryptoKit), EventKit·Contacts, 시스템 설정의
+  개인정보 패널 주소는 macOS 플랫폼 층이다. Windows는 같은 규약으로 Credential Manager와 루프백 수신기를 따로 만들어야 하고, Mac
+  데이터와 Xcode 커넥터는 없다.
 
-## 14. 코드 위치
+## 15. 코드 위치
 
 | 위치 | 내용 | 층 |
 |---|---|---|
-| `Sources/NativeHarnessClient/Connectors/ConnectorModels.swift` | 레코드, 자격 증명(`client` 종류 포함), 저장소 규약, 이름 규칙(`ConnectorToolNaming`), Google 서비스(`LocalConnectorService`) | 엔진 |
+| `Sources/NativeHarnessClient/Connectors/ConnectorModels.swift` | 레코드, 자격 증명(`client`·`signingKey` 종류 포함), 저장소 규약, 이름 규칙(`ConnectorToolNaming`), 앱 안의 서비스(`LocalConnectorService`: Google 셋과 Apple 다섯) | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/ConnectorDirectory.swift` | 디렉터리(`ConnectorPreset`), 가져오기 제안, 작업 상태(`ConnectorTaskState`·`ConnectorTaskScope`), 도구 줄 이름표 | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/NativeMCPConfigs.swift` | 하네스 자체 설정 읽기(Claude `.claude.json`·`.mcp.json`, Codex `config.toml`, Antigravity `mcp_config.json`), 작업이 스스로 싣는 서버 | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/MCPHTTPClient.swift` | Streamable HTTP 클라이언트, `WWW-Authenticate` 해석, event stream, 주소의 키 | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/ConnectorOAuth.swift` | 발견, 동적 등록, 직접 만든 클라이언트, 인가 URL, 토큰 교환·갱신, PKCE | 엔진 |
-| `Sources/NativeHarnessClient/Connectors/ConnectorCenter.swift` | 커넥터 목록·연결·로그인, 작업별 스위치, 하네스 서버 대신하기(`withYardletStandIns`), 도구 목록과 호출, 세션별 토큰 갱신(`ConnectorSession`), Google 앱·계정·로그인, 목록 바뀜 알림(`onToolsChanged`) | 엔진 |
+| `Sources/NativeHarnessClient/Connectors/ConnectorCenter.swift` | 커넥터 목록·연결·로그인, 작업별 스위치, 하네스 서버 대신하기(`withYardletStandIns`), 도구 목록과 호출, 세션별 토큰 갱신(`ConnectorSession`), Google 앱·계정·로그인, Apple 서비스 더하기·연결(`isAvailable`, `addLocal`, `addAppStoreConnectKey`), 목록 바뀜 알림(`onToolsChanged`) | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/GoogleOAuth.swift` | Google 엔드포인트, 빌드에 든 앱(`BuiltInApp`), Google 앱 Keychain 항목 ID, 인가 인자, 범위 확인, `GoogleAPISession` | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/GmailToolCatalog.swift`, `GmailAPI.swift`, `GmailToolRunner.swift` | Gmail 도구 정의·주석·묻는 도구, REST 호출·메시지 읽기(charset·HTML→텍스트)·MIME 만들기, 도구별 요청·응답 | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/GoogleREST.swift` | Calendar·Drive REST 클라이언트(JSON, 내려받기, multipart 올리기), 인자 읽기(`GoogleToolArguments`), 스키마 조각(`GoogleToolSchema`) | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/GoogleCalendarToolCatalog.swift`, `GoogleCalendarToolRunner.swift` | Calendar 도구·범위·묻는 도구, Calendar API v3 요청·응답, `CalendarTime`(시간대·빈 시간) | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/GoogleDriveToolCatalog.swift`, `GoogleDriveToolRunner.swift` | Drive 도구·범위·묻는 도구, Drive API v3 요청·응답(내보내기·multipart), `DriveQuery` | 엔진 |
+| `Sources/NativeHarnessClient/Connectors/GoogleEditorsToolCatalog.swift`, `GoogleEditorsToolRunner.swift` | Drive 커넥터의 Docs·Sheets·Slides 도구·묻는 도구·켜야 하는 API, Docs·Sheets·Slides API 요청·응답, 나눠 읽기 | 엔진 |
+| `Sources/NativeHarnessClient/Connectors/AppStoreConnectAPI.swift`, `AppStoreConnectToolCatalog.swift`, `AppStoreConnectToolRunner.swift` | `.p8` 키와 ES256 토큰(`ES256Signing` 계약), 키 세션(401 뒤 새 토큰), JSON:API 요청, 도구 14개와 묻는 도구 | 엔진 |
+| `Sources/NativeHarnessClient/Connectors/MacDataStore.swift`, `MacDataToolCatalog.swift`, `MacDataToolRunner.swift` | Mac 데이터 저장소 계약(`MacDataStoring`)·권한 상태·오류 문구, 캘린더·미리 알림·연락처 도구와 실행 | 엔진 |
+| `Sources/NativeHarnessClient/Connectors/MCPStdioClient.swift`, `XcodeBridge.swift` | stdio MCP 클라이언트(요청 ID 맞추기, 취소, 표준 오류의 이유), 자식 프로세스 채널, `mcpbridge` 찾기·Xcode 버전 | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/SlackAppManifest.swift` | Slack 앱 매니페스트와 만들기 링크 | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/GitHubDeviceSignIn.swift` | GitHub 기기 코드 로그인, Info.plist의 client ID | 엔진 |
 | `Sources/NativeHarnessClient/Connectors/ConnectorIcons.swift` | `MCPServerIcon`(`serverInfo.icons`), 아이콘 출처 순서(`ConnectorIconSources`), 자기 사이트 확인(`ConnectorIconSite`), 디렉터리 아이콘 주소 | 엔진 |
 | `Sources/NativeHarnessClient/AgentTools/AgentToolBroker.swift` | `tools/list`와 커넥터 호출 경로, 작업별 범위, 주입 조건, `tools/watch` | 엔진 |
 | `Sources/NativeHarnessClient/AgentTools/AgentToolInjection.swift` | 주입 문서, `deniedMcpServers` 설정, `ClaudeAIConnectorPreference` | 엔진 |
-| `Sources/NativeHarnessClient/AgentTools/GmailToolApproval.swift`, `GoogleToolApproval.swift` | Claude Code 요청 카드의 Gmail·Calendar·Drive 쓰기 문구 | 엔진 |
+| `Sources/NativeHarnessClient/AgentTools/GmailToolApproval.swift`, `GoogleToolApproval.swift`, `AppleToolApproval.swift` | Claude Code 요청 카드의 Gmail·Calendar·Drive(Docs·Sheets·Slides 포함) 쓰기 문구, App Store Connect·Mac 캘린더·미리 알림 쓰기 문구 | 엔진 |
 | `Sources/YardletAgentTools/MCPServer.swift` | `listChanged: true`, 클라이언트가 받은 목록(`MCPToolListing`), 목록 감시와 `notifications/tools/list_changed`(`watchToolList`) | 엔진 |
 | `Sources/NativeHarnessClient/Adapters/Claude/ClaudeProcessTransport.swift` | `ENABLE_CLAUDEAI_MCP_SERVERS=false` | 엔진 |
 | `Sources/NativeHarnessClient/Presentation/ConnectorSetupAssistant.swift` | "한 번에 설정" 단계 상태·콘솔 링크·복사 값·칸 확인 | 표현 |
-| `Sources/NativeHarnessClient/Platform/macOS/Connectors/` | Keychain 저장소, 루프백 수신기(Network.framework, 고정 포트 선택), 브라우저 열기, SHA-256, 아이콘 받기·캐시(`ConnectorIconStore`) | macOS |
+| `Sources/NativeHarnessClient/Platform/macOS/Connectors/` | Keychain 저장소, 루프백 수신기(Network.framework, 고정 포트 선택), 브라우저 열기, SHA-256, 아이콘 받기·캐시(`ConnectorIconStore`, 이 Mac의 앱 아이콘 포함), EventKit·Contacts 구현(`MacEventKitStore`, 사용 설명이 없으면 묻지 않음, 시스템 설정의 개인정보 패널 주소), CryptoKit ES256(`MacES256Signer`) | macOS |
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorSettingsView.swift` | 설정 → 커넥터, 상태 한 단어(`ConnectorSettingsState`), "한 번에 설정" 카드 | 화면 |
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorAddSheet.swift` | "커넥터 추가" 시트, 서비스별 단계와 링크(`ConnectorSetupGuide`) | 화면 |
 | `Sources/NativeHarnessClient/Views/AppShell/GoogleSetupPage.swift`, `SlackSetupPage.swift`, `ConnectorSetupAssistantViews.swift` | Google·Slack 설정 도우미(단계 행, 복사 버튼, 확인되는 칸, 계정별 서비스 칩) | 화면 |
+| `Sources/NativeHarnessClient/Views/AppShell/AppStoreConnectSetupPage.swift` | App Store Connect 페이지(단계, 키 종류, `.p8` 고르기, ID 칸, 키 목록, 휴지통 질문) | 화면 |
 | `Sources/NativeHarnessClient/Views/Composer/ComposerPlusMenu.swift` | 입력창 "+" 메뉴 행·키(`ComposerMenuList`), "+" 순서(`ComposerPlusMenu`), 커넥터 목록(`ComposerConnectorsMenu`) | 화면 |
 | `Sources/NativeHarnessClient/Views/Composer/ComposerConnectorsMenu.swift`, `Presentation/Composer/ComposerConnectorList.swift` | 커넥터 환경, `ConnectorIcon`, 세션 레일 행, 목록 상태 | 화면 |
 
@@ -598,12 +842,13 @@ GitHub의 원격 MCP 서버(`https://api.githubcopilot.com/mcp/`)는 동적 등�
 | `Tests/NativeHarnessClientTests/ConnectorDirectoryTests.swift` | 디렉터리, 실제 메타데이터 모양의 발견, 직접 만든 클라이언트·공개 클라이언트·주소의 키, 작업별 스위치, 중복 제외와 Claude 하네스 서버 대신하기(`--settings`), 설정 파싱(가짜 값), 가져오기, claude.ai 환경, 주입 문서, 도구 줄 |
 | `Tests/NativeHarnessClientTests/ConnectorLiveToolsTests.swift` | 가짜 MCP 클라이언트로 `list_changed`와 목록 갱신, 소켓을 거친 `tools/watch`, 실제 `ConnectorCenter`의 작업별 변화, 다시 읽는 클라이언트와 읽지 않는 클라이언트, 턴 끝 알림, 하네스별 문구 |
 | `Tests/NativeHarnessClientTests/GmailConnectorTests.swift`, `GoogleCalendarDriveConnectorTests.swift`, `GoogleBuiltInAppTests.swift` | 가짜 Google(`FakeGoogle`, `FakeGoogleWorkspace`)로 로그인·범위·계정·도구마다 요청·묻기, 빌드에 든 앱 |
+| `Tests/NativeHarnessClientTests/AppleConnectorTests.swift` | 가짜 App Store Connect(요청마다 토큰 서명 확인)·가짜 Mac 저장소·가짜 `mcpbridge`로 전 과정: 팀 키·개인 키 토큰, 키는 Keychain에만, 도구마다 요청과 답, 거절된 키, 쓰기만 묻기와 카드 문구, Mac 권한과 캘린더·미리 알림·연락처, Xcode 찾기·연결·다시 띄우기·지우기, 실제 셸 프로세스의 stdio |
 | `Tests/NativeHarnessClientTests/GitHubDeviceSignInTests.swift` | 기기 코드 요청·대기·거절·만료, MCP에 bearer로 보냄 |
 | `Tests/NativeHarnessClientTests/ConnectorSetupAssistantTests.swift` | Slack 매니페스트와 링크 인코딩, Google·Slack 단계 상태, 칸 확인, 이름만 읽은 제안 |
 | `Tests/NativeHarnessClientTests/ConnectorIconTests.swift` | 아이콘 순서·테마·출처 제한, 받기·캐시·실패 대기(opt-in `YARDLET_CONNECTOR_ICONS_LIVE=1`은 실제 서비스 사이트에서 받아 그림) |
-| `Tests/NativeHarnessClientTests/ConnectorsRenderingTests.swift`, `ConnectorsEasyQARenderingTests.swift`, `PlusConnectorsQARenderingTests.swift`, `GmailSetupRenderingTests.swift` | 설정·추가 시트·도우미·입력창 목록을 `.build/` 아래에 라이트·다크로 그림 |
+| `Tests/NativeHarnessClientTests/ConnectorsRenderingTests.swift`, `ConnectorsEasyQARenderingTests.swift`, `PlusConnectorsQARenderingTests.swift`, `GmailSetupRenderingTests.swift`, `AppleConnectorsRenderingTests.swift` | 설정·추가 시트·도우미·입력창 목록·App Store Connect 페이지를 `.build/` 아래에 라이트·다크로 그림. Apple 연결 흐름은 화면 밖 투명 창에서 접근성 누르기로 돈다 |
 
-## 15. QA(모델 턴 없이)
+## 16. QA(모델 턴 없이)
 
 `scripts/connector-qa/`:
 

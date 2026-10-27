@@ -8,14 +8,17 @@ import AppKit
 @MainActor
 enum QABackground {
     nonisolated static let isOn = ProcessInfo.processInfo.environment["YARDLET_QA_BACKGROUND"] == "1"
-    /// The performance run (`run-perf.sh`) measures frames on a display, so its window stays on the screen
-    /// it picks; it is still never active.
-    private static let measuresOnScreen = CommandLine.arguments.contains { $0.hasPrefix("--ui-fixture-browser-perf=") }
+    /// The performance run (`run-perf.sh`) measures frames on a display and the showcase capture
+    /// (`scripts/showcase/capture.sh`) records its windows from one, so their windows stay on the screen
+    /// they pick; they are still never active, and the showcase puts its windows behind the person's,
+    /// with clicks passing through (`ShowcaseFixture.install`).
+    private static let drawsOnScreen = CommandLine.arguments.contains { $0.hasPrefix("--ui-fixture-browser-perf=") }
+        || Set(CommandLine.arguments).isSuperset(of: ["--ui-fixture=showcase", "--ui-fixture-ignore-pointer"])
     private static var observer: (any NSObjectProtocol)?
 
     static func start() {
         NSApp.setActivationPolicy(.accessory)
-        guard !measuresOnScreen else { return }
+        guard !drawsOnScreen else { return }
         DispatchQueue.main.async { NSApp.windows.forEach(moveOffScreen) }
         // A window ordered in later (another Yardlet window, a sheet's parent) changes its occlusion.
         observer = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,

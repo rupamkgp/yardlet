@@ -1,6 +1,6 @@
 # 작업마다 브라우저 세션 격리
 
-상태: 구현(2026-10-24, 같은 날 디스크 프로필 경로를 고침: 7절. 2026-10-25 쿠키 복사가 쿠키 모양을 바꾸던 것을 고침: 8절). 브라우저 호스트 계약은 [BROWSER_HOST](BROWSER_HOST.md)
+상태: 구현(2026-10-24, 같은 날 디스크 프로필 경로를 고침: 7절. 2026-10-25 쿠키 복사가 쿠키 모양을 바꾸던 것을 고침: 8절. 2026-10-26 다른 브라우저에서 로그인 가져오기: 10절). 브라우저 호스트 계약은 [BROWSER_HOST](BROWSER_HOST.md)
 3절 "프로필", 금고는 [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)에 있다.
 
 ## 1. 계기와 목표
@@ -21,6 +21,7 @@
 | Claude 앱 3.1623.3 | 설정 "Keep cookies"로 고른다: "Until quit"(기본, 비영속, 작업 폴더별), "Shared"(모든 세션 공유, `persist:launch-preview-cowork-shared`), "Per session"(세션마다 `persist:launch-preview-session-<세션 ID>`). 세션을 분기하면 부모의 쿠키를 복사한다(`seedForkedPreviewCookies`). 세션을 지우면 그 세션의 저장소를 지우고(`clearData`), 보관은 지우지 않는다. 에이전트와 사람은 같은 탭의 저장소를 쓴다 | `app.asar` `index.chunk-DylQWxwC.js`(`launchPreviewStorage: "none" \| "shared" \| "session"`), `ion-dist` 설정 문구 |
 | Codex 앱 26.1016 | 없음. 로컬 내장 브라우저의 모든 스레드가 `persist:codex-browser-app` 하나를 쓴다. 스레드마다 다른 것은 탭 소유와 복원 정보뿐이고, 보관·삭제가 로그인 저장소를 지우지 않는다 | `main-JI9qDiXp.js`(`session.fromPartition(Vu("app"))`), `src-CSKkIr_z.js` |
 | Aside | 작업은 기본 프로필을 함께 쓰고, "시크릿" 작업만 프로필 상태 없이 돈다. 금고(Aside Vault)가 자격 증명을 함께 쓴다 | 도움말 Run tasks |
+| Claude 앱 3.6556.2(가져오기) | 기능 플래그 `desktop_ccd_chrome_import` 뒤에 "Chrome에서 로그인 가져오기"가 있다: Chrome·Edge·Brave·Chromium·Firefox의 프로필을 고르고 사이트(등록 도메인)를 골라 그 쿠키와 localStorage를 미리보기 저장소에 넣는다. 기존 쿠키는 지우지 않고 덮어쓰며, 가져온 사이트 목록과 지우기가 있다(10절) | `app.asar` `index.chunk-TCY6lWOp.js`(`runChromeImport`, `listChromeImportSites`) |
 | ego(lite) | Space(작업)마다 BrowserContext 하나, 자기 쿠키와 저장소. 그러면서도 브라우저에 있는 로그인을 에이전트가 이어 받는다(옮기는 방법은 문서에 없음). 작업에 Profile을 지정할 수도 있다 | 문서 Space, 변경 기록 0.4.4.15 |
 
 Yardlet은 Claude 앱의 "Per session"과 ego(lite)의 Space를 합친 모양이다: 작업마다 저장소를 두고, 새 작업은 로그인된 채로 시작하며, 자격 증명은
@@ -37,6 +38,7 @@ Yardlet은 Claude 앱의 "Per session"과 ego(lite)의 Space를 합친 모양이
 | 새 작업 화면의 탭 | 새 작업 화면은 자기 프로필 키를 갖고, 그 탭이 넘어간 작업은 그 키를 이어 쓴다. 새 작업 화면은 새 키를 받는다 | 넘어간 탭의 페이지가 그대로이므로 저장소도 같아야 한다 |
 | 보관·삭제 | 둘 다 그 작업의 폴더를 지운다. 호스트가 폴더를 열고 있지 않을 때(호스트가 끝날 때) 남은 작업에 속하지 않는 폴더를 지우고, Chromium이 `Local State`에 남긴 그 프로필의 기록도 지운다 | 지운 뒤 흔적이 남지 않게. Claude 앱은 삭제 때만 지운다 |
 | 켜고 끄기 | 설정 › 일반 "쿠키 보관": "작업마다"(기본) / "모든 작업이 함께"(전과 같음) | Claude 앱의 "Keep cookies"와 같은 자리의 설정. "Until quit"은 호스트가 자주 끝나는 Yardlet에서 뜻이 달라 두지 않았다 |
+| 다른 브라우저의 로그인(2026-10-26) | 사람이 브라우저 패널의 페이지 메뉴에서 고른 사이트의 쿠키를 기본 프로필과 그 작업의 프로필에 넣는다. 그 사이트에 있던 쿠키는 지운다 | 패스키가 다른 브라우저에만 있는 사이트를 Yardlet에서 쓰게. 이미 돌고 있는 다른 작업은 사람의 로그인 복사처럼 그대로 둔다(10절) |
 | Touch ID 패스키 | 새 작업 프로필에 기본 프로필의 `webauthn.touchid.metadata_secret`를 넣는다 | Chromium은 Touch ID 패스키의 메타데이터를 프로필마다 이 키로 읽는다. 없으면 작업마다 패스키가 보이지 않는다 |
 
 ## 4. 구조
@@ -48,7 +50,8 @@ Yardlet은 Claude 앱의 "Per session"과 ego(lite)의 Space를 합친 모양이
 - **호스트:** `open` 명령의 `profile`(`key`, `seedFrom`)을 받아 `<root cache>/Task-<key>`에서 탭을 연다. 키는 UUID 꼴만 받아 다른 폴더를 가리키지 못한다.
   Chromium이 디스크 프로필을 비동기로 읽으므로, 그 프로필이 준비된 뒤(`on_request_context_initialized`) 브라우저를 만든다. 폴더가 새로 생기면 Touch ID
   키를 넣고, 탭을 about:blank로 연 뒤 시작 쿠키를 복사하고 나서 요청한 주소를 연다(프로필을 기다리거나 복사하는 사이에 온 이동과 DevTools 메시지는 그 뒤로 미룬다).
-  `copyCookies` 명령은 한 프로필의 한 사이트 쿠키를 다른 프로필로 옮긴다.
+  `copyCookies` 명령은 한 프로필의 한 사이트 쿠키를 다른 프로필로 옮긴다. `importCookies` 명령은 다른 브라우저에서 가져온 쿠키로 한 프로필의 고른
+  사이트 쿠키를 바꾼다(10절).
 - **Yardlet:** `BrowserTaskProfiles`가 작업의 키(작업 ID, 새 작업 화면에서 넘어온 작업은 그 화면의 키), 시작 쿠키의 출처(부모 작업의 폴더가 있으면
   그것, 없으면 기본 프로필), 설정, 정리를 맡는다. `BrowserHostClient`는 작업의 탭을 열 때마다 프로필을 붙이고, 탭이 다른 작업으로 옮겨 가면 알리고,
   호스트가 끝나면 정리를 부른다. 정리는 저장된 작업 목록을 다 읽은 뒤에만 한다. Chromium은 연 프로필을 모두 `Local State`(`profile.info_cache`,
@@ -170,3 +173,112 @@ Yardlet은 Claude 앱의 "Per session"과 ego(lite)의 Space를 합친 모양이
   남은 쌍은 호스트 전용 쪽도 복사본(`source_type` 3)이었다. 정리 전의 두 벌이 프로필 사이를 오가며 양쪽 모두 복사본이 된 것이다. 예전 복사는
   호스트 전용 쿠키를 만들지 않았으므로 쌍의 호스트 전용 쪽은 출처가 무엇이든 사이트의 모양이다. 그래서 3회차는 호스트 전용 쿠키와 짝인
   복사된 도메인 쿠키를 모두 지운다. 사이트가 직접 둘 다 만든 쌍(예: `search.google.com`의 `_ga`)은 남긴다.
+
+## 10. 다른 브라우저에서 로그인 가져오기(2026-10-26, 2026-10-27 브라우저 넓힘)
+
+- **계기:** 패스키로만 로그인되는 사이트는 패스키가 다른 브라우저(iCloud 키체인, Whale, Chrome)에만
+  있어 Yardlet 브라우저에서 로그인할 수 없다. 그 브라우저의 로그인 쿠키를 가져오면 Yardlet에서 그 사이트에 들어갈 수 있고, 그 사이트 설정에서
+  Yardlet 패스키를 하나 더 등록하면 그 뒤로는 Yardlet만으로 된다. [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)의 "Aside와 Ego 비교"에서 미뤄 둔 ④다.
+- **사람이 하는 것:** 브라우저 패널의 페이지에서 오른쪽 클릭 → "다른 브라우저에서 로그인 가져오기…" → 브라우저·프로필 고르기 → 사이트 체크(지금
+  페이지의 사이트는 맨 위에 체크된 채) → 가져오기 → macOS의 키체인 허용 창("Yardlet이 키체인의 'Whale Safe Storage'를 사용하려고 합니다")에서
+  허용. 끝나면 패널이 "Whale에서 … 로그인을 가져왔습니다"를 보이고, 페이지가 그 사이트면 다시 읽는다.
+- **찾는 브라우저(2026-10-27 넓힘):** `~/Library/Application Support`에서 Chromium 계열 Whale, Chrome, Edge, Brave, Arc, Comet, Vivaldi, Opera,
+  Opera GX, Yandex, Helium, Chromium과 Firefox 계열 Firefox, Zen, Floorp, LibreWolf, Waterfox 순서로 찾는다. 폴더·키체인 이름과 근거는 아래 표.
+  이 Mac에 쿠키 DB가 있는 프로필만 보이고, 시트는 그 브라우저 앱이 있으면 앱 번들의 아이콘을, 없으면 지구본 기호를 붙인다
+  (`NSWorkspace.urlForApplication(withBundleIdentifier:)`, 앱을 실행하지 않음).
+  - Chromium 계열: `Local State`(`profile.info_cache`의 이름, `profiles_order`, `last_used`가 먼저)에서 프로필을 읽고, 쿠키 DB(`<프로필>/Network/Cookies`,
+    없으면 `<프로필>/Cookies`: Whale·Comet은 뒤쪽)가 있는 프로필만 보인다. Opera처럼 브라우저 폴더 자체가 첫 프로필이면(폴더 바로 아래 쿠키 DB) 그것도
+    브라우저 이름만으로 보인다. 키체인 항목은 서비스 이름만으로 찾는다(브라우저마다 한 항목이고, 계정 이름은 브라우저마다 달라 확인하지 못한 것이 있다).
+  - Firefox 계열: `profiles.ini`의 `[Profile…]` 절(`Name`, `Path`, `IsRelative=1`이면 브라우저 폴더 아래)에서 `cookies.sqlite`가 있는 프로필만 보인다.
+    그 설치가 쓰는 프로필(`[Install…]`의 `Default`)이 먼저, 다음이 `Default=1`, 나머지는 파일 순서다. 키체인은 쓰지 않는다.
+- **macOS 27의 브라우저 폴더 보호(2026-10-27 확인):** macOS 27의 `/usr/libexec/sandboxd`에 들어 있는 규칙(`defaultRules-3`)이 Chrome(`Google/Chrome`),
+  Brave(`BraveSoftware/Brave-Browser`), Edge(`Microsoft Edge`), Firefox(`Firefox`) 폴더를 그 브라우저 자신의 팀 ID·서명 ID와 Safari의 가져오기 서비스
+  (`com.apple.Safari.BrowserDataImportingService`, Chrome·Firefox만)에게만 연다. 다른 앱이 읽으면 허용 창 없이 `Operation not permitted`가 난다(이 작업의
+  셸에서 Chrome 폴더 목록을 읽어 보고 `sandboxd` 로그 "TCC denied kTCCServiceSystemPolicyAppDataDetailed for com.google.Chrome"로 확인, Apple 개발자 포럼
+  847030의 DTS 답 "intentional change"). 같은 보고에서 전체 디스크 접근을 받은 앱은 읽힌다. 그래서 목록 파일(`Local State`, `profiles.ini`)이 있는데
+  읽히지 않는 브라우저는 목록에 넣지 않고, 시트 아래에 "Chrome의 데이터는 macOS가 전체 디스크 접근 권한이 있는 앱에만 열어 주어 목록에 없습니다"로
+  이름만 적는다. 권한을 묻는 창이나 설정 단추는 두지 않았다. `NativeMessagingHosts`와 Chrome의 `ChromeFeatureState`·`Crashpad`는 규칙에서 빠져 있다.
+  Whale·Arc·Comet·Vivaldi·Opera·Yandex·Helium과 Firefox 밖의 Gecko 브라우저 폴더는 규칙에 없다. Yardlet(서명된 앱)이 읽을 때도 허용 창 없이 거절되는지는
+  사용자 화면에 창이 뜰 수 있어 시험하지 않았다(포럼과 Claude Code 이슈 81453의 보고는 둘 다 "창 없이 거절").
+- **Safari는 넣지 않았다:** Safari의 쿠키(`~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`)는 macOS가 "전체 디스크
+  접근"을 받은 앱에만 열어 준다. 그 권한은 다른 앱의 데이터 전부에 미치므로 이 기능 하나를 위해 Yardlet에 달라고 하지 않는다.
+- **사이트 목록:** 쿠키 DB 사본에서 `host_key`와 마지막 사용 시각만 읽는다(값은 읽지 않음). 파티션 쿠키(`top_frame_site_key`가 빈 값이 아닌 것)와
+  만료된 쿠키는 세지 않는다. 호스트를 등록 도메인(Public Suffix List, 금고와 같은 목록)으로 묶고, IP 주소와 `localhost`는 그대로 둔다. 최근 쓴 순서다.
+- **복호화(Chromium macOS):** 키체인 비밀번호에서 PBKDF2-HMAC-SHA1(salt "saltysalt", 1003회, 16바이트)로 AES-128 키를 만들고, `v10` 접두사 뒤를
+  AES-128-CBC(IV는 공백 16개, PKCS#7)로 푼다. `meta` 버전이 24 이상이면 푼 값 앞 32바이트가 `host_key`의 SHA-256이어야 하고(다르면 그 쿠키는 뺀다),
+  그 뒤가 값이다. 하나도 풀리지 않으면 키가 그 프로필의 것이 아니라고 보고 아무것도 넣지 않는다. 암호화되지 않은 `value`도 받는다.
+- **Firefox 읽기(2026-10-27):** `cookies.sqlite`(WAL 모드라 최근 쿠키는 `-wal`에 있다)를 같은 방법으로 복사해 `moz_cookies`를 평문으로 읽는다.
+  Firefox 158 소스 `netwerk/cookie/CookiePersistentStorage.cpp`(스키마 17) 기준으로 바꾼다: `host`의 앞 점은 도메인 쿠키, `isSecure`·`isHttpOnly`는
+  그대로, `expiry`는 스키마 16부터 1970년 기준 **밀리초**(그전은 초, `PRAGMA user_version`으로 가름)라 Chromium의 1601년 기준 마이크로초로 바꾼다.
+  SameSite는 `nsICookie`의 0 None·1 Lax·2 Strict·256 미지정을 CEF의 1·2·3·0으로 옮기고, Secure가 아닌 None은 Chromium이 받지 않아 미지정으로 둔다
+  (스키마 15 전의 `rawSameSite` None·`sameSite` Lax도 미지정). 우선순위는 없어 보통이다. `originAttributes`가 빈 값인 쿠키만 받는다: `partitionKey`
+  (파티션), `userContextId`(컨테이너), `privateBrowsingId`가 붙은 것은 다른 정체성이라 넣지 않는다. Firefox는 세션 쿠키를 파일에 두지 않아 브라우저를
+  닫으면 끝나는 로그인은 가져올 수 없다. `lastAccessed`(1970년 기준 마이크로초)는 사이트 순서에만 쓴다.
+- **넣기:** 앱이 고른 사이트(와 그 하위 도메인)의 쿠키를 `importCookies` 명령으로 호스트에 보낸다. 호스트는 대상 프로필의 그 사이트 쿠키를 모두
+  지우고(`visit_all_cookies`의 삭제 표시, 파티션 쿠키 포함), 8·9절의 넣기 경로(`set_copied_cookies`)로 넣는다: 호스트 전용 쿠키는 도메인을 비워
+  호스트 전용으로, Secure·HttpOnly·SameSite·우선순위·만료(Chromium의 1601년 기준 마이크로초 그대로)를 지키고, 같은 호스트·이름·경로의 호스트 전용
+  쿠키가 있는 도메인 쿠키는 빼며, 쿠키마다 받는 쪽의 다른 모양을 지운다. 9절 3회차와 같이 짝이면 호스트 전용 쪽이 남는다. 그 뒤 저장소를 디스크에
+  반영하고(`flush_store`) 답한다. 대상은 기본
+  프로필과 패널 작업의 프로필이다. 작업 프로필 폴더가 아직 없으면 건드리지 않는다(첫 탭이 열릴 때 기본 프로필에서 받는다). "모든 작업이 함께"이면
+  기본 프로필 하나다.
+- **지우고 넣는 이유:** 다른 브라우저의 로그인과 Yardlet에 있던 같은 사이트 쿠키가 섞이면 두 세션의 쿠키가 한 사이트에 간다. Google 계정 사이트는
+  그런 상태를 `/CookieMismatch`로 막았다(8·9절). Claude 앱의 가져오기는 지우지 않고 덮어쓴다.
+- **보안:** Chromium 계열의 키체인은 가져오기를 누른 그때 한 번 읽고(`SecItemCopyMatching`, 서비스 이름만, 백그라운드 스레드), 비밀번호와 키는
+  메모리에서만 쓰고 0으로 지운다. Firefox 계열은 키체인을 읽지 않는다.
+  쿠키 DB는 브라우저가 쓰는 중일 수 있어 `-journal`·`-wal`과 함께 `$TMPDIR`의 개인 폴더(0700)에 복사해 읽기 전용으로 열고, 쓰는 도중의 사본이라
+  열리지 않으면 0.3초 뒤 다시 복사한다(세 번). 사본은 읽은 뒤 바로 지운다(값이 암호화된 채라도 휴지통으로 보내지 않는다). 원본은 열지 않는다.
+  쿠키 값은 앱과 호스트 사이 파이프로만 가고, 화면·로그·모델·파일에 남지 않는다(호스트의 명령 기록은 명령 이름만 적는다). 에이전트 도구는 없다.
+- **한계:** localStorage·IndexedDB에 로그인을 두는 사이트는 따라오지 않는다(Claude 앱은 localStorage도 옮긴다). Chromium은 넣는 쿠키의 만료를
+  넣은 때부터 최대 400일로 줄인다(원본 근거, QA로 재지 않음). 가져온 쿠키는 그 브라우저의 세션을 함께 쓰는 것이라, 사이트에 따라 한쪽에서
+  로그아웃하면 다른 쪽도 끊긴다. 이미 돌고 있는 다른 작업은 바뀌지 않는다.
+- **QA:** `run-check.sh … --ui-fixture-browser-check-only=import`(`BrowserHostLoginImportQA`). QA 홈의 Application Support에 가짜 Whale 폴더(프로필 둘,
+  시험 비밀번호로 암호화한 쿠키: `accounts.example.com`의 호스트 전용·`__Host-` 쿠키, `.example.com`의 Secure·비Secure 쿠키, 파티션 쿠키, 만료된 쿠키,
+  `localhost` 쿠키, 고르지 않을 `www.other.test` 쿠키)를 만들고, 키체인 대신 그 비밀번호를 넘긴다. 기본 프로필에는 예전 복사의 도메인 쿠키와 사이트의
+  다른 쿠키를, 패널 작업에는 그 작업의 로그인을 먼저 심는다. 2026-10-27 결과(ad-hoc 디버그 번들, 새 QA 홈): 9개 모두 통과. 사이트 목록은
+  `example.com`·`localhost`·`other.test`(파티션·만료 쿠키만 있는 사이트 없음), 페이지 메뉴에 항목이 있고 시트가 `localhost`를 체크한 채 열림(그림
+  `import-sheet.png`), 기본 프로필·패널 작업·뒤에 만든 작업 모두 `accounts.example.com`에 `qa_signin`·`__Host-qa_signin`·`qa_session`을 가져온 값 하나씩
+  보내고 이전의 `OLD`·`Y`·`T`와 `qa_leftover`가 없음, 저장 모양은 `__Host-qa_signin accounts.example.com Secure HttpOnly Lax`, `qa_plain .example.com
+  비Secure Lax 세션`, `qa_session .example.com Secure HttpOnly None`, `qa_signin accounts.example.com Secure HttpOnly None`, `keep.test`는 그대로이고
+  `other.test`는 들어오지 않음, 패널 페이지가 다시 읽혀 `qa_local`을 봄, 앱·호스트 로그에 값 없음. 남은 프로세스·충돌 보고서 없음.
+  **2026-10-27 넓힘:** 같은 QA 홈에 가짜 Firefox 폴더(`profiles.ini`의 프로필 둘, 설치가 쓰는 것과 `Default=1`이 다름, 스키마 17의 `cookies.sqlite`를
+  WAL에 둔 채: `accounts.example.net`의 호스트 전용 Strict, `.example.net`의 SameSite 미지정·Secure None·비Secure None, 같은 이름의 컨테이너 쿠키,
+  파티션 쿠키, 만료된 쿠키)와 `Local State`를 읽을 수 없게 둔 가짜 Chrome 폴더를 더했다. Whale 다음에 Firefox를 키체인 없이 가져온다. 결과(ad-hoc
+  디버그 번들, `$TMPDIR/browser-host-qa/import-more-browsers/`): 밝은 화면 `run-import`·어두운 화면 `run-import-dark` 모두 13개 통과. 프로필 순서
+  `Whale · Work`, `Whale · Person 1`, `Firefox · default-release`, `Firefox · old`와 읽지 못한 브라우저 `Chrome`, Firefox 사이트는 WAL까지 읽어
+  `example.net`, 기본 프로필의 Firefox 쿠키 저장 모양 `qa_ff_signin accounts.example.net Secure HttpOnly Strict`, `qa_ff_session .example.net Secure
+  HttpOnly (미지정)`, `qa_ff_cross .example.net Secure HttpOnly None`, `qa_ff_plain .example.net 비Secure (미지정)`(모두 만료 있음), 패널 작업은 같은 네
+  값을 보내고 컨테이너 값은 없음, 패널 알림 "Firefox에서 example.net 로그인을 가져왔습니다.", 앱·호스트 로그에 값 없음, 남은 프로세스·충돌 보고서
+  없음. 시트 그림(`import-sheet.png`)에 Whale 설치본의 아이콘과 Chrome 안내 줄이 보인다. 지구본 기호는 메뉴를 열어야 보여 그리지 않았다.
+
+### 지원 브라우저와 근거(2026-10-27)
+
+폴더는 `~/Library/Application Support/` 아래, 키체인은 서비스(괄호는 같은 자리에서 본 계정)다. "배포본"은 그 회사 서버에서 받은 dmg·tar.xz·pkg를
+읽기 전용으로 붙이거나 설치 없이 풀어 Info.plist와 바이트만 읽은 것이고(앱은 실행하지 않음), "설치본"은 이 Mac의 앱 번들이다. Chromium 계열의
+바이트 근거는 Chromium의 쿠키 키 소금 `saltysalt` 바로 뒤에 놓이는 서비스·계정 상수, 또는 `chrome_paths` 옆의 기본 폴더 값이다. 여러 브라우저가
+다른 브라우저의 가져오기 표를 품고 있어(Brave 소스, Comet·Dia·Vivaldi·Yandex·Opera 바이트) 교차 확인에 썼다.
+
+| 브라우저 | 폴더 | 키체인 | 번들 ID | 근거 |
+|---|---|---|---|---|
+| Whale | `Naver/Whale` | Whale Safe Storage (Whale) | `com.naver.Whale` | 설치본 5.39.412.57 바이트, 이 Mac의 폴더(`<프로필>/Cookies`) |
+| Chrome | `Google/Chrome` | Chrome Safe Storage (Chrome) | `com.google.Chrome` | 설치본 155.0.8059.86 바이트, Chromium 소스. macOS 27 보호 |
+| Edge | `Microsoft Edge` | Microsoft Edge Safe Storage (Microsoft Edge) | `com.microsoft.edgemac` | 배포본 pkg 156.0.4314.42 바이트, 폴더는 `sandboxd` 규칙과 Dia·Yandex 표. macOS 27 보호 |
+| Brave | `BraveSoftware/Brave-Browser` | Brave Safe Storage | `com.brave.Browser` | 배포본 156.1.98.60 `CrProductDirName`, brave-core `keychain_password_mac.mm` 기본값. macOS 27 보호 |
+| Arc | `Arc/User Data` | Arc Safe Storage | `company.thebrowser.Browser` | 배포본 1.170.0 ArcCore 바이트(`%s Safe Storage`와 arc→Arc), Comet·Vivaldi·Opera 표, 이 Mac의 `Arc/User Data/Local State` |
+| Comet | `Comet` | Comet Safe Storage | `ai.perplexity.comet` | 배포본 155.0.8059.148 바이트, 이 Mac의 `Comet/Local State`·`Default/Cookies` |
+| Vivaldi | `Vivaldi` | Vivaldi Safe Storage (Vivaldi) | `com.vivaldi.Vivaldi` | 배포본 8.2.4133.94 바이트, 폴더는 Dia 표와 Vivaldi 포럼 |
+| Opera | `com.operasoftware.Opera`(폴더 자체가 첫 프로필) | Opera Safe Storage (Opera) | `com.operasoftware.Opera` | 배포본 138.0.6044.24 바이트, 폴더는 Dia·Yandex 표, 첫 프로필 자리는 Opera 포럼 운영진 답 |
+| Opera GX | `com.operasoftware.OperaGX` | Opera Safe Storage (Opera) | `com.operasoftware.OperaGX` | 배포본 138.0.6044.45 바이트(GX 빌드도 같은 상수, `com.operasoftware.OperaGX` 9회), Dia·Yandex 표. Vivaldi 표만 "Opera GX Safe Storage"라 적어 GX 자신의 바이트를 따랐다 |
+| Yandex | `Yandex/YandexBrowser` | Yandex Safe Storage (Yandex) | `ru.yandex.desktop.yandex-browser` | 배포본 26.8.3.1016 바이트, Brave 소스. 쿠키가 `v10`으로 암호화되는지는 확인 못 함(아니면 "풀지 못했습니다"로 끝남) |
+| Helium | `net.imput.helium` | Helium Storage Key (Helium) | `net.imput.helium` | 배포본 0.20.1.1 바이트, helium-macos 패치 `change-keychain-name`·`change-product-dir-name` |
+| Chromium | `Chromium` | Chromium Safe Storage (Chromium) | `org.chromium.Chromium` | Chromium 소스 `keychain_password_mac.mm`·`chrome_paths_mac.mm`·`BRANDING` |
+| Firefox | `Firefox` | 없음 | `org.mozilla.firefox` | 배포본 158.0.1 `application.ini`(`Name=Firefox`), Gecko `nsXREDirProvider::AppendProfilePath`(macOS는 `Profile`, 없으면 `Name`). macOS 27 보호 |
+| Zen | `zen` | 없음 | `app.zen-browser.zen` | 배포본 1.23.4b `Profile=zen` |
+| Floorp | `Floorp` | 없음 | `app.floorp.Floorp` | 배포본 12.20.2 `Profile=Floorp` |
+| LibreWolf | `librewolf` | 없음 | `net.librewolf.librewolf` | 배포본 158.0.1-2 `Profile=librewolf` |
+| Waterfox | `Waterfox` | 없음 | `net.waterfox.waterfox` | 배포본 6.7.6 `Profile=Waterfox` |
+
+넣지 않은 것: **Dia**(배포본 1.54.2 `company.thebrowser.dia`의 ArcCore에 `%s Safe Storage` 형식만 있고 자기 폴더·서비스 문자열이 없다. Comet의 표가
+"Dia Safe Storage"라 적지만 폴더는 확인하지 못했다), **ChatGPT Atlas**(OpenAI 도움말 "ChatGPT Atlas retirement": 은퇴해 업데이트가 끝났고 쿠키는
+새 브라우저에서 다시 로그인하라고 안내한다. 참고로 1.2026.189.1 번들의 내장 Chromium은 `com.openai.atlas.web`, "ChatGPT Safe Storage"/"ChatGPT"),
+**Sidekick**(2025-08-03 서비스 종료, 팀은 Perplexity로), **Thorium**(Thorium-MacOS 릴리스가 M144(2026-06)부터 macOS 파일 없이 나오고 마지막
+M138은 2026-02, Homebrew cask도 비활성), **Safari**(위).

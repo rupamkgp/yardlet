@@ -1527,6 +1527,7 @@ private struct TaskRow: View {
     @Environment(\.scheduledTaskIDs) private var scheduledTaskIDs
     @Environment(TaskResourceMonitor.self) private var resources: TaskResourceMonitor?
     @Environment(TaskPullRequestMonitor.self) private var pullRequests: TaskPullRequestMonitor?
+    @Environment(AccountAssignmentLog.self) private var accountAssignments: AccountAssignmentLog?
     @Environment(\.sidebarHoverCard) private var hoverCard
     /// Where the row is in the window, kept without drawing the row again as the list scrolls.
     @State private var place = SidebarRowPlace()
@@ -1558,7 +1559,8 @@ private struct TaskRow: View {
     /// What the row's hover card shows (`SidebarHoverCardView`), which the row's help showed before.
     private var hoverContent: SidebarHoverCardContent {
         SidebarHoverCardContent(session: session, projectName: projectName, status: status,
-                                isScheduledRun: isScheduledRun, cpuPercent: cpuPercent, pullRequest: pullRequestMark)
+                                isScheduledRun: isScheduledRun, cpuPercent: cpuPercent, pullRequest: pullRequestMark,
+                                accountAssignment: accountAssignments?.assignment(for: session.id))
     }
 
     /// The row's state in the words its mark stands for, and "Unread" when a result is unread

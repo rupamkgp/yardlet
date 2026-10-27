@@ -59,10 +59,11 @@ final class ConnectorDirectoryTests: XCTestCase {
     func testTheDirectoryHasEachServicesOfficialEndpointAndSignIn() throws {
         func preset(_ id: String) throws -> ConnectorPreset { try XCTUnwrap(ConnectorPreset.preset(id: id), id) }
         XCTAssertEqual(ConnectorPreset.all.map(\.id), [
-            "linear", "notion", "slack", "gmail", "google-calendar", "google-drive", "github", "browserbase", "atlassian",
-            "sentry", "asana", "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "granola",
-            "fireflies", "gamma", "gitlab", "supabase", "neon", "prisma", "netlify", "cloudflare", "posthog", "semgrep",
-            "postman", "jam", "stripe", "paypal", "square", "webflow", "wix", "figma-desktop", "tavily", "exa", "huggingface",
+            "linear", "notion", "slack", "gmail", "google-calendar", "google-drive", "apple-calendar", "apple-reminders",
+            "apple-contacts", "github", "browserbase", "atlassian", "sentry", "asana", "clickup", "monday", "todoist", "airtable",
+            "miro", "dropbox", "intercom", "zapier", "granola", "fireflies", "gamma", "xcode", "app-store-connect", "gitlab",
+            "supabase", "neon", "prisma", "netlify", "cloudflare", "posthog", "semgrep",
+            "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow", "wix", "figma-desktop", "tavily", "exa", "huggingface",
             "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs"
         ])
         XCTAssertEqual(Set(ConnectorPreset.all.map(\.id)).count, ConnectorPreset.all.count)
@@ -73,7 +74,7 @@ final class ConnectorDirectoryTests: XCTestCase {
         XCTAssertEqual(try preset("notion").signIn, .oauth)
         for id in ["asana", "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "granola",
                    "fireflies", "gamma", "gitlab", "supabase", "neon", "prisma", "netlify", "cloudflare", "posthog", "semgrep",
-                   "postman", "jam", "stripe", "paypal", "square", "webflow", "wix", "tavily"] {
+                   "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow", "wix", "tavily"] {
             XCTAssertEqual(try preset(id).signIn, .oauth, "\(id) registers its client dynamically")
         }
         for id in ["exa", "huggingface", "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs"] {
@@ -106,13 +107,27 @@ final class ConnectorDirectoryTests: XCTestCase {
             XCTAssertFalse(google.scope?.split(separator: " ").contains("https://www.googleapis.com/auth/drive") == true,
                            "No full Drive access: \(id)")
         }
+        // Mercury reads only: the server lists payment, transfer, category, and note scopes too, and
+        // the sign-in asks for none of them (docs.mercury.com/docs/connecting-mercury-mcp).
+        XCTAssertEqual(try preset("mercury").serverURL.absoluteString, "https://mcp.mercury.com/mcp")
+        XCTAssertEqual(try preset("mercury").scope, "read offline_access")
+        XCTAssertEqual(ConnectorSetupGuide.summary(try preset("mercury")), L10n.string("Read-only"))
         XCTAssertEqual(try preset("github").signIn, .token)
         XCTAssertTrue(try preset("github").acceptsRegisteredClient)
         XCTAssertEqual(try preset("browserbase").tokenQueryParameter, "browserbaseApiKey")
         XCTAssertEqual(try preset("openai-docs").signIn, ConnectorPreset.SignIn.none)
         XCTAssertEqual(try preset("figma-desktop").serverURL.host(), "127.0.0.1", "Figma's remote server admits only its catalog")
+        // The Mac's own data and Xcode are served from this Mac (docs/CONNECTORS.md, "Apple"); App Store
+        // Connect is Apple's API.
+        for (id, signIn) in [("apple-calendar", ConnectorPreset.SignIn.macPermission), ("apple-reminders", .macPermission),
+                             ("apple-contacts", .macPermission), ("xcode", .localApp), ("app-store-connect", .appStoreConnectKey)] {
+            XCTAssertEqual(try preset(id).signIn, signIn, id)
+            XCTAssertEqual(try preset(id).localService?.presetID, id)
+        }
+        XCTAssertEqual(try preset("app-store-connect").serverURL.absoluteString, "https://api.appstoreconnect.apple.com/")
         for item in ConnectorPreset.all where item.id != "figma-desktop" {
-            XCTAssertEqual(item.serverURL.scheme, "https", item.id)
+            let onThisMac = item.localService.map { $0.isMac || $0 == .xcode } ?? false
+            XCTAssertEqual(item.serverURL.scheme, onThisMac ? "file" : "https", item.id)
         }
         XCTAssertEqual(ConnectorPreset.preset(for: URL(string: "https://api.githubcopilot.com/mcp")!)?.id, "github",
                        "A trailing slash does not hide a preset")

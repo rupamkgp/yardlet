@@ -47,6 +47,10 @@ final class ComposerEditorRenderingTests: XCTestCase {
         ProviderComposerCommand(name: "context", description: "Show context usage", argumentHint: "")
     ]
 
+    /// A draft longer than either composer's field shows.
+    private static let longText = (1...14).map { "Line \($0) of a long request that runs past the composer's lines" }
+        .joined(separator: "\n")
+
     private static func taskDraft(_ text: String, attachments: [CodexUserInput] = [], notice: String? = nil)
         -> TaskComposerDraft {
         let draft = TaskComposerDraft()
@@ -95,6 +99,11 @@ final class ComposerEditorRenderingTests: XCTestCase {
                 AnyView(PromptComposer(harness: .claudeCode, composerDraft: Self.taskDraft(""),
                     isRunning: false, mentionRoots: [workspace])
                     .environment(\.claudeShellCommands, shell))
+            },
+            // Past the field's lines it scrolls inside (`ComposerEditorTests` drives the scrolling).
+            Scenario(name: "task-claude-long", size: NSSize(width: 760, height: 260)) {
+                AnyView(PromptComposer(harness: .claudeCode, composerDraft: Self.taskDraft(Self.longText),
+                    isRunning: false, mentionRoots: [workspace]))
             }
         ]
     }
@@ -127,6 +136,9 @@ final class ComposerEditorRenderingTests: XCTestCase {
             },
             Scenario(name: "home-claude-mention", size: NSSize(width: 860, height: 520), typed: "Explain @read") {
                 home(.claudeCode)
+            },
+            Scenario(name: "home-claude-long", size: NSSize(width: 860, height: 520)) {
+                home(.claudeCode, text: Self.longText)
             }
         ]
     }

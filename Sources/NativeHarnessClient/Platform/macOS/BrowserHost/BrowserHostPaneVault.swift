@@ -60,7 +60,7 @@ extension BrowserHostPaneController {
     static let neverSaveKey = "Yardlet.vault.neverSave"
 
     func adoptVault(_ tab: BrowserTab, in view: BrowserHostView) {
-        view.extraContextMenuItems = { [weak self] in self?.vaultMenuItems() ?? [] }
+        view.extraContextMenuItems = { [weak self] in (self?.vaultMenuItems() ?? []) + (self?.loginImportMenuItems() ?? []) }
         if vaultFillObserver == nil {
             vaultFillObserver = NotificationCenter.default.addObserver(forName: .vaultFilled, object: nil, queue: .main) { [weak self] note in
                 let filledTab = note.userInfo?[VaultFillNotice.tabKey] as? BrowserTabID

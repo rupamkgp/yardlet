@@ -41,6 +41,11 @@ struct AccountUsageMetric: Identifiable, Codable, Equatable, Sendable {
     let detail: String
     let resetsAt: Date?
     let evidence: UsageEvidenceKind
+    /// How long the limit's window runs, when the provider said; readings remembered before it was
+    /// kept have none until the next check.
+    var windowMinutes: Double? = nil
+    /// The one model a limit covers (Claude's per-model weekly limit); nil covers every model.
+    var model: String? = nil
 }
 
 /// A stable, provider-labelled row for the account-wide usage surface. Rate-limit

@@ -6,6 +6,8 @@ struct FilesPane: View {
     let onClose: () -> Void
     @FocusState private var isSearchFocused: Bool
     @State private var confirmsDiscard = false
+    /// The tasks that edited or read the open file.
+    @State private var fileTasks = FileTasks()
     @Environment(\.taskKeyboardFocus) private var keyboardFocus
     @Environment(\.yardletInterfaceScale) private var interfaceScale
 
@@ -58,6 +60,10 @@ struct FilesPane: View {
         } else if let document = state.document {
             VStack(spacing: 0) {
                 FileSizeNotice(document: document, url: workspaceURL.appending(path: document.path))
+                if !fileTasks.isEmpty {
+                    FileTasksLine(tasks: fileTasks).padding(.horizontal, 10).padding(.vertical, 7)
+                    Divider()
+                }
                 WorkspaceFileReader(document: document,
                     bookmark: state.preferences.bookmarks[document.path] ?? .init(),
                     location: state.requestedLocation, navigationID: state.navigationID,
@@ -66,6 +72,7 @@ struct FilesPane: View {
                     onNavigated: { state.didNavigate($0) }, onEdit: document.isEditable ? { state.edit($0) } : nil,
                     isSaving: state.isSaving)
             }
+            .loadsFileTasks(for: workspaceURL.appending(path: document.path), into: $fileTasks)
         } else if state.isLoading {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else { filePicker }

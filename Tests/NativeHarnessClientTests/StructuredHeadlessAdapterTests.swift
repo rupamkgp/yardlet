@@ -268,7 +268,9 @@ final class StructuredHeadlessAdapterTests: XCTestCase {
         let adapter = StructuredHeadlessAdapter(
             kind: .cursorAgent,
             executableURL: fixture.executable,
-            cursorChatTimeout: .milliseconds(500)
+            // Room for the fixture's shell to start and write its pid on a busy Mac; at 500 ms a loaded
+            // machine stopped it before it wrote one.
+            cursorChatTimeout: .seconds(2)
         )
         let started = ContinuousClock.now
         do {

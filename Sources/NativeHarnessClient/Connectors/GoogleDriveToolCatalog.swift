@@ -5,7 +5,8 @@ import YardletAgentTools
 /// shaped as the claude.ai Google Drive connector names them (`search_files`, `list_recent_files`,
 /// `get_file_metadata`, `get_file_permissions`, `read_file_content`, `download_file_content`,
 /// `create_file`, `copy_file`, which are Google's Drive MCP server's), plus `update_file` for
-/// changing a file it created, over the public Drive API v3. Each reaches a harness under the
+/// changing a file it created, over the public Drive API v3, and the Docs, Sheets, and Slides tools
+/// for what is inside those files (`GoogleEditorsToolCatalog`). Each reaches a harness under the
 /// account's slug (`drive_search_files`).
 ///
 /// Two scopes: `drive.readonly` (restricted) reads every file, and `drive.file` (non-sensitive)
@@ -27,7 +28,8 @@ enum GoogleDriveToolCatalog {
     static let fileScope = "https://www.googleapis.com/auth/drive.file"
     static let scopes = [readScope, fileScope]
 
-    static let approvalRequired: Set<String> = [createFile, copyFile, updateFile]
+    static let approvalRequired: Set<String> = Set([createFile, copyFile, updateFile])
+        .union(GoogleEditorsToolCatalog.approvalRequired)
 
     static let document = "application/vnd.google-apps.document"
     static let spreadsheet = "application/vnd.google-apps.spreadsheet"
@@ -106,7 +108,7 @@ enum GoogleDriveToolCatalog {
                 "contentMimeType": string("The new content's type. Defaults to text/plain for textContent."),
                 "parentId": string("The folder to move it to.")
              ], required: ["fileId"], readOnly: false, destructive: true, openWorld: true)
-    ]
+    ] + GoogleEditorsToolCatalog.tools
 
     // MARK: Schema pieces
 

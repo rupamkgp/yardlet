@@ -594,7 +594,10 @@ final class ComposerEditorTests: XCTestCase {
         XCTAssertEqual(unsteerable.followUps, ["automatic: Later"], "No turn to steer yet: it goes as Return sends")
     }
 
-    func testShiftReturnAddsALineInTheNewTaskComposerToo() throws {
+    /// Shift-Return adds a line in both composers, and past its line limit the field scrolls inside,
+    /// as the Codex and Claude apps' composers do: the caret's line stays in view as lines are added
+    /// or the caret moves, and the wheel moves it (`scrollsPastLines`).
+    func testShiftReturnAddsALineInTheNewTaskComposerTooAndALongDraftScrolls() throws {
         let workspace = try makeFolder()
         let home = HomeProbe()
         let mounted = try mount(homeComposer(home, workspace: workspace))
@@ -607,6 +610,31 @@ final class ComposerEditorTests: XCTestCase {
         try press("\r", keyCode: 36, in: mounted)
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         XCTAssertEqual(home.created, ["Plan\nthen build"])
+
+        let task = TaskProbe()
+        task.draft.text = (1...12).map { "Line \($0)" }.joined(separator: "\n")
+        let composer = try mount(taskComposer(task))
+        let editor = try editor(composer)
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        try press("\r", keyCode: 36, modifiers: .shift, in: composer)
+        try type("Line 13", into: composer)
+        let scroll = try XCTUnwrap(editor.enclosingScrollView)
+        let document = try XCTUnwrap(scroll.documentView)
+        XCTAssertGreaterThan(document.frame.height, scroll.contentView.bounds.height + 50,
+                             "The field grows past what the composer shows")
+        XCTAssertEqual(scroll.contentView.bounds.maxY, document.frame.height, accuracy: 1,
+                       "Typing on at the end keeps the caret's line in view")
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        composer.host.settle()
+        XCTAssertEqual(scroll.contentView.bounds.minY, 0, accuracy: 1, "The caret moved to the start brings it into view")
+        let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: -3,
+                                          wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
+        editor.scrollWheel(with: wheel)
+        composer.host.settle()
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 1, "The wheel scrolls the field")
+        task.draft.text = "Short"
+        composer.host.settle()
+        XCTAssertEqual(scroll.frame.height, document.frame.height, accuracy: 1, "A short draft shows whole again")
     }
 
     func testTheTypedListsTakeShiftAndCommandReturnAsTheyTakeReturnWhileATurnRuns() throws {

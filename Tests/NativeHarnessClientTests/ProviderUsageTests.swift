@@ -130,7 +130,8 @@ final class ProviderUsageTests: XCTestCase {
                 usedFraction: 0.42,
                 detail: L10n.format("%.0f%% remaining", 58.0),
                 resetsAt: Date(timeIntervalSince1970: 1_790_440_000),
-                evidence: .exactQuota
+                evidence: .exactQuota,
+                windowMinutes: 300
             ),
             AccountUsageMetric(
                 id: "muse:weekly",
@@ -138,7 +139,8 @@ final class ProviderUsageTests: XCTestCase {
                 usedFraction: 1,
                 detail: L10n.format("%.0f%% remaining", 0.0),
                 resetsAt: Date(timeIntervalSince1970: 1_790_900_000),
-                evidence: .exactQuota
+                evidence: .exactQuota,
+                windowMinutes: 10_080
             )
         ])
 

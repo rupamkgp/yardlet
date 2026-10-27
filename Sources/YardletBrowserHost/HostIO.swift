@@ -17,6 +17,8 @@ struct HostArguments {
     var switches = ""
     /// DEBUG builds only: a folder where every raw CEF accessibility value is saved (QA fixture).
     var accessibilityRecordPath = ""
+    /// DEBUG builds only: the most browsers to open, below the host's own (QA fixture); 0 keeps the host's.
+    var browserLimit: Int32 = 0
 
     static func parse(_ arguments: [String] = CommandLine.arguments,
                       environment: [String: String] = ProcessInfo.processInfo.environment) -> HostArguments {
@@ -38,6 +40,7 @@ struct HostArguments {
             case "--switches": result.switches = value; index += 1
 #if DEBUG
             case "--accessibility-record": result.accessibilityRecordPath = value; index += 1
+            case "--browser-limit": result.browserLimit = Int32(value) ?? 0; index += 1
 #endif
             default: break
             }

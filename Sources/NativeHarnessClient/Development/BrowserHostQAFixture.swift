@@ -37,8 +37,19 @@ enum BrowserHostQAFixture {
             Task { @MainActor in await BrowserHostIsolationQA(output: output, base: base).run() }
             return
         }
+        // `--ui-fixture-browser-check-only=import` runs bringing another browser's sign-ins over alone.
+        if argument("ui-fixture-browser-check-only") == "import" {
+            Task { @MainActor in await BrowserHostLoginImportQA(output: output, base: base).run() }
+            return
+        }
         if argument("ui-fixture-browser-check-only") == "vault" {
             Task { @MainActor in await BrowserHostVaultQA(output: output, base: base, panelSession: session).run() }
+            return
+        }
+        // `--ui-fixture-browser-check-only=browser-use` runs screen sizes, frames and handing a tab to the person
+        // alone (BrowserHostBrowserUseQA).
+        if argument("ui-fixture-browser-check-only") == "browser-use" {
+            Task { @MainActor in await BrowserHostBrowserUseQA(output: output, base: base, panelSession: session).run() }
             return
         }
         Task { @MainActor in await BrowserHostQARunner(output: output, base: base, session: session).run() }
@@ -146,6 +157,23 @@ private final class BrowserHostQARunner {
         // `--ui-fixture-browser-check-only=draft-handoff` runs the new-task screen's tabs going to a task.
         if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "draft-handoff" {
             await exerciseDraftHandoff()
+            return await finish()
+        }
+        // `--ui-fixture-browser-check-only=many-tabs --ui-fixture-browser-limit=20` runs many tasks' tabs and a
+        // tab the browser has no room for alone.
+        if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "many-tabs" {
+            await exerciseManyTabs()
+            return await finish()
+        }
+        // `--ui-fixture-browser-check-only=resize` runs dragging the side panel's divider over pages laid out
+        // for their width alone.
+        if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "resize" {
+            if let controller = await openPanel(label: "resize", address: base + "responsive"), let view = controller.view {
+                _ = await waitUntil(.seconds(10)) { controller.title == "Responsive" && !controller.isLoading }
+                await exerciseResize(controller, view)
+                await closePanel()
+                client.closeTabs(forSession: session)
+            }
             return await finish()
         }
         // A QA window launched in the background may sit under other windows; run-check.sh passes
@@ -256,6 +284,107 @@ private final class BrowserHostQARunner {
         let grace = Double(client.idleGrace.components.seconds)
         _ = await waitUntil(.seconds(Int(grace) + 20)) { !self.client.isHostRunning }
         await phase("draft-3-after")
+    }
+
+    // MARK: Many tasks' tabs
+
+    /// One browser host holds every task's tabs. Until 2026-10-27 it held 16: past them no tab of any task
+    /// opened, while the app kept each as an open blank tab and the agent heard only "The browser tab is
+    /// gone." Tabs past 16 across tasks open, the agent's included; a tab the browser has no room for (this run
+    /// caps it at `--ui-fixture-browser-limit`, 20) says why to the agent and in its panel, and opens again in
+    /// its place once a tab closes.
+    private func exerciseManyTabs() async {
+        let page = base + "second"
+        guard let controller = await openPanel(label: "many-tabs", address: page) else { return }
+        _ = await waitUntil(.seconds(10)) { controller.title == "Second" && !controller.isLoading }
+        // Two other tasks, each with its own profile and the most tabs a task has, as tasks with closed panels.
+        var others: [BrowserTab] = []
+        for task in [UUID(), UUID()] {
+            for index in 0..<BrowserHostClient.maxTabsPerSession {
+                let tab = index == 0
+                    ? try? client.openTab(forSession: task, url: page, viewport: .offscreenDefault)
+                    : try? client.newTab(forSession: task, url: page, viewport: .offscreenDefault, select: false)
+                if let tab { others.append(tab) }
+            }
+        }
+        let loaded = await waitUntil(.seconds(60)) { others.allSatisfy { $0.title == "Second" } }
+        let atPage = others.filter { $0.title == "Second" }.count + 1
+        check("many tabs: tabs past 16 across tasks open", loaded && others.count == 2 * BrowserHostClient.maxTabsPerSession,
+              "\(atPage) of \(others.count + 1) tabs at their page; not: \(others.filter { $0.title != "Second" }.map(\.id))")
+
+        let agentTools = BrowserAgentTools(usesMacEditingCommands: true, tabs: BrowserAgentTabs { MacBrowserHost.shared.client })
+        func run(_ tool: String, _ arguments: [String: JSONValue] = [:]) async -> (text: String, isError: Bool) {
+            let result = await agentTools.run(tool: tool, arguments: .object(arguments), sessionID: session)
+            let text = result.content.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: " ")
+            return (text, result.isError)
+        }
+        func newAgentTab() async -> String {
+            let opened = await run(AgentToolCatalog.tabNew)
+            return opened.text.range(of: #""tabId":"(\d+)""#, options: .regularExpression)
+                .map { String(opened.text[$0]).filter(\.isNumber) } ?? ""
+        }
+        func title(_ tabID: String) async -> String {
+            await run(AgentToolCatalog.evaluate, ["function": .string("() => document.title"), "tabId": .string(tabID)]).text
+        }
+        // The agent's own tab, the 20th: a task whose panel was closed opens one on its next call.
+        let agentTab = await newAgentTab()
+        let moved = await run(AgentToolCatalog.navigate, ["url": .string(page), "tabId": .string(agentTab)])
+        let agentTitle = await title(agentTab)
+        check("many tabs: the agent's tab past 16 opens its page", !moved.isError && agentTitle.contains("Second"),
+              "tab \(agentTab): navigate \"\(moved.text.prefix(200))\", title \"\(agentTitle.prefix(200))\"")
+        await phase("many-1-twenty-tabs")
+
+        // The browser is full: the 21st tab cannot open. The agent hears why at once, and the tab list says so.
+        let full = await newAgentTab()
+        let listed = await waitUntil(.seconds(5)) { self.client.tabs(forSession: self.session).contains { String($0.id) == full } }
+        let started = DispatchTime.now().uptimeNanoseconds
+        let refused = await run(AgentToolCatalog.navigate, ["url": .string(page), "tabId": .string(full)])
+        let refusedMs = Self.milliseconds(since: started)
+        let listing = await run(AgentToolCatalog.tabList).text
+        check("many tabs: a tab the browser cannot open tells the agent why",
+              listed && refused.isError && refused.text.contains("could not open") && !refused.text.contains("not running")
+                && refusedMs < 5_000 && listing.contains("Could not open"),
+              "navigate in \(Int(refusedMs)) ms: \"\(refused.text.prefix(300))\"; list \"\(listing.suffix(300))\"")
+
+        // Its panel says why, though the tab failed before the panel showed it.
+        let failed = client.tabs(forSession: session).last
+        failed?.select()
+        let shown = await waitUntil(.seconds(5)) { controller.tab === failed && controller.errorMessage != nil }
+        let limitMessage = L10n.string("The browser has too many tabs open. Close a tab in this or another task, then try again.")
+        check("many tabs: the panel shows why its tab could not open", shown && controller.errorMessage == limitMessage,
+              "panel tab \(controller.tab?.id ?? -1) (failed \(failed?.id ?? -1)), error \"\(controller.errorMessage ?? "none")\"")
+
+        // A tab of another task closes (its browser goes once Chromium has closed it): Try again opens the tab in
+        // its place.
+        others.removeFirst().close()
+        try? await Task.sleep(for: .seconds(1))
+        controller.retry()
+        let reopened = await waitUntilAsync(.seconds(20)) {
+            guard controller.errorMessage == nil, controller.tab != nil, controller.tab !== failed else { return false }
+            return (try? await self.evaluate(controller, "document.readyState")) == "complete"
+        }
+        check("many tabs: Try again opens the tab once there is room", reopened,
+              "panel tab \(controller.tab?.id ?? -1) (was \(failed?.id ?? -1)), error \"\(controller.errorMessage ?? "none")\"")
+
+        // Full again: the agent's next tab cannot open; once a tab closes, browser_navigate opens it in its place.
+        let second = await newAgentTab()
+        _ = await waitUntil(.seconds(5)) { self.client.tabs(forSession: self.session).contains { String($0.id) == second } }
+        try? await Task.sleep(for: .milliseconds(500))
+        others.removeFirst().close()
+        try? await Task.sleep(for: .seconds(1))
+        let retried = await run(AgentToolCatalog.navigate, ["url": .string(page), "tabId": .string(second)])
+        let replacement = retried.text.range(of: #"as tabId "(\d+)""#, options: .regularExpression)
+            .map { String(retried.text[$0]).filter(\.isNumber) } ?? second
+        let retriedTitle = await title(replacement)
+        check("many tabs: browser_navigate opens a tab that could not open once there is room",
+              !retried.isError && replacement != second && retriedTitle.contains("Second"),
+              "navigate \"\(retried.text.prefix(300))\", tab \(replacement) title \"\(retriedTitle.prefix(200))\"")
+
+        await closePanel()
+        client.closeTabs(forSession: session)
+        for tab in others { tab.close() }
+        let grace = Double(client.idleGrace.components.seconds)
+        _ = await waitUntil(.seconds(Int(grace) + 20)) { !self.client.isHostRunning }
     }
 
     // MARK: Pages that stop responding
@@ -689,7 +818,7 @@ private final class BrowserHostQARunner {
             case .address(_, let url): events.append("address \(url)")
             case .loadError(_, let url, let code, _): events.append("loadError \(code) \(url)")
             case .loadEnd(_, let url, let status): events.append("loadEnd \(status) \(url)")
-            case .failed(let message, _): events.append("failed \(message)")
+            case .failed(let message, _, _): events.append("failed \(message)")
             case .navigationBlocked(_, let url): events.append("blocked \(url)")
             default: break
             }
@@ -1050,6 +1179,171 @@ private final class BrowserHostQARunner {
                 + "first frame \(firstFrame), surface \(shown) for view \(expectedSize().0)x\(expectedSize().1), "
                 + "address \(controller.addressInput), title \"\(title)\"")
         await closePanel()
+    }
+
+    // MARK: Resizing the panel
+
+    /// The side panel's divider dragged as a person drags it, over pages laid out for their width (`/responsive`:
+    /// a red edge at the page's right, its columns by width; `?heavy=1` with 3,000 cards of text to lay out again):
+    /// a new width every 16 ms, from the widest to the narrowest and two thirds of the way back. Every 4 ms the
+    /// check reads the frame on screen for where the page's right edge is against the panel's width (a blank strip
+    /// on the right while the page is narrower, the page cut off while it is wider); then how long after the last
+    /// move the page on screen is laid out at the panel's width, and what the page says of its width and columns.
+    /// `resize.json`, and the panel as it shows the page halfway through each drag and once it settles (`resize-*.png`).
+    private func exerciseResize(_ controller: BrowserHostPaneController, _ view: BrowserHostView) async {
+        guard let window = view.window else { return check("resize: panel", false, "no window") }
+        var windowFrame = window.frame
+        windowFrame.size = NSSize(width: 1400, height: 900)
+        window.setFrame(windowFrame, display: true)
+        let scale = Double(window.backingScaleFactor)
+        let frames = ResizeFrameLog()
+        controller.frameObserver = { frame, _ in frames.add(frame) }
+        // A QA app in the background has its timers coalesced; a drag moves every 16 ms.
+        let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Resize QA")
+        defer {
+            controller.frameObserver = nil
+            ProcessInfo.processInfo.endActivity(activity)
+        }
+        var pages: [String: JSONValue] = [:]
+        for (name, query) in [("light", ""), ("heavy", "?heavy=1")] {
+            let address = base + "responsive" + query
+            controller.addressInput = address
+            controller.submitAddress()
+            _ = await waitUntil(.seconds(20)) { controller.tab?.currentURL == address && !controller.isLoading }
+            controller.workspace.layout.panelWidthRatio = 1
+            _ = await waitUntil(.seconds(5), poll: .milliseconds(10)) {
+                Self.pageEdge(in: view.viewSurface, scale: scale).map { abs($0 - Double(view.bounds.width)) <= 1 } ?? false
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+            let widest = Double(view.bounds.width)
+
+            // The drag.
+            var samples: [(view: Double, edge: Double?, frame: Double?)] = []
+            let narrowing = 60, widening = 40
+            frames.reset()
+            let dragStart = DispatchTime.now().uptimeNanoseconds
+            let clock = ContinuousClock(), dragBegan = clock.now
+            for tick in 0...(narrowing + widening) {
+                controller.workspace.layout.panelWidthRatio = tick <= narrowing
+                    ? 1 - Double(tick) / Double(narrowing) : Double(tick - narrowing) / Double(narrowing)
+                for sample in 1...4 {
+                    try? await Task.sleep(until: dragBegan + .milliseconds(16 * tick + 4 * sample), tolerance: .zero, clock: clock)
+                    let surface = view.viewSurface
+                    samples.append((Double(view.bounds.width), Self.pageEdge(in: surface, scale: scale),
+                                    surface.map { Double(IOSurfaceGetWidth($0)) / scale }))
+                }
+                if tick == narrowing / 2 || tick == narrowing + widening / 2, let surface = view.viewSurface {
+                    Self.writePanelPNG(surface, panel: view.bounds.size, scale: scale,
+                                       to: output.appending(path: "resize-\(name)-\(tick < narrowing ? "narrowing" : "widening").png"))
+                }
+            }
+            let dragMs = Self.milliseconds(since: dragStart)
+            let dragFrames = frames.snapshot
+
+            // After the last move.
+            let endedAt = DispatchTime.now().uptimeNanoseconds
+            var settledMs: Double?
+            _ = await waitUntil(.seconds(3), poll: .milliseconds(4)) {
+                guard let edge = Self.pageEdge(in: view.viewSurface, scale: scale), abs(edge - Double(view.bounds.width)) <= 1 else {
+                    return false
+                }
+                settledMs = Self.milliseconds(since: endedAt)
+                return true
+            }
+            let final = Double(view.bounds.width)
+            if let surface = view.viewSurface {
+                Self.writePanelPNG(surface, panel: view.bounds.size, scale: scale, to: output.appending(path: "resize-\(name)-settled.png"))
+            }
+            let page = (try? await evaluate(controller, "JSON.stringify([innerWidth, window.qa.columns(), window.qa.resizes])"))
+                .flatMap { try? JSONDecoder().decode([Int].self, from: Data($0.utf8)) } ?? []
+            let columns = final >= 720 ? 3 : final >= 480 ? 2 : 1
+
+            // How far the page on screen was from the panel's width while it moved.
+            let gaps = samples.compactMap { sample in sample.edge.map { sample.view - $0 } }
+            let distances = gaps.map(abs).sorted()
+            func percentile(_ share: Double) -> Double {
+                distances.isEmpty ? -1 : distances[min(distances.count - 1, Int(Double(distances.count) * share))]
+            }
+            let fitted = distances.filter { $0 <= 1 }.count
+            // A frame whose page ends short of the frame's own edge shows a page laid out for another width.
+            let misfit = samples.filter { sample in
+                guard let edge = sample.edge, let frame = sample.frame else { return false }
+                return abs(frame - edge) > 1
+            }.count
+            let pageWidth = page.first ?? -1, pageColumns = page.dropFirst().first ?? -1, resizeEvents = page.last ?? -1
+            let settled: JSONValue = settledMs.map { .number($0) } ?? .null
+            let blankStrip = gaps.filter { $0 > 1 }.count, cutOff = gaps.filter { $0 < -1 }.count
+            let frameWidths = Set(dragFrames).count
+            var result: [String: JSONValue] = [:]
+            result["widestPt"] = .number(widest)
+            result["narrowestPt"] = .number(samples.map(\.view).min() ?? 0)
+            result["finalPt"] = .number(final)
+            result["dragMs"] = .number(dragMs)
+            result["samples"] = .integer(Int64(samples.count))
+            result["samplesWithoutPageEdge"] = .integer(Int64(samples.count - gaps.count))
+            result["fittedSamples"] = .integer(Int64(fitted))
+            result["gapMedianPt"] = .number(percentile(0.5))
+            result["gapP90Pt"] = .number(percentile(0.9))
+            result["gapMaxPt"] = .number(distances.last ?? -1)
+            result["blankStripSamples"] = .integer(Int64(blankStrip))
+            result["cutOffSamples"] = .integer(Int64(cutOff))
+            result["framesNotLaidOutAtTheirSize"] = .integer(Int64(misfit))
+            result["framesShown"] = .integer(Int64(dragFrames.count))
+            result["frameWidthsShown"] = .integer(Int64(frameWidths))
+            result["settledMs"] = settled
+            result["page"] = .string("innerWidth \(pageWidth), columns \(pageColumns), resize events \(resizeEvents)")
+            pages[name] = .object(result)
+            let settledText = settledMs.map { "\(Int($0)) ms" } ?? "never"
+            check("resize (\(name)): the page is laid out at the panel's width once the divider stops",
+                  settledMs != nil && pageWidth == Int(final.rounded()) && pageColumns == columns,
+                  "settled \(settledText) after the last move; panel \(final) pt; "
+                    + "page innerWidth \(pageWidth), \(pageColumns) columns for \(columns)")
+            let median = percentile(0.5), ninety = percentile(0.9), largest = distances.last ?? -1
+            check("resize (\(name)): every frame shown while the divider moves is the page laid out at its size",
+                  !distances.isEmpty && misfit == 0,
+                  "\(fitted) of \(gaps.count) samples at the panel's width; distance median \(median) pt, "
+                    + "90% \(ninety) pt, max \(largest) pt over \(Int(dragMs)) ms; \(dragFrames.count) frames shown at "
+                    + "\(frameWidths) widths; \(blankStrip) samples with a blank strip, \(cutOff) cut off; "
+                    + "\(misfit) samples of a frame not laid out at its size")
+        }
+        record["resize"] = .object(pages)
+        try? write(.object(pages), to: "resize.json")
+        controller.workspace.layout.panelWidthRatio = nil
+    }
+
+    /// The right end of the page's red edge (`/responsive`) in the frame's middle row, in points: where the page laid
+    /// out in that frame ends. Nil without a frame or an edge.
+    nonisolated fileprivate static func pageEdge(in surface: IOSurfaceRef?, scale: Double) -> Double? {
+        guard let surface else { return nil }
+        IOSurfaceLock(surface, .readOnly, nil)
+        defer { IOSurfaceUnlock(surface, .readOnly, nil) }
+        let width = IOSurfaceGetWidth(surface)
+        let row = IOSurfaceGetBaseAddress(surface).assumingMemoryBound(to: UInt8.self)
+            + IOSurfaceGetHeight(surface) / 2 * IOSurfaceGetBytesPerRow(surface)
+        for column in stride(from: width - 1, through: 0, by: -1) {
+            let pixel = row + column * 4
+            // Red in either byte order (BGRA or RGBA).
+            if pixel[1] < 80, (pixel[2] > 200 && pixel[0] < 80) || (pixel[0] > 200 && pixel[2] < 80) {
+                return Double(column + 1) / scale
+            }
+        }
+        return nil
+    }
+
+    /// The panel as it shows a frame: from the top left over the view's white, cut at the panel's size.
+    nonisolated fileprivate static func writePanelPNG(_ surface: IOSurfaceRef, panel: CGSize, scale: Double, to url: URL) {
+        let width = Int(panel.width * scale), height = Int(panel.height * scale)
+        let image = CIImage(ioSurface: surface)
+        guard width > 0, height > 0, let frame = CIContext().createCGImage(image, from: image.extent),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        context.setFillColor(.white)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(frame, in: CGRect(x: 0, y: height - frame.height, width: frame.width, height: frame.height))
+        guard let shown = context.makeImage(),
+              let png = NSBitmapImageRep(cgImage: shown).representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url)
     }
 
     // MARK: Panel
@@ -1537,6 +1831,30 @@ private final class BrowserHostQARunner {
         }
         check("the agent hears of a passkey dialog and can cancel it", agentHeard && agentCancelled,
               "heard \(agentHeard), cancelled \(agentCancelled) → page \(cancelledAs)")
+        // A passkey dialog is its tab's, and closes when the tab's page moves, to another site or within the same one,
+        // as in Chrome (`WebContentsModalDialogManager::DidFinishNavigation`; the request's document goes).
+        var moves: [String] = []
+        var movesClose = true
+        for (name, address) in [("to another site", base), ("within the site", local + "passkey?moved")] {
+            controller.addressInput = local + "passkey"
+            controller.submitAddress()
+            _ = await waitUntil(.seconds(10)) { controller.title == "Passkey" && !controller.isLoading }
+            _ = try? await evaluate(controller, "window.passkey('getPlatformOnly')", userGesture: true)
+            let opened = await waitUntil(.seconds(6)) { !self.client.chromiumWindows.isEmpty }
+            let tabs = client.chromiumWindows.map { $0.tab.map(String.init) ?? "unknown" }
+            let overThisTab = opened && client.chromiumWindows.allSatisfy { $0.tab == controller.tab?.id }
+            controller.addressInput = address
+            controller.submitAddress()
+            let closed = await waitUntil(.seconds(4)) { self.client.chromiumWindows.isEmpty }
+            moves.append("\(name): opened \(opened) over tabs \(tabs) (the panel's \(controller.tab?.id ?? -1)), closed after the move \(closed)")
+            movesClose = movesClose && opened && overThisTab && closed
+            if !closed {
+                client.closeChromiumWindows()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        record["passkeyMoves"] = .string(moves.joined(separator: "; "))
+        check("a passkey dialog is its tab's and closes when the page moves", movesClose, moves.joined(separator: "; "))
         controller.addressInput = base
         controller.submitAddress()
         _ = await waitUntil(.seconds(10)) { controller.title == "Browser QA" }
@@ -1823,6 +2141,8 @@ private final class BrowserHostQARunner {
         check("compat: other apps' addresses follow Chrome: mail opens, others ask, Always allow is kept, the agent's input asks the person",
               appFailures.isEmpty, (appFailures.isEmpty ? appSteps : appFailures).joined(separator: "; "))
 
+        results["windowOwners"] = await exerciseChromiumWindowOwners(controller, view)
+
         // HTTP Basic authentication: Chromium asks in a window of its own, as for passkeys. The agent hears it as
         // the site's sign-in window (before 2026-10-25 its tools called every such window a passkey dialog), and
         // closing it from the agent cancels the sign-in.
@@ -1907,6 +2227,204 @@ private final class BrowserHostQARunner {
         record["compat"] = .object(results)
         let lines = results.keys.sorted().map { "\($0): \(results[$0]?.stringValue ?? results[$0]?.readableText ?? "")" }
         check("compat observed", true, lines.joined(separator: " | "))
+    }
+
+    /// Chromium's windows belong to their tab (BROWSER_HOST section 3, "Chromium's windows"), shown with HTTP
+    /// authentication's sign-in window, a web-modal dialog of its tab as the passkey dialog is: another task's window is
+    /// not in this task's results and this task's agent cannot close it; this task's tabs and the person's panel take
+    /// clicks, typing and moves meanwhile, the tab under the window takes none; a window over a tab no panel shows waits
+    /// past the screens and its task's panel is set to show the tab; the panel that shows the tab shows the window over
+    /// it, in front of the panel's window, and in front again after a click in Yardlet's window; the window goes and comes
+    /// with its tab; each task's agent closes its own window alone.
+    private func exerciseChromiumWindowOwners(_ controller: BrowserHostPaneController, _ view: BrowserHostView) async -> JSONValue {
+        let agentTools = BrowserAgentTools(usesMacEditingCommands: true, tabs: BrowserAgentTabs { MacBrowserHost.shared.client })
+        let presenter = MacBrowserHost.shared.chromiumWindows
+        func run(_ tool: String, _ arguments: [String: JSONValue] = [:], as task: UUID) async -> String {
+            let result = await agentTools.run(tool: tool, arguments: .object(arguments), sessionID: task)
+            return result.content.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: " ")
+        }
+        func evaluate(_ tab: BrowserTab, _ expression: String) async -> String {
+            let result = try? await tab.devTools.send("Runtime.evaluate", ["expression": .string(expression), "returnByValue": .bool(true)])
+            return result?["result"]?["value"]?.stringValue ?? result?["result"]?["value"]?.readableText ?? ""
+        }
+        func window(over tab: BrowserTab) -> BrowserChromiumWindow? { client.chromiumWindows.first { $0.tab == tab.id } }
+        func placement(over tab: BrowserTab) -> BrowserChromiumWindowPlacement? {
+            window(over: tab).flatMap { window in presenter.placements.first { $0.window == window.id } }
+        }
+        /// Window `upper` is in front of window `lower`, as the window server orders them (metadata only).
+        func inFront(_ upper: Int, of lower: Int) -> Bool {
+            let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+            let numbers = list.compactMap { $0[kCGWindowNumber as String] as? Int }
+            guard let upperIndex = numbers.firstIndex(of: upper), let lowerIndex = numbers.firstIndex(of: lower) else { return false }
+            return upperIndex < lowerIndex
+        }
+        func match(_ pattern: String, in text: String) -> String? {
+            guard let range = text.range(of: pattern, options: .regularExpression) else { return nil }
+            return String(text[range]).components(separatedBy: "ref=").last?.trimmingCharacters(in: CharacterSet(charactersIn: "]"))
+        }
+        func windows() -> String {
+            client.chromiumWindows.map { "\($0.title) #\($0.id) over \($0.tab.map(String.init) ?? "unknown")" }.joined(separator: ", ")
+        }
+        var steps: [String] = [], failures: [String] = []
+        func step(_ name: String, _ ok: Bool, _ detail: String) {
+            steps.append("\(name) \(ok ? "ok" : "FAILED"): \(detail)")
+            if !ok { failures.append("\(name): \(detail)") }
+        }
+        let html = "<title>Owner QA</title><body style='margin:0'><input id=q style='position:fixed;left:10px;top:10px;width:300px;"
+            + "height:30px'><button id=b style='position:fixed;left:10px;top:60px;width:120px;height:30px' "
+            + "onclick=\"document.title='clicked'\">Press</button><script>window.downs=0;addEventListener('mousedown',()=>window.downs++)</script>"
+        let page = "data:text/html," + (html.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
+        let session = self.session, other = UUID()
+        var told: [BrowserTabID] = []
+        let appHandler = client.onChromiumWindowOverHiddenTab
+        client.onChromiumWindowOverHiddenTab = { tab in told.append(tab.id); appHandler?(tab) }
+        defer {
+            client.onChromiumWindowOverHiddenTab = appHandler
+            client.closeTabs(forSession: other)
+        }
+
+        // Another task's tab, in the background as the agent's are, asks for a sign-in.
+        guard let otherTab = try? client.newTab(forSession: other, url: page, viewport: .offscreenDefault, select: false) else {
+            check("compat: Chromium's windows belong to their tab", false, "no tab for another task")
+            return .null
+        }
+        _ = await waitUntil(.seconds(10)) { otherTab.title == "Owner QA" }
+        otherTab.send(.navigate(tab: otherTab.id, url: base + "basic-auth?other-task"))
+        let otherShown = await waitUntil(.seconds(8)) { window(over: otherTab) != nil }
+        step("the window's tab", otherShown, "windows \(windows()); the other task's tab \(otherTab.id), the panel's \(controller.tab?.id ?? -1)")
+        step("a window over a tab no panel shows waits, and its task's panel is set to show the tab",
+             otherShown && placement(over: otherTab) == nil && told.contains(otherTab.id),
+             "placed \(placement(over: otherTab) != nil), the app was told of tabs \(told), app handler \(appHandler != nil)")
+
+        // This task's agent: the window is in none of its results, and it cannot close it.
+        let heard = await run(AgentToolCatalog.consoleMessages, as: session)
+        let refused = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)], as: session)
+        try? await Task.sleep(for: .seconds(1))
+        step("another task's agent neither hears of it nor closes it",
+             !heard.contains("sign-in") && refused.contains("No JavaScript dialog is open") && window(over: otherTab) != nil,
+             "heard: \(heard.suffix(200)); browser_handle_dialog: \(refused.suffix(160)); windows \(windows())")
+        let ownerHeard = await run(AgentToolCatalog.consoleMessages, as: other)
+        step("its own task's agent hears of it over its tab",
+             ownerHeard.contains("sign-in window") && ownerHeard.contains("over tab \(otherTab.id)") && ownerHeard.contains("browser_handoff"),
+             "heard: \(ownerHeard.suffix(420))")
+
+        // This task's agent works in a tab of its own meanwhile: a click, typing, a move.
+        let opened = await run(AgentToolCatalog.tabNew, as: session)
+        let own = match(#""tabId":"[0-9]+"#, in: opened).flatMap { $0.split(separator: "\"").last.map(String.init) } ?? ""
+        let loaded = await run(AgentToolCatalog.navigate, ["tabId": .string(own), "url": .string(page)], as: session)
+        let snapshot = await run(AgentToolCatalog.snapshot, ["tabId": .string(own)], as: session)
+        let textbox = match(#"textbox[^\n]*\[ref=@e[0-9]+\]"#, in: snapshot) ?? ""
+        let button = match(#"button "Press"[^\n]*\[ref=@e[0-9]+\]"#, in: snapshot) ?? ""
+        let clicked = await run(AgentToolCatalog.click, ["tabId": .string(own), "ref": .string(button)], as: session)
+        let typed = await run(AgentToolCatalog.type, ["tabId": .string(own), "ref": .string(textbox), "text": .string("typed")], as: session)
+        let values = await run(AgentToolCatalog.evaluate, ["tabId": .string(own),
+                                                          "function": .string("() => document.title + '|' + document.getElementById('q').value")], as: session)
+        let moved = await run(AgentToolCatalog.navigate, ["tabId": .string(own), "url": .string(base)], as: session)
+        step("this task's agent clicks, types and moves its own tab meanwhile",
+             values.contains("clicked|typed") && moved.contains("Loaded") && !values.contains("sign-in"),
+             "tab \(own) \(loaded.prefix(60)); click \(button): \(clicked.prefix(80)); type \(textbox): \(typed.prefix(80)); "
+                + "page: \(values.prefix(80)); move: \(moved.prefix(80))")
+        // The person's panel takes a click meanwhile.
+        _ = try? await self.evaluate(controller, "window.__downs = 0; addEventListener('mousedown', () => window.__downs++); 'ok'")
+        click(view, at: NSPoint(x: 40, y: 40))
+        try? await Task.sleep(for: .milliseconds(500))
+        let downs = (try? await self.evaluate(controller, "String(window.__downs)")) ?? ""
+        step("the person's panel takes a click meanwhile", downs == "1", "mousedowns \(downs)")
+        // The tab under the window takes no input, as in Chrome (Chromium's web-modal dialog): the agent's click, typing and
+        // key press are not sent and fail saying why; reading the page still works. Chromium shows the sign-in window over
+        // a blank page of its own (chrome-error://chromewebdata/), which it has committed by then, so the counts start there.
+        _ = await evaluate(otherTab, "window.downs = 0; window.keys = 0; addEventListener('mousedown', () => window.downs++); "
+            + "addEventListener('keydown', () => window.keys++); 'ok'")
+        let otherTabID = JSONValue.string(String(otherTab.id))
+        var refusals: [String] = []
+        for (tool, arguments) in [(AgentToolCatalog.click, ["tabId": otherTabID, "x": .number(60), "y": .number(75)]),
+                                  (AgentToolCatalog.type, ["tabId": otherTabID, "ref": .string("@e1"), "text": .string("x")]),
+                                  (AgentToolCatalog.pressKey, ["tabId": otherTabID, "key": .string("Enter")])] {
+            let result = await agentTools.run(tool: tool, arguments: .object(arguments), sessionID: other)
+            let said = result.content.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: " ")
+            if !(result.isError && said.contains("was not sent to tab \(otherTab.id)") && said.contains("sign-in window")
+                 && said.contains("browser_handle_dialog") && said.contains("browser_handoff")) {
+                refusals.append("\(tool): \(said.prefix(300))")
+            }
+        }
+        let counts = await evaluate(otherTab, "window.downs + ',' + window.keys")
+        let ownerRead = await run(AgentToolCatalog.snapshot, ["tabId": otherTabID], as: other)
+        step("the tab under the window takes no input, and the agent's input to it fails saying why",
+             refusals.isEmpty && counts == "0,0" && !ownerRead.contains("was not sent"),
+             "refused: \(refusals.isEmpty ? "click, typing and key press, each naming the sign-in window" : refusals.joined(separator: "; ")); "
+                + "mousedowns,keydowns \(counts); snapshot read: \(ownerRead.prefix(80))")
+
+        // A tab of this task behind the panel's asks for a sign-in: its window waits until the panel shows the tab.
+        let panelTab = controller.tab
+        guard let behind = try? client.newTab(forSession: session, url: page, viewport: .offscreenDefault, select: false) else {
+            check("compat: Chromium's windows belong to their tab", false, "no tab behind the panel's")
+            return .null
+        }
+        _ = await waitUntil(.seconds(10)) { behind.title == "Owner QA" }
+        behind.send(.navigate(tab: behind.id, url: base + "basic-auth?behind"))
+        let behindShown = await waitUntil(.seconds(8)) { window(over: behind) != nil }
+        step("a window over a tab behind the panel's waits, and the panel stays on its tab",
+             behindShown && placement(over: behind) == nil && !told.contains(behind.id) && controller.tab === panelTab,
+             "windows \(windows()); placed \(placement(over: behind) != nil); the app was told of tabs \(told)")
+        controller.onShowTab?(behind.key)
+        let panelShows = await waitUntil(.seconds(5)) { controller.tab === behind }
+        _ = await waitUntil(.seconds(5)) { placement(over: behind)?.frame != nil }
+        let panelWindow = view.window?.windowNumber ?? 0
+        let panelRect = view.window.map { $0.convertToScreen(view.convert(view.bounds, to: nil)) } ?? .zero
+        let placed = placement(over: behind)
+        let id = window(over: behind)?.id ?? 0
+        let frontAfterShow = await waitUntil(.seconds(3)) { inFront(id, of: panelWindow) }
+        step("the panel that shows the tab shows the window over it, in front of the panel's window",
+             panelShows && placed?.frame == BrowserRect(x: panelRect.minX, y: panelRect.minY, width: panelRect.width, height: panelRect.height)
+                && placed?.above == panelWindow && frontAfterShow,
+             "panel shows the tab \(panelShows); placement \(placed.map { "\($0)" } ?? "none") for the panel at \(panelRect) in window "
+                + "\(panelWindow); in front \(frontAfterShow)")
+        // The person's click on the page under the window does not reach it either.
+        _ = await evaluate(behind, "window.downs = 0; addEventListener('mousedown', () => window.downs++); 'ok'")
+        click(view, at: NSPoint(x: 40, y: 40))
+        try? await Task.sleep(for: .milliseconds(500))
+        let personDowns = await evaluate(behind, "String(window.downs)")
+        step("the person's click on the page under the window does not reach it", personDowns == "0", "mousedowns \(personDowns)")
+        // A click in Yardlet's window brings that window in front of the host's (here without the click itself, which
+        // would take the person's screen); the window comes back in front of it.
+        let presentsBefore = presenter.presentCount
+        view.window?.orderFrontRegardless()
+        let wentBehind = await waitUntil(.seconds(2)) { inFront(panelWindow, of: id) }
+        let presentsMeanwhile = presenter.presentCount - presentsBefore
+        presenter.yardletWasClicked()
+        let frontAgain = await waitUntil(.seconds(3)) { inFront(id, of: panelWindow) }
+        step("in front of Yardlet's window again after a click in it", wentBehind && frontAgain,
+             "Yardlet's window in front after the click \(wentBehind) (placed \(presentsMeanwhile) times meanwhile), the window in "
+                + "front again \(frontAgain)")
+        // The window goes with its tab and comes back with it.
+        if let panelTab { controller.onShowTab?(panelTab.key) }
+        let wentWithTab = await waitUntil(.seconds(5)) { window(over: behind) == nil }
+        controller.onShowTab?(behind.key)
+        let cameBack = await waitUntil(.seconds(5)) { window(over: behind) != nil && placement(over: behind)?.frame != nil }
+        step("the window goes and comes with its tab", wentWithTab && cameBack, "gone with the tab \(wentWithTab), back with it \(cameBack)")
+
+        // Each task's agent closes its own window alone.
+        otherTab.noteAgentActivity()
+        _ = await waitUntil(.seconds(3)) { window(over: otherTab) != nil }
+        let closedOwn = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)], as: session)
+        let ownGone = await waitUntil(.seconds(3)) { window(over: behind) == nil }
+        let otherStays = window(over: otherTab) != nil
+        step("this task's agent closes its own window, not another task's", ownGone && otherStays,
+             "\(closedOwn.prefix(160)); its window gone \(ownGone), the other task's stays \(otherStays)")
+        let closedOther = await run(AgentToolCatalog.handleDialog, ["accept": .bool(false)], as: other)
+        let otherGone = await waitUntil(.seconds(3)) { window(over: otherTab) == nil }
+        step("the other task's agent closes its own", otherGone, "\(closedOther.prefix(160)); gone \(otherGone)")
+
+        if let panelTab {
+            controller.onShowTab?(panelTab.key)
+            _ = await waitUntil(.seconds(5)) { controller.tab === panelTab }
+        }
+        behind.close()
+        client.tabs(forSession: session).first { String($0.id) == own }?.close()
+        try? await Task.sleep(for: .milliseconds(500))
+        check("compat: Chromium's windows belong to their tab, and show over it", failures.isEmpty,
+              (failures.isEmpty ? steps : failures).joined(separator: "; "))
+        return .array(steps.map { .string($0) })
     }
 
     /// Lines the DEBUG host wrote for its own windows (`host-windows/windows.jsonl`).
@@ -2921,6 +3439,16 @@ extension BrowserHostQARunner {
               let png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]) else { return }
         try? png.write(to: url)
     }
+}
+
+/// The widths of the page frames a panel placed while its divider moved, for the resize check.
+private final class ResizeFrameLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var widths: [Int] = []
+
+    func add(_ frame: BrowserFrame) { lock.withLock { widths.append(frame.pixelWidth) } }
+    func reset() { lock.withLock { widths = [] } }
+    var snapshot: [Int] { lock.withLock { widths } }
 }
 
 /// Counts the frames a display placed, and on which thread, for the rail preview check.

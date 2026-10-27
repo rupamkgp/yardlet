@@ -42,6 +42,9 @@ final class BrowserHostClient {
     /// Addresses of each session's recently closed tabs, newest last.
     private var closedAddresses: [UUID: [String]] = [:]
     private var sessionObservers: [UUID: [UUID: () -> Void]] = [:]
+    /// Cookie imports waiting for the host's `cookiesImported`.
+    private var cookieImports: [Int: CheckedContinuation<Int, Never>] = [:]
+    private var nextCookieImport = 1
 
     /// The most tabs one task keeps, as the Claude app's Browser pane (⌘1…⌘9 reach all of them).
     nonisolated static let maxTabsPerSession = 9
@@ -51,10 +54,15 @@ final class BrowserHostClient {
     private(set) var hostEngine: String?
     private(set) var acceleratedPaint: Bool?
     private(set) var lastTermination: String?
-    /// Chromium's own windows in the host (the passkey dialog, a site's sign-in window, the print dialog);
-    /// empty when none is open.
+    /// Chromium's own windows in the host (the passkey dialog, a site's sign-in window, the print dialog), each with
+    /// the tab it is over when the host knows it; empty when none is open.
     private(set) var chromiumWindows: [BrowserChromiumWindow] = []
     var chromiumWindowTitles: [String] { chromiumWindows.map(\.title) }
+    /// Called when one of Chromium's windows comes over a tab of a task whose panel is not on screen (the agent's
+    /// background tab, a task the person is not in): the person sees the window only where a panel shows its tab.
+    var onChromiumWindowOverHiddenTab: ((BrowserTab) -> Void)?
+    /// Called after the windows or their tabs changed, for placing them over their tabs.
+    var onChromiumWindowsChange: (() -> Void)?
     /// What opens other apps' addresses a page asks for (LaunchServices on macOS).
     var externalApps: any BrowserExternalApps = NoExternalApps()
     /// Called on every host start and exit, for status displays and measurements.
@@ -89,6 +97,31 @@ final class BrowserHostClient {
     func copyCookies(fromSession session: UUID, toDefaultFor domain: String) {
         guard let profile = profileForSession?(session), let connection else { return }
         connection.send(.copyCookies(from: profile.key, to: nil, domain: domain))
+    }
+
+    /// Brings the person's sign-ins for `sites` over from another browser (`BrowserLoginImport`): each profile (a key;
+    /// nil for the default profile, where new tasks start) loses its cookies of those sites and takes `cookies`, one
+    /// profile after another. What each set, as `cookiesImported` counts them; -1 for one the host did not answer
+    /// within `timeout`. Starts the host when it is not running.
+    func importCookies(_ cookies: [BrowserImportedCookie], sites: [String], into profiles: [String?],
+                       timeout: Duration = .seconds(15)) async throws -> [Int] {
+        var counts: [Int] = []
+        for profile in profiles {
+            let connection = try currentConnection()
+            let request = nextCookieImport
+            nextCookieImport += 1
+            let count = await withCheckedContinuation { continuation in
+                cookieImports[request] = continuation
+                connection.send(.importCookies(request: request, to: profile, sites: sites, cookies: cookies))
+                Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    self?.cookieImports.removeValue(forKey: request)?.resume(returning: -1)
+                }
+            }
+            counts.append(count)
+        }
+        if tabs.isEmpty { scheduleIdleShutdown() }
+        return counts
     }
     var openTabCount: Int { tabs.count }
 
@@ -437,12 +470,26 @@ final class BrowserHostClient {
         connection?.send(command)
     }
 
-    /// Closes Chromium's passkey dialog as Escape would; the page's request ends with NotAllowedError.
-    /// False when none is open.
+    /// Chromium's windows over this task's tabs.
+    func chromiumWindows(forSession session: UUID) -> [BrowserChromiumWindow] {
+        chromiumWindows.filter { window in window.tab.flatMap { tabs[$0] }?.session == session }
+    }
+
+    /// Closes Chromium's windows over this task's tabs as Escape would (a passkey request ends with
+    /// NotAllowedError); another task's windows and one whose tab is not known stay. False when it has none.
+    @discardableResult
+    func closeChromiumWindows(forSession session: UUID) -> Bool {
+        let windows = chromiumWindows(forSession: session)
+        guard !windows.isEmpty, let connection else { return false }
+        connection.send(.closeChromiumWindows(tabs: Array(Set(windows.compactMap(\.tab))).sorted()))
+        return true
+    }
+
+    /// Closes every one of Chromium's windows (QA's cleanup). False when none is open.
     @discardableResult
     func closeChromiumWindows() -> Bool {
         guard !chromiumWindowTitles.isEmpty, let connection else { return false }
-        connection.send(.closeChromiumWindows)
+        connection.send(.closeChromiumWindows(tabs: nil))
         return true
     }
 
@@ -657,15 +704,28 @@ final class BrowserHostClient {
             hostProcessID = processID
             hostEngine = engine
             acceleratedPaint = accelerated
-        case .chromiumWindow(let isShown, let titles, let kinds):
+        case .chromiumWindow(let isShown, let titles, let kinds, let ids, let owners):
             let titles = isShown ? (titles ?? [""]) : []
+            let before = chromiumWindows
             chromiumWindows = titles.indices.map { index in
-                BrowserChromiumWindow(title: titles[index],
-                                      kind: kinds.flatMap { $0.indices.contains(index) ? BrowserChromiumWindow.Kind(rawValue: $0[index]) : nil }
-                                          ?? .passkey)
+                func value<T>(_ list: [T]?) -> T? { list.flatMap { $0.indices.contains(index) ? $0[index] : nil } }
+                return BrowserChromiumWindow(title: titles[index], kind: value(kinds).flatMap(BrowserChromiumWindow.Kind.init) ?? .passkey,
+                                             id: value(ids) ?? 0, tab: value(owners).flatMap { $0 >= 0 ? $0 : nil })
             }
+            // A window newly over a tab of a task no panel shows on screen: the task's panel is to show the tab.
+            for window in chromiumWindows where !before.contains(window) {
+                guard let tab = window.tab.flatMap({ tabs[$0] }), let session = tab.session,
+                      !tabs(forSession: session).contains(where: { $0.visiblePanelCount > 0 }) else { continue }
+                onChromiumWindowOverHiddenTab?(tab)
+            }
+            onChromiumWindowsChange?()
+        case .cookiesImported(let request, let count):
+            cookieImports.removeValue(forKey: request)?.resume(returning: count)
         case .terminated(let reason):
+            for waiting in cookieImports.values { waiting.resume(returning: -1) }
+            cookieImports.removeAll()
             chromiumWindows = []
+            onChromiumWindowsChange?()
             connection = nil
             isHostEnding = false
             hostProcessID = nil
@@ -685,9 +745,11 @@ final class BrowserHostClient {
             orphaned.forEach { onTabClosed?($0.id) }
             sessions.forEach(notifySession)
             onHostStateChange?(false)
-        case .failed(_, let id?):
+        case .failed(_, let id?, _):
             // One tab's failure is that tab's; it never reaches the page another tab shows.
-            tabs[id]?.receive(event)
+            guard let tab = tabs[id] else { return }
+            tab.receive(event)
+            if let session = tab.session { notifySession(session) }
         case .failed:
             tabs.values.forEach { $0.receive(event) }
         case .address(let id, _), .title(let id, _), .favicon(let id, _, _):
@@ -762,6 +824,21 @@ final class BrowserTab {
     private(set) var lastPageURL: String?
     /// The size the tab was opened or last resized at, for the tabs its page opens.
     fileprivate(set) var viewport: BrowserViewport?
+    /// The screen size the page is shown at instead of its view's own, and who chose it; nil while the page
+    /// takes its view's size (`emulate(_:)`).
+    private(set) var emulation: BrowserViewportEmulation?
+    /// The color scheme the agent emulates (`browser_resize` colorScheme), "light" or "dark"; nil follows the Mac.
+    private(set) var emulatedColorScheme: String?
+    /// The size the tab was last given without an emulation, which a tab no panel shows takes again.
+    private var ownViewport: BrowserViewport?
+    /// This Chromium's major version and brands, read from the page before any phone was emulated.
+    private var browserIdentity: (major: String, brands: [JSONValue])?
+    /// Called when `emulation` changes, for the panel that shows the tab.
+    var onEmulationChange: (() -> Void)?
+    /// The agent handed the tab to the person (`browser_handoff`), until the agent's wait ends.
+    private(set) var handoff: BrowserHandoff?
+    /// Called when `handoff` changes, for the panel that shows the tab.
+    var onHandoffChange: (() -> Void)?
     /// The page's title and navigation state, as the host last reported them, for a panel that
     /// fronts the tab later.
     private(set) var title = ""
@@ -781,6 +858,9 @@ final class BrowserTab {
     /// The tab's renderer ended (it crashed, ran out of memory or was killed); nil once the tab loads
     /// again, which starts another renderer.
     private(set) var crash: BrowserTabCrash?
+    /// The host could not open the tab, so it has no page: why, as the host said. Such a tab opens
+    /// again in its place (`BrowserHostClient.replace`), as Chrome's Reload does for its error page.
+    private(set) var openFailure: BrowserTabOpenFailure?
     /// The tabs this tab's page opened (new-window requests, `openedTab`).
     private(set) var openedTabs: Set<BrowserTabID> = []
     /// What the page asks permission for and waits on, until the person answers or the page moves on.
@@ -825,7 +905,7 @@ final class BrowserTab {
     private var observers: [UUID: (BrowserHostEvent) -> Void] = [:]
     private(set) lazy var devTools: BrowserDevToolsClient = {
         let devTools = BrowserDevToolsClient { [weak self] message in
-            guard let self, !self.isClosed else { return false }
+            guard let self, !self.isClosed, self.openFailure == nil else { return false }
             self.client?.send(.devTools(tab: self.id, message: message))
             return self.client?.isHostRunning == true
         }
@@ -876,6 +956,7 @@ final class BrowserTab {
         switch command {
         case .resize(_, let viewport):
             self.viewport = viewport
+            if emulation == nil { ownViewport = viewport }
         case .mouse(_, let input) where input.kind == .down:
             lastPersonInput = .now
         case .key(_, let input) where input.kind == .rawDown:
@@ -949,6 +1030,109 @@ final class BrowserTab {
         client?.noteAgentActivity(on: self)
     }
 
+    // MARK: Screen size emulation
+
+    /// Shows the page at `emulation`'s size, or at its view's own again for nil, as the Claude app's Browser pane
+    /// does over CDP: the page lays out at the size (a phone also gets touch and Android Chrome's user agent), and
+    /// the tab is drawn at it, so a panel shows it scaled down and the page's coordinates stay the agent's. It holds
+    /// across reloads and navigations, since the tab's DevTools session keeps it.
+    func emulate(_ emulation: BrowserViewportEmulation?) async throws {
+        // The size the tab has before its first emulation is its own, which it takes again after the last.
+        if self.emulation == nil { ownViewport = viewport }
+        self.emulation = emulation
+        onEmulationChange?()
+        let timeout: Duration = .seconds(15)
+        if let emulation {
+            _ = try await devTools.send("Emulation.setDeviceMetricsOverride", emulation.deviceMetrics, timeout: timeout)
+            _ = try await devTools.send("Emulation.setTouchEmulationEnabled", emulation.mobile
+                ? ["enabled": .bool(true), "maxTouchPoints": .integer(5)] : ["enabled": .bool(false)], timeout: timeout)
+            if emulation.mobile {
+                let identity = try await readBrowserIdentity()
+                _ = try await devTools.send("Emulation.setUserAgentOverride", [
+                    "userAgent": .string(BrowserViewportEmulation.phoneUserAgent(chromeMajor: identity.major)),
+                    "userAgentMetadata": BrowserViewportEmulation.phoneUserAgentMetadata(brands: identity.brands)
+                ], timeout: timeout)
+            } else {
+                _ = try await devTools.send("Emulation.setUserAgentOverride", ["userAgent": .string("")], timeout: timeout)
+            }
+        } else {
+            _ = try await devTools.send("Emulation.clearDeviceMetricsOverride", timeout: timeout)
+            _ = try await devTools.send("Emulation.setTouchEmulationEnabled", ["enabled": .bool(false)], timeout: timeout)
+            _ = try await devTools.send("Emulation.setUserAgentOverride", ["userAgent": .string("")], timeout: timeout)
+        }
+        // A panel showing the tab draws it at the size itself (`onEmulationChange`); without one the tab does.
+        guard !isPanelAttached, var size = emulation == nil ? ownViewport ?? viewport : viewport else { return }
+        if let emulation {
+            size.width = Double(emulation.width)
+            size.height = Double(emulation.height)
+        }
+        send(.resize(tab: id, viewport: size))
+    }
+
+    /// Emulates `prefers-color-scheme` ("light" or "dark") on the page, or follows the Mac again for nil.
+    func emulateColorScheme(_ scheme: String?) async throws {
+        emulatedColorScheme = scheme
+        _ = try await devTools.send("Emulation.setEmulatedMedia", [
+            "features": .array([.object(["name": .string("prefers-color-scheme"), "value": .string(scheme ?? "")])])
+        ], timeout: .seconds(15))
+    }
+
+    // MARK: Handing the tab to the person
+
+    /// The agent hands the tab to the person for a step only they can take. A handoff still waiting for them takes the
+    /// new reason, and one they answered after the agent's last wait gave up is returned as it is, so the call reads
+    /// the answer. Returns the handoff and whether it is new.
+    func handOff(reason: String) -> (handoff: BrowserHandoff, isNew: Bool) {
+        if var earlier = handoff, earlier.answer != .turnEnded {
+            if earlier.answer == nil {
+                earlier.reason = reason
+                handoff = earlier
+                onHandoffChange?()
+            }
+            return (earlier, false)
+        }
+        let new = BrowserHandoff(id: UUID(), reason: reason)
+        handoff = new
+        onHandoffChange?()
+        return (new, true)
+    }
+
+    /// The person's answer from the panel's bar, or the end of the agent's turn.
+    func answerHandoff(_ answer: BrowserHandoff.Answer) {
+        guard var waiting = handoff, waiting.answer == nil else { return }
+        waiting.answer = answer
+        handoff = waiting
+        onHandoffChange?()
+    }
+
+    /// The agent's wait read the answer: the tab is the agent's again.
+    func endHandoff() {
+        guard handoff != nil else { return }
+        handoff = nil
+        onHandoffChange?()
+    }
+
+    /// The agent's turn ended: the size and color scheme it set go, as the Claude app clears them; the person's stay.
+    func endAgentEmulation() async {
+        // A waiting call reads that the turn ended; an answer no call read belongs to the turn that ended.
+        if handoff?.answer == nil { answerHandoff(.turnEnded) } else { endHandoff() }
+        if emulation?.owner == .agent { try? await emulate(nil) }
+        if emulatedColorScheme != nil { try? await emulateColorScheme(nil) }
+    }
+
+    private func readBrowserIdentity() async throws -> (major: String, brands: [JSONValue]) {
+        if let browserIdentity { return browserIdentity }
+        let read = try await devTools.send("Runtime.evaluate", [
+            "expression": .string("[navigator.userAgent, navigator.userAgentData ? navigator.userAgentData.brands : []]"),
+            "returnByValue": .bool(true)
+        ], timeout: .seconds(15))
+        let values = read["result"]?["value"]?.arrayValue ?? []
+        let identity = (major: BrowserViewportEmulation.chromeMajor(in: values.first?.stringValue ?? "") ?? "154",
+                        brands: values.count > 1 ? values[1].arrayValue ?? [] : [])
+        browserIdentity = identity
+        return identity
+    }
+
     fileprivate func markClosed() {
         isClosed = true
         devTools.failPending()
@@ -987,6 +1171,8 @@ final class BrowserTab {
             crash = BrowserTabCrash(status: status ?? "crashed", code: code ?? 0, errorCode: reason)
         case .passwordField(_, let isFocused):
             isPasswordFieldFocused = isFocused
+        case .failed(let message, _?, let limit):
+            openFailure = BrowserTabOpenFailure(message: message, limit: limit)
         case .openedTab(_, let newTab?, _):
             openedTabs.insert(newTab)
         case .newWindow(_, let url, _, false):
@@ -1017,6 +1203,22 @@ final class BrowserTab {
     }
 }
 
+/// A tab the agent handed to the person (`browser_handoff`): what it asks of them, and how it ended.
+struct BrowserHandoff: Equatable, Sendable {
+    enum Answer: Equatable, Sendable {
+        /// The person's Done.
+        case done
+        /// The person's Decline.
+        case declined
+        /// The agent's turn ended first.
+        case turnEnded
+    }
+
+    let id: UUID
+    var reason: String
+    var answer: Answer?
+}
+
 /// One of Chromium's own windows in the host, as the host tells what it is.
 struct BrowserChromiumWindow: Equatable, Sendable {
     enum Kind: String, Sendable {
@@ -1030,6 +1232,10 @@ struct BrowserChromiumWindow: Equatable, Sendable {
     }
     var title: String
     var kind: Kind
+    /// The window's number in the host (`presentChromiumWindows` names it).
+    var id: Int = 0
+    /// The tab the window is over; nil when the host does not know it (the print dialog).
+    var tab: BrowserTabID?
 }
 
 /// A task's tabs as they were when the host ended: their addresses and side-panel keys in strip order
@@ -1043,6 +1249,13 @@ struct BrowserRememberedTabs: Equatable, Sendable {
     func key(at index: Int) -> UUID {
         keys.indices.contains(index) ? keys[index] : UUID()
     }
+}
+
+/// Why the host could not open a tab, as it said (`BrowserHostEvent.failed`).
+struct BrowserTabOpenFailure: Equatable, Sendable {
+    let message: String
+    /// The most tabs the host holds, when that many were open.
+    let limit: Int?
 }
 
 /// Why a tab's page is not responding.

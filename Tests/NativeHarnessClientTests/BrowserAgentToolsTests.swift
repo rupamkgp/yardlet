@@ -103,7 +103,8 @@ final class BrowserAgentToolsTests: XCTestCase {
         }
         cdp.responders["Accessibility.getFullAXTree"] = { _ in
             .object(["nodes": .array([
-                node("1", "RootWebArea", "Example Domain", children: ["2", "3", "7", "9", "10"], backend: 1),
+                node("1", "RootWebArea", "Example Domain", children: ["2", "3", "7", "9", "10"], backend: 1,
+                     properties: [("url", .string("https://example.com/"))]),
                 node("2", "heading", "Welcome", children: ["2a"], backend: 10, properties: [("level", .integer(1))]),
                 node("2a", "StaticText", "Welcome", backend: 20),
                 node("3", "generic", children: ["4", "5"], backend: 11),
@@ -290,10 +291,50 @@ final class BrowserAgentToolsTests: XCTestCase {
             - heading "Welcome" [level=1] [ref=@e1]
             - textbox "Name" [required] [ref=@e2]: "Ada"
             - button "Send" [ref=@e3]
-            - paragraph [ref=@e4]: "Hello world"
-            - link "Docs" [url=https://example.com/docs] [ref=@e5]
+            - paragraph: "Hello world"
+            - link "Docs" [url=/docs] [ref=@e4]
+            """, "references only on what an agent acts on; a link on the page's own site reads as its path")
+        XCTAssertEqual(page.refs, ["@e1": .init(node: 10), "@e2": .init(node: 12), "@e3": .init(node: 13), "@e4": .init(node: 15)])
+    }
+
+    /// Each frame's tree goes under the iframe that holds it; a frame from another site says its origin, and its
+    /// elements' references carry its session. Separators and a container's name taken from its own text go.
+    func testSnapshotPlacesEachFramesTreeUnderItsIframe() {
+        func node(_ id: String, _ role: String, _ name: String = "", parent: String? = nil, children: [String] = [],
+                  backend: Int64? = nil, url: String? = nil, fromContents: Bool = false) -> JSONValue {
+            var fields: [String: JSONValue] = [
+                "nodeId": .string(id), "role": .object(["value": .string(role)]),
+                "name": .object(["value": .string(name), "sources": .array(fromContents
+                    ? [.object(["type": .string("contents"), "value": .object(["value": .string(name)])])] : [])]),
+                "childIds": .array(children.map { .string($0) }),
+                "properties": .array(url.map { [.object(["name": .string("url"), "value": .object(["value": .string($0)])])] } ?? [])
+            ]
+            if let parent { fields["parentId"] = .string(parent) }
+            if let backend { fields["backendDOMNodeId"] = .integer(backend) }
+            return .object(fields)
+        }
+        let page = BrowserAgentSnapshot.Frame(nodes: [
+            node("1", "RootWebArea", "Shop", children: ["2", "3", "4"], backend: 1, url: "https://shop.test/cart"),
+            node("2", "cell", "Total | 10", parent: "1", children: ["2a", "2b", "2c"], backend: 2, fromContents: true),
+            node("2a", "StaticText", "Total", parent: "2"), node("2b", "StaticText", "|", parent: "2"),
+            node("2c", "StaticText", "10", parent: "2"),
+            node("3", "Iframe", "Card", parent: "1", backend: 3),
+            node("4", "Iframe", "Hidden ad", parent: "1", backend: 4)
+        ], children: [3: 1])
+        let card = BrowserAgentSnapshot.Frame(nodes: [
+            node("1", "RootWebArea", "Card", children: ["2"], backend: 1, url: "https://pay.test/frame?secret=x"),
+            node("2", "textbox", "Card number", parent: "1", backend: 3)
+        ], session: "S1")
+        let rendered = BrowserAgentSnapshot.render(frames: [page, card])
+        XCTAssertEqual(rendered.text, """
+            - cell: "Total 10"
+            - Iframe "Card" [origin=https://pay.test] [ref=@e1]
+              - textbox "Card number" [ref=@e2]
+            - Iframe "Hidden ad" [ref=@e3]
             """)
-        XCTAssertEqual(page.refs, ["@e1": 10, "@e2": 12, "@e3": 13, "@e4": 14, "@e5": 15])
+        XCTAssertEqual(rendered.refs["@e2"], BrowserAgentSnapshot.Ref(node: 3, session: "S1"),
+                       "the same backend id in another process is a different element")
+        XCTAssertEqual(rendered.refs["@e1"], BrowserAgentSnapshot.Ref(node: 3, session: nil))
     }
 
     func testReferencesNeedASnapshotAndExpireWithTheNextOneOrANavigation() async {
@@ -646,7 +687,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         let echoed = await run(AgentToolCatalog.snapshot)
         XCTAssertFalse(echoed.text.contains("correct-horse-battery"), echoed.text)
         XCTAssertTrue(echoed.text.contains("[saved value]"), echoed.text)
-        XCTAssertTrue(echoed.text.contains("textbox \"Password\" [ref=@e2]: \"<redacted>\""), echoed.text)
+        XCTAssertTrue(echoed.text.contains("textbox \"Password\" [ref=@e1]: \"<redacted>\""), echoed.text)
 
         let paused = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertTrue(paused.isError)
@@ -657,17 +698,71 @@ final class BrowserAgentToolsTests: XCTestCase {
 
         let elsewhere = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2"), "item": .string("Other")])
         XCTAssertTrue(elsewhere.isError)
+
+        // A field in a frame from another site is not the page's own, whatever its site.
+        page.replaceRefs(["@e9": .init(node: 3, session: "frame-session")], eventMark: cdp.eventLog.count)
+        let framed = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e9")])
+        XCTAssertTrue(framed.isError && framed.text.contains("inside a frame"), framed.text)
     }
 
     func testEvaluateWithAReferencePassesTheElement() async {
         _ = await loadSnapshot()
         cdp.responders["DOM.resolveNode"] = { _ in .object(["object": .object(["objectId": .string("obj-15")])]) }
         cdp.responders["Runtime.callFunctionOn"] = { _ in ScriptedCDP.value(.string("Docs")) }
-        let result = await run(AgentToolCatalog.evaluate, ["function": .string("(element) => element.textContent"), "ref": .string("@e5")])
+        let result = await run(AgentToolCatalog.evaluate, ["function": .string("(element) => element.textContent"), "ref": .string("@e4")])
         XCTAssertEqual(result.text, "\"Docs\"")
         let call = cdp.params(of: "Runtime.callFunctionOn").first
         XCTAssertEqual(call?["objectId"], .string("obj-15"))
         XCTAssertEqual(call?["arguments"], .array([.object(["objectId": .string("obj-15")])]))
+    }
+
+    // MARK: - Resize
+
+    private var emulations: [BrowserViewportEmulation?] = []
+    private var colorSchemes: [String?] = []
+
+    func testResizeEmulatesPresetsAndCustomSizesKeepsTheColorSchemeApartAndRefusesHalfASize() async {
+        page.emulate = { [unowned self] in emulations.append($0) }
+        page.emulateColorScheme = { [unowned self] in colorSchemes.append($0) }
+
+        let phone = await run(AgentToolCatalog.resize, ["preset": .string("mobile")])
+        XCTAssertFalse(phone.isError, phone.text)
+        XCTAssertTrue(phone.text.hasPrefix("Viewport set to 375x812 (mobile) on this tab"), phone.text)
+        XCTAssertEqual(emulations.last, BrowserViewportEmulation(width: 375, height: 812, owner: .agent))
+        XCTAssertEqual(emulations.last??.mobile, true)
+        XCTAssertEqual(emulations.last??.deviceMetrics["deviceScaleFactor"], .integer(2))
+
+        _ = await run(AgentToolCatalog.resize, ["width": .number(1000.4), "height": .integer(700)])
+        XCTAssertEqual(emulations.last, BrowserViewportEmulation(width: 1000, height: 700, owner: .agent))
+        XCTAssertEqual(emulations.last??.mobile, false, "768 and wider is not a phone")
+
+        let desktop = await run(AgentToolCatalog.resize, ["preset": .string("desktop"), "colorScheme": .string("dark")])
+        XCTAssertEqual(emulations.count, 3)
+        XCTAssertNil(emulations.last ?? nil)
+        XCTAssertEqual(colorSchemes, ["dark"])
+        XCTAssertTrue(desktop.text.contains("cleared") && desktop.text.contains("Color scheme emulation set to dark"), desktop.text)
+
+        page.emulation = { BrowserViewportEmulation(BrowserViewportEmulation.tablet, owner: .person) }
+        let over = await run(AgentToolCatalog.resize, ["preset": .string("mobile")])
+        XCTAssertTrue(over.text.contains("replaced the 768x1024 size the person picked"), over.text)
+
+        for (arguments, error) in [(["width": JSONValue.integer(500)], "needs both width and height"),
+                                   (["width": .integer(0), "height": .integer(10)], "needs both width and height"),
+                                   (["preset": .string("watch")], "Unknown preset"),
+                                   (["colorScheme": .string("sepia")], "Unknown colorScheme"),
+                                   ([:], "Provide a preset")] {
+            let refused = await run(AgentToolCatalog.resize, arguments)
+            XCTAssertTrue(refused.isError && refused.text.contains(error), refused.text)
+        }
+        XCTAssertEqual(emulations.count, 4, "a refused call changes nothing")
+
+        // The panel fits a larger size in, scaled down, across the middle and from the top; a smaller one is centered.
+        let large = BrowserViewportEmulation.pageFrame(for: CGSize(width: 1600, height: 1000), in: CGSize(width: 659, height: 426))
+        XCTAssertEqual(large.scale, 659.0 / 1600, accuracy: 0.0001)
+        XCTAssertEqual(large.origin, .zero)
+        let small = BrowserViewportEmulation.pageFrame(for: CGSize(width: 375, height: 812), in: CGSize(width: 659, height: 900))
+        XCTAssertEqual(small.scale, 1)
+        XCTAssertEqual(small.origin, CGPoint(x: 142, y: 0))
     }
 
     // MARK: - Batch

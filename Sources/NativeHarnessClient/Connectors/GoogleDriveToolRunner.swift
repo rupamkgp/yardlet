@@ -177,7 +177,8 @@ struct GoogleDriveToolRunner {
                                limit: maximumDownload).data
     }
 
-    private func comments(_ id: String) async throws -> ToolJSON {
+    /// A file's comment threads, for any file Drive keeps (a Doc, Sheet, or Slides file too).
+    func comments(_ id: String) async throws -> ToolJSON {
         let answer = try await api.get(["files", id, "comments"], [
             URLQueryItem(name: "fields", value: "comments(id,content,quotedFileContent(value),resolved,modifiedTime,"
                 + "author(displayName),replies(content,modifiedTime,author(displayName)))"),

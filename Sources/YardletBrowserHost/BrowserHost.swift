@@ -37,6 +37,8 @@ final class BrowserHost {
     /// DevTools messages for a waiting tab (the agent's first navigation), sent once it is at its page.
     private var deferredDevTools: [Int: [String]] = [:]
     private var nextCookieCopy: Int32 = 1
+    /// Imports under way (the copy's request → the app's), answered with `cookiesImported`.
+    private var cookieImports: [Int32: Int] = [:]
 
     init(arguments: HostArguments, output: EventOutput) {
         self.arguments = arguments
@@ -57,7 +59,8 @@ final class BrowserHost {
         let engine = "CEF 154.0.28 / Chromium 154.0.8037.58"
         send(["ready": ["processID": Int(ProcessInfo.processInfo.processIdentifier), "engine": engine,
                         "acceleratedPaint": arguments.acceleratedPaint]])
-        chromiumWindows = ChromiumWindows { [weak self] in self?.send($0) }
+        chromiumWindows = ChromiumWindows(send: { [weak self] in self?.send($0) },
+                                          setHidden: { yardlet_cef_set_hidden(Int32($0), $1 ? 1 : 0) })
         watchResponsiveness()
         let queued = queuedCommands
         queuedCommands = []
@@ -102,13 +105,25 @@ final class BrowserHost {
                 number(viewport["height"]), number(viewport["scale"], default: 1), number(viewport["screenX"]),
                 number(viewport["screenY"]), frameRate(viewport), arguments.acceleratedPaint ? 1 : 0, profile?.path ?? ""
             )
-            guard created != 0 else {
-                send(["failed": ["message": "Chromium could not create a browser for tab \(tab)", "tab": tab]])
-                return
+            if created == -1 {
+                let limit = Int(yardlet_cef_browser_limit())
+                return notOpened(tab, "limit", "The browser already has \(limit) tabs open across tasks, its most; closing a "
+                                 + "tab in this or another task makes room for this one", limit: limit)
             }
+            guard created != 0 else { return notOpened(tab, "chromium", "Chromium could not create a browser for tab \(tab)") }
             send(["opened": ["tab": tab]])
             if created == 2 || seed != nil { waitingTabs[tab] = WaitingTab(url: url, start: start, seed: seed) }
             if created == 1 { advance(tab) }
+            // A profile that never loads leaves no tab waiting for good.
+            if created == 2 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.profileDeadline) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard yardlet_cef_cancel_waiting_browser(Int32(tab)) == 1 else { return }
+                        self?.notOpened(tab, "profile", "The tab's browser profile did not load within "
+                                        + "\(Int(Self.profileDeadline)) seconds")
+                    }
+                }
+            }
         case "copyCookies":
             // The person signed in on a task's page: that site's cookies go to the default profile too.
             guard let profiles, let domain = fields["domain"] as? String, !domain.isEmpty else { return }
@@ -118,6 +133,24 @@ final class BrowserHost {
             let request = nextCookieCopy
             nextCookieCopy += 1
             _ = yardlet_cef_copy_cookies(request, from, to, domain)
+        case "importCookies":
+            // The person brings sites' sign-ins over from another browser (docs/BROWSER_SESSION_ISOLATION.md 10).
+            let asked = fields["request"] as? Int ?? 0
+            guard let profiles, let sites = fields["sites"] as? [String], let cookies = fields["cookies"] as? [[String: Any]] else {
+                return send(["cookiesImported": ["request": asked, "count": -1]])
+            }
+            let to = profiles.path(forKey: fields["to"] as? String)
+            // A task profile without its folder yet starts from the default profile's cookies when its first tab opens.
+            guard to.isEmpty || FileManager.default.fileExists(atPath: to) else {
+                return send(["cookiesImported": ["request": asked, "count": 0]])
+            }
+            let request = nextCookieCopy
+            nextCookieCopy += 1
+            cookieImports[request] = asked
+            if !Self.importCookies(request, to: to, sites: sites, cookies: cookies) {
+                cookieImports[request] = nil
+                send(["cookiesImported": ["request": asked, "count": -1]])
+            }
         case "resize":
             guard let viewport = fields["viewport"] as? [String: Any] else { return }
             yardlet_cef_set_viewport(Int32(tab), number(viewport["width"]), number(viewport["height"]),
@@ -221,7 +254,9 @@ final class BrowserHost {
             yardlet_cef_set_focus(Int32(tab), (fields["isFocused"] as? Bool ?? false) ? 1 : 0)
         case "visibility":
             let hidden = fields["isHidden"] as? Bool ?? false
-            yardlet_cef_set_hidden(Int32(tab), hidden ? 1 : 0)
+            // Chromium's window over the tab goes and comes with it, which tells the host the window's tab.
+            if let chromiumWindows { chromiumWindows.changeVisibility(of: tab, hidden: hidden) }
+            else { yardlet_cef_set_hidden(Int32(tab), hidden ? 1 : 0) }
             if hidden {
                 // Nothing paints a hidden tab; its rings go, and Yardlet is told so it can let go of
                 // its references too (after every frame written so far). Showing it again paints
@@ -244,10 +279,7 @@ final class BrowserHost {
                 // it is no failure of the page any tab shows. Before 2026-10-23 a host-wide `failed` went to
                 // every tab and the panel's page showed "Unavailable".
                 FileHandle.standardError.write(Data("devtools message refused tab=\(tab)\n".utf8))
-                if let id = Self.devToolsMessageID(message) {
-                    send(["devTools": ["tab": tab, "message":
-                        #"{"id":\#(id),"error":{"code":-32001,"message":"The browser tab is gone."}}"#]])
-                }
+                refuse(message, tab: tab, because: "The browser tab is gone.")
             }
         case "unresponsive":
             let terminate = fields["action"] as? String == "terminate"
@@ -265,10 +297,18 @@ final class BrowserHost {
             guard let origin = fields["origin"] as? String, let scheme = fields["scheme"] as? String else { return }
             let kept = yardlet_cef_allow_external_scheme(Int32(tab), origin, scheme) == 1
             FileHandle.standardError.write(Data("external app allowed tab=\(tab) scheme=\(scheme) kept=\(kept)\n".utf8))
-        case "raiseChromiumWindows":
-            chromiumWindows?.raise()
+        case "presentChromiumWindows":
+            var placements: [Int: ChromiumWindows.Placement] = [:]
+            for placement in fields["placements"] as? [[String: Any]] ?? [] {
+                guard let window = placement["window"] as? Int else { continue }
+                let frame = (placement["frame"] as? [String: Any]).map {
+                    CGRect(x: number($0["x"]), y: number($0["y"]), width: number($0["width"]), height: number($0["height"]))
+                }
+                placements[window] = ChromiumWindows.Placement(frame: frame, above: placement["above"] as? Int)
+            }
+            chromiumWindows?.present(placements)
         case "closeChromiumWindows":
-            chromiumWindows?.close()
+            chromiumWindows?.close(tabs: (fields["tabs"] as? [Int]).map(Set.init))
         case "shutdown":
             shutdown()
         default:
@@ -339,6 +379,31 @@ final class BrowserHost {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { yardlet_cef_quit_message_loop() }
     }
 
+    /// A DevTools call that cannot reach a page, answered at once with an error.
+    private func refuse(_ message: String, tab: Int, because reason: String) {
+        guard let id = Self.devToolsMessageID(message),
+              let data = try? JSONSerialization.data(withJSONObject: ["id": id, "error": ["code": -32001, "message": reason]])
+        else { return }
+        send(["devTools": ["tab": tab, "message": String(decoding: data, as: UTF8.self)]])
+    }
+
+    /// Seconds a tab waits for its profile to load before it is given up (a profile on disk loads in well
+    /// under a second).
+    static let profileDeadline = 20.0
+
+    /// The tab has no browser and gets none: Yardlet shows why in that tab alone, and the DevTools calls that
+    /// waited for it are answered with the reason. host.log says which of `kind` (limit, chromium, profile).
+    private func notOpened(_ tab: Int, _ kind: String, _ message: String, limit: Int? = nil) {
+        FileHandle.standardError.write(Data("tab not opened tab=\(tab) reason=\(kind)\n".utf8))
+        waitingTabs[tab] = nil
+        for waiting in deferredDevTools.removeValue(forKey: tab) ?? [] {
+            refuse(waiting, tab: tab, because: "This tab could not open: \(message).")
+        }
+        var fields: [String: Any] = ["message": message, "tab": tab]
+        if let limit { fields["limit"] = limit }
+        send(["failed": fields])
+    }
+
     // MARK: Task profiles
 
     /// Moves a waiting tab on once its browser exists: its starting cookies first, then its page and the
@@ -352,9 +417,13 @@ final class BrowserHost {
             waiting.copyRequest = request
             waitingTabs[tab] = waiting
             guard yardlet_cef_copy_cookies(request, seed.from, seed.to, "") == 1 else { return advance(tab) }
-            // A copy that never reports still lets the page load.
+            // A copy that never reports still lets the page load. One that reported is done: host.log's
+            // `count=-1` is a copy that did not report in time.
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                MainActor.assumeIsolated { self?.cookiesCopied(request: request, count: -1) }
+                MainActor.assumeIsolated {
+                    guard let self, self.waitingTabs.values.contains(where: { $0.copyRequest == request }) else { return }
+                    self.cookiesCopied(request: request, count: -1)
+                }
             }
             return
         }
@@ -367,8 +436,39 @@ final class BrowserHost {
 
     private func cookiesCopied(request: Int32, count: Int) {
         FileHandle.standardError.write(Data("cookies copied request=\(request) count=\(count)\n".utf8))
+        if let asked = cookieImports.removeValue(forKey: request) {
+            return send(["cookiesImported": ["request": asked, "count": count]])
+        }
         guard let tab = waitingTabs.first(where: { $0.value.copyRequest == request })?.key else { return }
         advance(tab)
+    }
+
+    /// Hands the bridge an import's cookies as C strings, which it copies before it returns.
+    private static func importCookies(_ request: Int32, to path: String, sites: [String], cookies: [[String: Any]]) -> Bool {
+        var strings: [UnsafeMutablePointer<CChar>] = []
+        defer { strings.forEach { free($0) } }
+        func c(_ text: String) -> UnsafePointer<CChar>? {
+            guard let copy = strdup(text) else { return nil }
+            strings.append(copy)
+            return UnsafePointer(copy)
+        }
+        let siteStrings = sites.map(c)
+        let records = cookies.compactMap { cookie -> YardletCEFCookie? in
+            guard let name = cookie["name"] as? String, let value = cookie["value"] as? String,
+                  let domain = cookie["domain"] as? String, !domain.isEmpty else { return nil }
+            let expires = (cookie["expires"] as? NSNumber)?.int64Value
+            return YardletCEFCookie(name: c(name), value: c(value), domain: c(domain), path: c(cookie["path"] as? String ?? "/"),
+                                    secure: cookie["secure"] as? Bool == true ? 1 : 0,
+                                    httponly: cookie["httpOnly"] as? Bool == true ? 1 : 0,
+                                    same_site: Int32(cookie["sameSite"] as? Int ?? 0), priority: Int32(cookie["priority"] as? Int ?? 0),
+                                    has_expires: expires == nil ? 0 : 1, expires: expires ?? 0)
+        }
+        return siteStrings.withUnsafeBufferPointer { siteList in
+            records.withUnsafeBufferPointer { list in
+                yardlet_cef_import_cookies(request, path, siteList.baseAddress, Int32(siteList.count), list.baseAddress,
+                                           Int32(list.count)) == 1
+            }
+        }
     }
 
     private var openTabs = Set<Int>()
@@ -432,10 +532,12 @@ final class BrowserHost {
             contextInitialized()
         case YardletCEFEventAfterCreated.rawValue:
             openTabs.insert(tab)
+            chromiumWindows?.opened(tab)
         case YardletCEFEventBeforeClose.rawValue:
             // One line per browser that went, for reading host.log: a closed tab's page may outlive the close.
             FileHandle.standardError.write(Data("browser closed tab=\(tab)\n".utf8))
             openTabs.remove(tab)
+            chromiumWindows?.closed(tab)
             waitingTabs[tab] = nil
             deferredDevTools[tab] = nil
             surfaces?.forget(key: "\(tab).view")
@@ -487,11 +589,7 @@ final class BrowserHost {
         case YardletCEFEventProfileReady.rawValue:
             FileHandle.standardError.write(Data("profile loaded tab=\(tab) browser=\(value)\n".utf8))
             if value == 1 { advance(tab) }
-            else {
-                waitingTabs[tab] = nil
-                deferredDevTools[tab] = nil
-                send(["failed": ["message": "Chromium could not create a browser for tab \(tab)", "tab": tab]])
-            }
+            else { notOpened(tab, "chromium", "Chromium could not create a browser for tab \(tab)") }
         case YardletCEFEventPageCrashed.rawValue:
             // One line per renderer that ended, for reading a person's host.log: how it ended and its exit code.
             let status = Self.terminationStatus(value)

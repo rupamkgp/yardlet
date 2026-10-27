@@ -386,10 +386,18 @@ private struct ConnectorRow: View {
     /// What the connector gives and how it signs in; the address only for one outside the directory.
     private var detail: String? {
         var parts: [String] = []
-        if record.localService != nil {
+        switch record.localService {
+        case let service? where service.isGoogle:
             parts.append(record.account ?? L10n.string("Not signed in yet"))
-        } else if record.preset == nil {
-            parts.append(record.serverURL.host() ?? record.serverURL.absoluteString)
+        case .appStoreConnect?:
+            parts.append(L10n.format("Key %@", record.account ?? ""))
+        case .xcode?:
+            // Its tools answer only while Xcode is open with a project.
+            parts.append(L10n.format("%@ · while it's open with a project", center.xcodeDescription ?? "Xcode"))
+        case .some:
+            parts.append(L10n.string("On this Mac"))
+        case nil:
+            if record.preset == nil { parts.append(record.serverURL.host() ?? record.serverURL.absoluteString) }
         }
         if case let .connected(tools) = state { parts.append(L10n.format("%lld tools", Int64(tools))) }
         if record.usesRegisteredClient { parts.append(L10n.string("Your OAuth client")) }
@@ -511,17 +519,22 @@ private struct ConnectorRow: View {
 
     /// A Gmail account with no Google OAuth app saved: its page in Add connector comes first.
     private var needsGoogleApp: Bool {
-        record.localService != nil && !center.canSignInWithGoogle
+        record.isGoogle && !center.canSignInWithGoogle
+    }
+
+    /// An App Store Connect key Apple refused: a new key is added on its page.
+    private var needsNewKey: Bool {
+        record.localService == .appStoreConnect && record.status == .signInRequired
     }
 
     private var actionTitle: String {
-        if needsEntryFirst != nil || needsGoogleApp { return L10n.string("Set up…") }
+        if needsEntryFirst != nil || needsGoogleApp || needsNewKey { return L10n.string("Set up…") }
         if case .error = state { return L10n.string("Try again") }
         return record.status == .signInRequired ? L10n.string("Reconnect") : L10n.string("Connect")
     }
 
     private func signIn() {
-        if needsGoogleApp, let preset = record.preset {
+        if needsGoogleApp || needsNewKey, let preset = record.preset {
             onSetUp(preset)
         } else if let first = needsEntryFirst {
             entering = first
@@ -548,8 +561,9 @@ private struct ConnectorRow: View {
     private var moreMenu: some View {
         Menu {
             if record.status == .connected {
-                // A Google service's tools come with the app, and its sign-in is its account's.
-                if record.localService == nil {
+                // A Google or Apple service's tools come with the app, and a Google sign-in is its
+                // account's; Xcode's are its server's.
+                if record.localService == nil || record.localService == .xcode {
                     Button(L10n.string("Reload tools")) { center.connect(record.id) }
                 }
                 if record.authorization == .oauth {
@@ -559,8 +573,14 @@ private struct ConnectorRow: View {
                     }
                 }
             }
-            if record.localService != nil, let preset = record.preset {
+            if record.isGoogle, let preset = record.preset {
                 Button(L10n.string("Google accounts and services…")) { onSetUp(preset) }
+            }
+            if record.localService == .appStoreConnect, let preset = record.preset {
+                Button(L10n.string("App Store Connect keys…")) { onSetUp(preset) }
+            }
+            if let kind = record.localService.flatMap(MacDataToolRunner.kind(of:)) {
+                Button(L10n.string("Open Privacy & Security…")) { NSWorkspace.shared.open(kind.privacySettingsURL) }
             }
             if acceptsToken {
                 Button(L10n.string("Connect with an access token…")) { entering = .token }
@@ -571,9 +591,9 @@ private struct ConnectorRow: View {
                     entering = .client
                 }
             }
-            if record.localService != nil {
+            if record.isGoogle {
                 Button(L10n.string("Add another Google account")) {
-                    center.addGoogleAccount(services: Set(LocalConnectorService.allCases))
+                    center.addGoogleAccount(services: Set(LocalConnectorService.google))
                 }
                 .disabled(!center.canSignInWithGoogle)
             }

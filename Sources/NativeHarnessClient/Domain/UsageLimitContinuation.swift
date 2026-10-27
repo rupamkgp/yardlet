@@ -9,17 +9,18 @@ struct UsageLimitAutoContinue: Equatable, Sendable {
     let connection: ProviderConnection?
 }
 
-/// What a task stopped by a plan limit sends to pick up where it stopped.
+/// What a task stopped by a plan limit sends to pick up where it stopped. The words go to the model,
+/// so they are English whatever language Yardlet shows, as the tools' descriptions and Yardlet's
+/// envelopes for other tasks' messages are (2026-10-27, the person's call; the Claude app sends its own message
+/// in the app's language).
 enum UsageLimitContinuation {
     /// The Claude app's own message for continuing once the limit has reset.
-    static var afterReset: String {
-        L10n.string("I hit my usage limit while you were working, but it has reset now. Please continue from where you left off.")
-    }
+    static let afterReset =
+        "I hit my usage limit while you were working, but it has reset now. Please continue from where you left off."
 
     /// The same request after moving to another account, which has not reset anything.
-    static var afterAccountSwitch: String {
-        L10n.string("I hit my usage limit while you were working, and I've switched to another account now. Please continue from where you left off.")
-    }
+    static let afterAccountSwitch =
+        "I hit my usage limit while you were working, and I've switched to another account now. Please continue from where you left off."
 }
 
 /// The words a task shows for its provider's plan limits, retries and compaction, in the Claude

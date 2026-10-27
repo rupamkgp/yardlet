@@ -455,6 +455,58 @@ final class BrowserPanelTabsQATests: XCTestCase {
         ])
     }
 
+    /// Pages' long titles share the strip as Chrome's and the Claude app's tabs do: while the panel has room every
+    /// tab shows its title, evenly shortened, and only a narrow panel takes the tabs not shown down to their icons,
+    /// all within the panel. Drawn at the panel's widest, a third of the way and its narrowest (`long-titles-*`);
+    /// until 2026-10-27 the tabs not shown were icons at every width.
+    func testLongTitlesShareTheStrip() throws {
+        let fixture = try makeFixture()
+        let model = fixture.model, task = fixture.task, client = fixture.client
+        let workspace = model.taskWorkspaces.state(for: task.id)
+        model.splits.activate(.session(task.id))
+        let host = WindowlessRender.Host(window(fixture, .light), size: Self.size, appearance: .light)
+        orderIn(host)
+        defer { host.close() }
+
+        XCTAssertTrue(press(TaskCommandTitle.sidePanel(isShown: false), in: host))
+        XCTAssertTrue(press(L10n.string("Browser"), in: host), "the launcher's Browser")
+        let first = try XCTUnwrap(Navigation.browserKey(inTab: workspace.panels.trailingSurfaceID))
+        XCTAssertTrue(waitUntil(host) { client.tab(key: first, forSession: task.id) != nil })
+        let standIn = try XCTUnwrap(fixture.host())
+        let titles = ["GitHub - anthropics/claude-code: Claude Code is an agentic coding tool",
+                      "Pull requests · acme/acme-platform-web", "브라우저 패널 반응형 확인 메모 — Notion",
+                      "Yardlet 대시보드 · 로컬 개발 서버"]
+        var tabs = [try XCTUnwrap(client.tab(key: first, forSession: task.id))]
+        for _ in titles.dropFirst() {
+            tabs.append(try client.newTab(forSession: task.id, url: "about:blank", viewport: .offscreenDefault, select: false))
+        }
+        for (index, tab) in tabs.enumerated() {
+            standIn.load(tab.id, "https://example\(index).test/", title: titles[index], icon: BrowserPanelTabsTests.icon(.systemBlue))
+        }
+        host.settle(passes: 12, interval: 0.03)
+
+        var widths: [String: [CGFloat]] = [:]
+        for (name, ratio) in [("wide", 1.0), ("third", 0.33), ("narrow", 0.0)] {
+            workspace.layout.panelWidthRatio = ratio
+            host.settle(passes: 12, interval: 0.03)
+            try draw(host, "long-titles-\(name)", .light)
+            let shown = strip(in: host).filter { titles.contains($0.label) }
+            widths[name] = shown.map(\.frame.width)
+            describe("긴 제목 탭 넷, 패널 \(name)", shown, notes: [
+                "다른 탭 폭 \(shown.map { Int($0.frame.width) }), 모두 패널 안 \(shown.allSatisfy { $0.frame.maxX <= Self.size.width })"
+            ])
+            XCTAssertTrue(shown.allSatisfy { $0.frame.maxX <= Self.size.width }, "\(name): \(shown.map(\.frame))")
+        }
+        // The three tabs not shown, with room: their titles, at one width.
+        let wide = widths["wide"] ?? []
+        XCTAssertEqual(wide.count, 3)
+        XCTAssertTrue(wide.allSatisfy { $0 >= PanelTabMetrics.titledWidth }, "wide: \(wide)")
+        XCTAssertLessThanOrEqual((wide.max() ?? 0) - (wide.min() ?? 0), 1, "wide: \(wide)")
+        workspace.layout.panelWidthRatio = nil
+        try (["# 긴 제목의 브라우저 탭", ""] + report).joined(separator: "\n")
+            .write(to: try WindowlessRender.directory(Self.folder).appending(path: "long-titles.md"), atomically: true, encoding: .utf8)
+    }
+
     /// A Claude adapter that starts sessions and sends nothing.
     private actor Recorder: HarnessAdapter {
         nonisolated let kind = HarnessKind.claudeCode

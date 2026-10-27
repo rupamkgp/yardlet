@@ -375,8 +375,10 @@ final class BrowserHostVaultQA {
               "\(String(describing: await page("document.getElementById('user').value")))")
 
         let menuItems = controller.view?.extraContextMenuItems?() ?? []
-        check("panel: the page's menu has the vault's three items", menuItems.count == 3
-                && menuItems.last?.title == L10n.string("Add Two-Factor Code from QR Code"),
+        // The vault's three, then the browser's own import of another browser's sign-ins.
+        check("panel: the page's menu has the vault's three items", menuItems.count == 4
+                && menuItems[2].title == L10n.string("Add Two-Factor Code from QR Code")
+                && menuItems[3].title == L10n.string("Import Sign-ins from Another Browser…"),
               menuItems.map(\.title).joined(separator: ", "))
         menuItems.first?.action()
         let drafted = await waitUntilAsync(.seconds(5)) { controller.vaultDraft != nil }

@@ -17,13 +17,14 @@ final class SessionToolTests: XCTestCase {
     func testTheToolsAreSmallPullOnlySchemasBehindToolSearch() throws {
         let names = SessionToolCatalog.tools.map(\.name)
         XCTAssertEqual(names, ["list_tasks", "read_task", "send_message_to_task", "wait_tasks", "create_task", "run_agent",
-                               "archive_task", "list_projects", "hide_project", "show_project"])
+                               "archive_task", "list_projects", "hide_project", "show_project", "list_accounts"])
         let required: [String: [String]] = [
             "list_tasks": [], "read_task": ["task_id"], "send_message_to_task": ["task_id", "message"],
             "wait_tasks": ["ids"], "create_task": ["prompt"], "run_agent": ["harness", "prompt"],
-            "archive_task": ["task_ids"], "list_projects": [], "hide_project": ["project"], "show_project": ["project"]
+            "archive_task": ["task_ids"], "list_projects": [], "hide_project": ["project"], "show_project": ["project"],
+            "list_accounts": []
         ]
-        let readOnly: Set<String> = ["list_tasks", "read_task", "wait_tasks", "list_projects"]
+        let readOnly: Set<String> = ["list_tasks", "read_task", "wait_tasks", "list_projects", "list_accounts"]
         for tool in SessionToolCatalog.tools {
             let json = tool.json
             XCTAssertEqual(json["inputSchema"]?["type"], .string("object"), tool.name)
@@ -264,8 +265,11 @@ final class SessionToolTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.tearDown() }
         let model = fixture.model
+        // The servers its processes listen on, as its header shows them.
+        model.resourceMonitor.applyServers([fixture.sibling.id: [TaskServerPort(port: 3_000, processID: 42, processName: "node")]])
         let latest = await call(model, "read_task", ["task_id": fixture.sibling.id.uuidString, "turns": 1], from: fixture.caller)
         XCTAssertFalse(latest.isError, latest.text)
+        XCTAssertTrue(latest.text.contains("localhost:3000") && latest.text.contains("\"process\":\"node\""), latest.text)
         XCTAssertTrue(latest.text.contains("Person: Add the retry test"), latest.text)
         XCTAssertTrue(latest.text.contains("Answer: Added RetryTests."), latest.text)
         XCTAssertFalse(latest.text.contains("SECRET_TOKEN"), "A call's output is never read out")
@@ -292,6 +296,7 @@ final class SessionToolTests: XCTestCase {
         XCTAssertTrue(missing.isError)
         let selfRead = await call(model, "read_task", ["task_id": "self"], from: fixture.caller)
         XCTAssertTrue(selfRead.text.contains("\"isSelf\":true"), selfRead.text)
+        XCTAssertFalse(selfRead.text.contains("\"servers\""), "A task with no server has none listed")
 
         // A page never passes the cap: older turns give way, and a turn alone too long is cut.
         var builder = TranscriptBuilder()
@@ -808,6 +813,25 @@ final class SessionToolTests: XCTestCase {
                                                             workspaceURL: child.workspaceURL))
         let listed = try decode(Listing.self, await call(model, "list_tasks", [:], from: fixture.caller).text)
         XCTAssertEqual(listed.tasks.first { $0.taskId == child.id.uuidString }?.parentTaskId, fixture.caller.id.uuidString)
+
+        // topLevel starts it with no parent, as New Task does; parent_task_id nests it under another open task,
+        // such as one beside a child task. Its first message is still the caller's.
+        let beside = await call(model, "create_task", ["prompt": "Draft the release notes", "topLevel": true],
+                                from: fixture.caller)
+        XCTAssertTrue(beside.text.contains("as a top-level task"), beside.text)
+        let top = try XCTUnwrap(model.store.sessions.first { beside.text.contains($0.id.uuidString) })
+        XCTAssertNil(top.parentTaskID)
+        XCTAssertEqual(top.projectID, fixture.app.id)
+        let under = await call(model, "create_task", ["prompt": "Check the links", "parent_task_id": child.id.uuidString],
+                               from: fixture.caller)
+        XCTAssertTrue(model.store.sessions.contains { $0.parentTaskID == child.id && under.text.contains($0.id.uuidString) },
+                      under.text)
+        let both = await call(model, "create_task", ["prompt": "No", "topLevel": true, "parent_task_id": "self"],
+                              from: fixture.caller)
+        XCTAssertTrue(both.isError && both.text.contains("not both"), both.text)
+        let missing = await call(model, "create_task", ["prompt": "No", "parent_task_id": UUID().uuidString],
+                                 from: fixture.caller)
+        XCTAssertTrue(missing.isError && missing.text.contains("no open task"), missing.text)
 
         let elsewhere = Task { await self.call(model, "create_task", ["prompt": "Port it", "project": "site"], from: fixture.caller) }
         let request = try await waitForApproval(in: fixture.caller.id, model: model)
@@ -1615,6 +1639,81 @@ final class SessionToolTests: XCTestCase {
         return state
     }
 
+    // MARK: - Accounts
+
+    /// A child or subagent starts on the account automatic assignment picks among the signed-in accounts it
+    /// may use, and the result says which and why. An account the agent names is taken
+    /// only when it is one of those: one left out, one signed out and another harness's are refused.
+    func testChildrenStartOnTheAccountWithMostHeadroomAndANamedAccountMustBeOneAutomaticAssignmentMayUse() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "session-accounts-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let native = root.appending(path: "native")
+        try FileManager.default.createDirectory(at: native.appending(path: "projects"), withIntermediateDirectories: true)
+        let store = ProviderConnectionStore()
+        store.defaultLoginEnvironment = ["CLAUDE_CONFIG_DIR": native.path]
+        let now = Date()
+        func snapshot(_ name: String, signedIn: Bool = true, sessionUsed: Double) -> HarnessAccountSnapshot {
+            HarnessAccountSnapshot(id: name, harness: .claudeCode, providerID: nil, state: signedIn ? .signedIn : .signedOut,
+                accountLabel: signedIn ? "\(name)@example.test" : nil, detail: "", credentialOwner: "", checkedAt: now,
+                usage: signedIn ? [AccountUsageMetric(id: "claude:session:", label: "5 hour limit", usedFraction: sessionUsed,
+                    detail: "", resetsAt: now.addingTimeInterval(4 * 3600), evidence: .exactQuota, windowMinutes: 300)] : [],
+                canLogin: false, canLogout: false)
+        }
+        func account(_ name: String, linked: Bool = true, signedIn: Bool = true, sessionUsed: Double) throws -> ProviderConnection {
+            let home = root.appending(path: name)
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+            if linked {
+                try FileManager.default.createSymbolicLink(at: home.appending(path: "projects"),
+                                                           withDestinationURL: native.appending(path: "projects"))
+            }
+            let connection = ProviderConnection(id: name, name: name, harness: .claudeCode, providerID: nil,
+                                                homePath: home.path, credentialSelector: nil)
+            try store.save(connection)
+            store.publish(snapshot(name, signedIn: signedIn, sessionUsed: sessionUsed), for: connection)
+            return connection
+        }
+        _ = try account("busy", sessionUsed: 0.7)
+        let roomy = try account("roomy", sessionUsed: 0.1)
+        _ = try account("separate", linked: false, sessionUsed: 0)
+        _ = try account("old", signedIn: false, sessionUsed: 0)
+        store.publishDefaults([HarnessAccountSnapshot(id: "claude-code", harness: .claudeCode, providerID: nil,
+            state: .signedOut, accountLabel: nil, detail: "", credentialOwner: "", checkedAt: now, usage: [],
+            canLogin: true, canLogout: false)])
+
+        let fixture = try Fixture(connections: store)
+        defer { fixture.tearDown() }
+        let model = fixture.model
+        let created = await call(model, "create_task", ["prompt": "Write the migration guide"], from: fixture.caller)
+        XCTAssertFalse(created.isError, created.text)
+        let child = try XCTUnwrap(model.store.sessions.first { $0.parentTaskID == fixture.caller.id && $0.id != fixture.sibling.id })
+        XCTAssertEqual(child.connection, roomy)
+        XCTAssertTrue(created.text.contains("Account: roomy@example.test (chosen automatically; 5 hour limit 10% used, resets "),
+                      created.text)
+        XCTAssertEqual(model.accountAssignments.assignment(for: child.id)?.accountID, "roomy",
+                       "The task keeps why it started there, for its hover card and read_task")
+
+        let listed = await call(model, "list_accounts", [:], from: fixture.caller)
+        XCTAssertTrue(listed.text.contains(#""automaticChoice":"roomy""#), listed.text)
+        XCTAssertTrue(listed.text.contains(#""account":"separate","automaticAssignment":false"#), listed.text)
+
+        let named = await call(model, "run_agent", ["harness": "claude-code", "prompt": "Check it", "account": "busy@example.test",
+                                                    "background": true], from: fixture.caller)
+        XCTAssertFalse(named.isError, named.text)
+        XCTAssertTrue(named.text.contains("Account: busy@example.test (as asked; 5 hour limit 70% used"), named.text)
+        let run = try await waitForRun(hostedBy: fixture.caller.id, model: model)
+        XCTAssertEqual(run.connection?.id, "busy")
+
+        for (account, refusal) in [("separate", "is not one of the accounts tasks are started on automatically"),
+                                   ("old", "is not signed in"),
+                                   ("native:codex", "a Claude Code task runs on one of Claude Code's accounts"),
+                                   ("nobody@example.test", "no account nobody@example.test")] {
+            let refused = await call(model, "create_task", ["prompt": "Port it", "account": account], from: fixture.caller)
+            XCTAssertTrue(refused.isError, account)
+            XCTAssertTrue(refused.text.contains(refusal), refused.text)
+        }
+        await model.shutdown()
+    }
+
     // MARK: - list_projects, hide_project, show_project
 
     /// The sidebar's Remove project and its way back, for an agent: the list shows hidden projects too, a
@@ -1814,7 +1913,8 @@ final class SessionToolTests: XCTestCase {
 
         init(callerOptions: [String: String] = [:], siblingOptions: [String: String] = [:],
              codexOptions: [String: String] = [:], codexState: CodexTaskState? = nil,
-             repository: (([SessionRecord]) -> any SessionRepository)? = nil) throws {
+             repository: (([SessionRecord]) -> any SessionRepository)? = nil,
+             connections: ProviderConnectionStore? = nil) throws {
             root = FileManager.default.temporaryDirectory.appending(path: "session-tools-\(UUID().uuidString.prefix(8))")
             let appRoot = root.appending(path: "app", directoryHint: .isDirectory)
             let siteRoot = root.appending(path: "site", directoryHint: .isDirectory)
@@ -1861,6 +1961,7 @@ final class SessionToolTests: XCTestCase {
                                     repository: repository?(sessions) ?? InMemorySessionRepository(sessions: sessions)),
                 runtimeSelections: selections,
                 registry: HarnessRegistry { kind, _ in kind == .codex ? codexAdapter as any HarnessAdapter : adapter },
+                connections: connections,
                 initialTranscripts: [sibling.id: builder.entries],
                 initialCodexPresentation: codexPresentation,
                 codexQueueRepository: UserDefaultsCodexQueueRepository(defaults: defaults),

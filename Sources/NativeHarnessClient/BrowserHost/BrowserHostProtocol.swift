@@ -30,6 +30,15 @@ struct BrowserViewport: Codable, Equatable, Sendable {
     static let offscreenDefault = BrowserViewport(width: 1280, height: 800, scale: 2)
 }
 
+/// Where Yardlet shows one of Chromium's own windows (`presentChromiumWindows`): over `frame`, a panel's page in
+/// screen coordinates (AppKit's, from the bottom left), just above window `above` (that panel's window). Without a
+/// frame the window stays where it is, over the windows in front.
+struct BrowserChromiumWindowPlacement: Codable, Equatable, Sendable {
+    var window: Int
+    var frame: BrowserRect?
+    var above: Int?
+}
+
 struct BrowserRect: Codable, Equatable, Sendable {
     var x: Double
     var y: Double
@@ -376,12 +385,32 @@ struct BrowserTabProfile: Codable, Equatable, Sendable {
     var seedFrom: String?
 }
 
+/// A cookie another browser keeps (`BrowserLoginImport`), as Chromium stores it: `domain` with a leading dot for a
+/// domain cookie and the host alone for a host-only one; CEF's SameSite (0 unspecified, 1 none, 2 lax, 3 strict)
+/// and priority (-1 low, 0 medium, 1 high); `expires` in Chromium's microseconds since 1601, nil for a session
+/// cookie.
+struct BrowserImportedCookie: Codable, Equatable, Sendable {
+    var name: String
+    var value: String
+    var domain: String
+    var path: String
+    var secure: Bool
+    var httpOnly: Bool
+    var sameSite: Int
+    var priority: Int
+    var expires: Int64?
+}
+
 enum BrowserHostCommand: Codable, Equatable, Sendable {
     /// Opens a tab; with a profile it shares that task profile's cookies and storage, else the default's.
     case open(tab: BrowserTabID, url: String, viewport: BrowserViewport, profile: BrowserTabProfile? = nil)
     /// Copies the cookies of `domain` and its subdomains from one profile to another (a key; nil for the
     /// default profile): a person's sign-in in a task's tab goes to the default profile too.
     case copyCookies(from: String?, to: String?, domain: String)
+    /// Replaces the cookies of `sites` (each a domain with its subdomains) in one profile (a key; nil for the default
+    /// profile) with another browser's, which the person chose to bring over; answered with `cookiesImported`. A task
+    /// profile that has no folder yet is left as it is: it starts from the default profile's cookies.
+    case importCookies(request: Int, to: String?, sites: [String], cookies: [BrowserImportedCookie])
     case resize(tab: BrowserTabID, viewport: BrowserViewport)
     case navigate(tab: BrowserTabID, url: String)
     case navigation(tab: BrowserTabID, action: BrowserNavigationAction)
@@ -422,23 +451,28 @@ enum BrowserHostCommand: Codable, Equatable, Sendable {
     /// Keeps the person's "Always allow" for `origin` to open `scheme` addresses in their app (Chrome's profile
     /// setting), so the next such link from that site opens without asking.
     case allowExternalApp(tab: BrowserTabID, origin: String, scheme: String)
-    /// Brings Chromium's own windows (the passkey dialog) to the front of their level without
-    /// activating the host: Yardlet came to the front over them.
-    case raiseChromiumWindows
-    /// Closes Chromium's own windows as a person pressing Escape would: the page's passkey request
-    /// ends with NotAllowedError.
-    case closeChromiumWindows
+    /// Shows Chromium's own windows (the passkey dialog) where the person sees their tab, without activating the
+    /// host: each placed window over the panel that shows its tab, just above that panel's window, as Chrome draws a
+    /// tab's dialog over the tab (a window whose tab is not known where it is). A window not placed waits past the
+    /// screens until a panel shows its tab.
+    case presentChromiumWindows(placements: [BrowserChromiumWindowPlacement])
+    /// Closes Chromium's own windows over these tabs (every window for nil) as a person pressing Escape would: the
+    /// page's passkey request ends with NotAllowedError.
+    case closeChromiumWindows(tabs: [BrowserTabID]?)
     /// Closes every tab and ends the host.
     case shutdown
 }
 
 enum BrowserHostEvent: Codable, Equatable, Sendable {
     case ready(processID: Int, engine: String, acceleratedPaint: Bool)
+    /// An `importCookies` is done: the cookies it set (0 for a task profile it left as it is), or -1 when it could not run.
+    case cookiesImported(request: Int, count: Int)
     /// Chromium opened (true) or closed its last window of its own in the host, such as the passkey
     /// dialog, or the windows shown changed. While one is shown the host may be activated, so the window takes
     /// the keyboard. `kinds` (one per title): passkey, signIn (HTTP authentication), print, other; nil from a
-    /// host before 2026-10-25, whose windows were passkey dialogs.
-    case chromiumWindow(isShown: Bool, titles: [String]?, kinds: [String]? = nil)
+    /// host before 2026-10-25, whose windows were passkey dialogs. `ids` are the windows' numbers and `tabs` the tab
+    /// each is over (-1 when not known, as for the print dialog); nil from a host before 2026-10-27.
+    case chromiumWindow(isShown: Bool, titles: [String]?, kinds: [String]? = nil, ids: [Int]? = nil, tabs: [BrowserTabID]? = nil)
     case opened(tab: BrowserTabID)
     case frame(tab: BrowserTabID, frame: BrowserFrame)
     /// Where the popup layer sits in view points; nil hides it.
@@ -516,16 +550,16 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
     /// so the receiver may release its copies of those surfaces too.
     case hidden(tab: BrowserTabID)
     case closed(tab: BrowserTabID)
-    /// Something the host could not do: for one tab (it could not create the tab's browser), or for the
-    /// whole host when `tab` is nil.
-    case failed(message: String, tab: BrowserTabID? = nil)
+    /// Something the host could not do: for one tab (it could not open the tab: no browser was made), or
+    /// for the whole host when `tab` is nil. `limit`: the most tabs the host holds, when that many were open.
+    case failed(message: String, tab: BrowserTabID? = nil, limit: Int? = nil)
     /// Produced by the transport, never sent by a host: the host is gone.
     case terminated(reason: String)
 
     /// The tab an event belongs to; nil for host-wide events.
     var tab: BrowserTabID? {
         switch self {
-        case .ready, .chromiumWindow, .failed, .terminated: nil
+        case .ready, .chromiumWindow, .cookiesImported, .failed, .terminated: nil
         case .opened(let tab), .frame(let tab, _), .popup(let tab, _), .cursor(let tab, _),
              .contextMenu(let tab, _), .compositionBounds(let tab, _), .address(let tab, _),
              .title(let tab, _), .favicon(let tab, _, _), .loading(let tab, _, _, _), .loadEnd(let tab, _, _),

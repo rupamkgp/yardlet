@@ -298,8 +298,9 @@ package struct UnixSocketToolInvoker: AgentToolInvoking {
         guard let request = try? JSONEncoder().encode(call) else {
             return .error("The tool arguments could not be encoded.")
         }
-        // A scheduled-task call from a scheduled run may wait for the person too.
+        // A scheduled-task call from a scheduled run may wait for the person too, and a handed-over tab waits for them.
         let waits = SessionToolCatalog.definition(named: tool) != nil || ScheduleToolCatalog.definition(named: tool) != nil
+            || tool == AgentToolCatalog.handoff
         let timeout = waits ? sessionToolTimeout : timeout
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {

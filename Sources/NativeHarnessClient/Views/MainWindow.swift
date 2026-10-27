@@ -652,8 +652,21 @@ struct MainWindow: View {
             onChooseAccount: { session in rememberShellFocus(); accountSwitchSession = session },
             canOpenOriginalConversation: { model.canOpenOriginalConversation(in: $0) },
             onOpenOriginalConversation: { session in Task { await model.openOriginalClaudeConversation(from: session) } },
-            pullRequest: { model.pullRequests.pullRequest(for: $0.id) }
+            pullRequest: { model.pullRequests.pullRequest(for: $0.id) },
+            servers: { model.resourceMonitor.servers(of: $0.id) },
+            onOpenServer: openServer
         )
+    }
+
+    /// A task's server in a browser tab of the task, shown, with the keyboard on the page; in the default
+    /// browser when the task has no room for another tab.
+    private func openServer(_ session: SessionRecord, _ server: TaskServerPort) {
+        let workspace = model.taskWorkspaces.state(for: session.id, initialSurface: model.initialTaskSurface)
+        guard workspace.showServer(server) else {
+            NSWorkspace.shared.open(server.url)
+            return
+        }
+        workspace.keyboardFocus.move(to: .browser)
     }
 
     /// "Back to conversation": the task's panels close and the composer takes focus.
@@ -706,6 +719,17 @@ struct MainWindow: View {
             }
             if inNewTab { openInNewTab(.session(task.id)) } else { show(.session(task.id)) }
         }
+    }
+
+    /// A file's related task: its conversation where it last touched the file, in a new tab on ⌘-click
+    /// as a sidebar row opens.
+    private func openFileTask(_ item: FileTasks.Item) {
+        if NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+            openInNewTab(.session(item.id))
+        } else {
+            show(.session(item.id))
+        }
+        Task { await model.revealCall(item.callID, in: item.id) }
     }
 
     // MARK: - Tabs
@@ -1178,6 +1202,13 @@ struct MainWindow: View {
             panels.trailingSurfaceID = TaskSurface.diff.rawValue
             owner.setPanels(panels)
             owner.keyboardFocus.move(to: .destination(for: .diff, panels: panels))
+        })
+        // A file's related tasks in the review and the files panel, each opening its conversation where it
+        // touched the file, and that place, which the task's conversation goes to.
+        .environment(\.fileTaskServices, FileTaskServices(
+            currentTaskID: session.id, lookup: { await model.tasks(touching: $0) }, open: openFileTask))
+        .environment(\.conversationPlace, model.conversationPlaceRequests[session.id].map { request in
+            ConversationPlace(request: request, done: { model.finishConversationPlace(request, in: session.id) })
         })
         // The task's values above belong to its identity: as the window opens another task, the
         // outgoing task's views are not updated once more with the next task's values on the way out.
@@ -1653,6 +1684,7 @@ struct MainWindow: View {
                     .environment(\.scheduledTaskIDs, model.scheduledTasks.scheduledTaskIDs)
                     .environment(model.resourceMonitor)
                     .environment(model.pullRequests)
+                    .environment(model.accountAssignments)
                     .environment(\.sidebarHoverCard, sidebarHoverCard)
                     .onChange(of: model.splits.selection, initial: true) { holdSidebarOrder() }
                     }
@@ -1770,6 +1802,8 @@ struct MainWindow: View {
             canOpenOriginalConversation: { model.canOpenOriginalConversation(in: $0) },
             onOpenOriginalConversation: { session in Task { await model.openOriginalClaudeConversation(from: session) } },
             pullRequest: session.flatMap { model.pullRequests.pullRequest(for: $0.id) },
+            servers: { model.resourceMonitor.servers(of: $0.id) },
+            onOpenServer: openServer,
             splitHeader: isSplit ? titleBarSplitHeader : nil,
             draftPanels: item == .home ? taskPanelState : nil,
             tabs: item != nil && model.splits.tabs.count > 1 ? TitleBarTabs(

@@ -91,6 +91,9 @@ struct IntegratedTitleBar: View {
     /// The pull request the task made (`TaskPullRequestMonitor`), shown beside the harness.
     var pullRequest: TaskPullRequest? = nil
     var onOpenPullRequest: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// The ports the task's processes listen on, after its pull request (`TaskHeaderActions.servers`).
+    var servers: (SessionRecord) -> [TaskServerPort] = { _ in [] }
+    var onOpenServer: (SessionRecord, TaskServerPort) -> Void = { _, _ in }
     /// The split view the window shows, whose header the title bar is; its tasks' headers are in
     /// their panes.
     var splitHeader: SplitViewHeader? = nil
@@ -116,7 +119,8 @@ struct IntegratedTitleBar: View {
             projectName: projectName, projectMoveOptions: projectMoveOptions, onMoveToProject: onMoveToProject,
             onChooseAccount: onChooseAccount, canOpenOriginalConversation: canOpenOriginalConversation,
             onOpenOriginalConversation: onOpenOriginalConversation,
-            pullRequest: { [pullRequest] _ in pullRequest }, onOpenPullRequest: onOpenPullRequest)
+            pullRequest: { [pullRequest] _ in pullRequest }, onOpenPullRequest: onOpenPullRequest,
+            servers: servers, onOpenServer: onOpenServer)
     }
 
     private var isFolded: Bool {

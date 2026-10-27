@@ -40,7 +40,7 @@ extension AppModel {
         let entry = RoutingLedgerEntry(
             kind: .agentRun, taskID: run.hostTaskID, runID: run.id, parentTaskID: run.callerID, origin: .agentRun,
             harness: run.harness.rawValue, model: run.model, effort: nil,
-            account: connections.selected(for: run.harness)?.id,
+            account: (run.accountStart.map(\.connection) ?? connections.selected(for: run.harness))?.id,
             projectID: store.sessions.first { $0.id == run.hostTaskID }?.projectID,
             workspacePath: run.workspaceURL.path(percentEncoded: false),
             startedAt: run.startedAt, endedAt: endedAt, outcome: outcome, tokens: tokens)

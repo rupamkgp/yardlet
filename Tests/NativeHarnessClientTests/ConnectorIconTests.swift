@@ -62,6 +62,11 @@ final class ConnectorIconTests: XCTestCase {
     func testEveryDirectoryIconIsHTTPSOnTheServicesOwnSite() throws {
         for preset in ConnectorPreset.all {
             guard let url = preset.iconURL else { continue }
+            // The Mac's own apps draw the icon macOS gives them, from no site at all.
+            if preset.localService.map({ $0.isMac || $0 == .xcode }) == true {
+                XCTAssertTrue(url.isFileURL && url.pathExtension == "app", preset.id)
+                continue
+            }
             XCTAssertEqual(url.scheme, "https", preset.id)
             let site = ConnectorIconSite.baseDomain(try XCTUnwrap(url.host(), preset.id))
             XCTAssertFalse(["duckduckgo.com", "icon.horse", "clearbit.com", "faviconkit.com"].contains(site),

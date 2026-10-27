@@ -196,24 +196,19 @@ struct WorkSurfaceHeader<Trailing: View>: View {
     var body: some View {
         HStack(spacing: 4) {
             if let navigation {
-                // Tabs that are not shown keep their titles while they fit, then only their icons.
-                ViewThatFits(in: .horizontal) {
-                    tabStrip(navigation, compact: false)
-                    tabStrip(navigation, compact: true)
-                }
+                tabStrip(navigation)
                 if !navigation.choices.isEmpty {
                     WorkSurfaceOpenMenu(choices: navigation.choices, taskChoices: navigation.taskChoices,
                                         onSelect: navigation.open)
                 }
             } else {
-                activeTab
+                activeTab(fillsRoom: false)
             }
-            // In the window's title bar, the strip's empty part moves the window as the rest of the bar does.
-            if row?.isTitleBar == true {
-                WindowDragRegion().frame(minWidth: 0, maxWidth: .infinity)
-            } else {
-                Spacer(minLength: 0)
-            }
+            // The empty part takes only the room the tabs and the status leave (a flexible view in its place
+            // shared the room with the tabs); in the window's title bar it moves the window as the rest of the
+            // bar does, over the row's height, since a spacer has none.
+            Spacer(minLength: 0)
+                .overlay { if let row, row.isTitleBar { WindowDragRegion().frame(height: row.height) } }
             if let status {
                 // The tabs keep their room; a long status shortens first.
                 Text(status).font(.caption).foregroundStyle(statusTint)
@@ -263,15 +258,16 @@ struct WorkSurfaceHeader<Trailing: View>: View {
     /// lower in a tab's content keeps its own height.
     private var row: WorkSurfaceHeaderRow? { navigation == nil ? nil : sharedRow }
 
-    private func tabStrip(_ navigation: WorkSurfaceNavigation, compact: Bool) -> some View {
-        HStack(spacing: 4) {
+    /// Every tab keeps its title while the strip has room, shortened evenly once it has not (`PanelTabStripLayout`).
+    private func tabStrip(_ navigation: WorkSurfaceNavigation) -> some View {
+        PanelTabStripLayout(shown: navigation.tabs.firstIndex { $0.id == navigation.activeID } ?? navigation.tabs.count) {
             ForEach(Array(navigation.tabs.enumerated()), id: \.element.id) { index, tab in
                 Group {
                     if tab.id == navigation.activeID {
-                        activeTab
+                        activeTab(fillsRoom: true)
                             .contextMenu { WorkSurfaceTabMenu(tabID: tab.id, navigation: navigation) }
                     } else {
-                        WorkSurfaceTabButton(tab: tab, compact: compact, onSelect: { navigation.select(tab.id) },
+                        WorkSurfaceTabButton(tab: tab, onSelect: { navigation.select(tab.id) },
                                              onClose: { navigation.closeTab(tab.id) }) {
                             WorkSurfaceTabMenu(tabID: tab.id, navigation: navigation)
                         }
@@ -284,24 +280,27 @@ struct WorkSurfaceHeader<Trailing: View>: View {
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { tabFrames[tab.id] = $0 }
             }
             // A Claude subtask shows in the panel without becoming one of its tabs.
-            if !navigation.tabs.contains(where: { $0.id == navigation.activeID }) { activeTab }
+            if !navigation.tabs.contains(where: { $0.id == navigation.activeID }) { activeTab(fillsRoom: true) }
         }
         .animation(.easeOut(duration: 0.15), value: drag?.target)
     }
 
-    private var activeTab: some View {
-        HStack(spacing: 8) {
-            WorkSurfaceTabIcon(systemName: systemName, harness: harness, favicon: favicon, isLoading: isLoading)
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.callout)
-                .lineLimit(1).truncationMode(.middle)
-                .help(workspaceURL.path(percentEncoded: false))
-                .accessibilityValue(workspaceURL.lastPathComponent)
-            ParityIconButton(systemName: "xmark", help: L10n.string("Close tab"), action: onClose)
+    /// The shown tab; in the strip, the whole room the strip gives it.
+    private func activeTab(fillsRoom: Bool) -> some View {
+        PanelTabRoom(fills: fillsRoom) {
+            HStack(spacing: 8) {
+                WorkSurfaceTabIcon(systemName: systemName, harness: harness, favicon: favicon, isLoading: isLoading)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.callout)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(workspaceURL.path(percentEncoded: false))
+                    .accessibilityValue(workspaceURL.lastPathComponent)
+                ParityIconButton(systemName: "xmark", help: L10n.string("Close tab"), action: onClose)
+            }
+            .padding(.leading, 10).padding(.trailing, 2)
+            .frame(height: 30)
         }
-        .padding(.leading, 10).padding(.trailing, 2)
-        .frame(height: 30)
         .background(ParityTheme.selectedFill, in: RoundedRectangle(cornerRadius: 9))
         .layoutPriority(1)
     }
@@ -323,28 +322,148 @@ private struct PanelTabDrag: ViewModifier {
     }
 }
 
+/// The side panel's tab sizes. The tabs share the strip as Chrome's and the Claude app's do: each takes its
+/// title's width up to `maxWidth`, and a strip too short for them shortens the widest first until they are even.
+/// The shown tab keeps room for part of its title and its close button while the others can give way; the
+/// others lose their titles before their icons.
+enum PanelTabMetrics {
+    static let spacing: CGFloat = 4
+    static let maxWidth: CGFloat = 200
+    /// The shown tab while the others can give way.
+    static let shownMinWidth: CGFloat = 120
+    /// The narrowest the shown tab gets once the others are down to their icons: its icon, a letter and its
+    /// close button.
+    static let shownFloor: CGFloat = 72
+    /// Another tab at its narrowest: its icon.
+    static let markWidth: CGFloat = 32
+    /// The narrowest another tab shows its title in (its icon and a few letters); narrower, its icon alone.
+    static let titledWidth: CGFloat = 68
+
+    /// Each tab's width, `natural` being each one's whole title and `room` the strip's width without the spacing.
+    static func widths(natural: [CGFloat], shown: Int, room: CGFloat) -> [CGFloat] {
+        let natural = natural.map { min(maxWidth, $0) }
+        let even = shared(natural, room: room)
+        guard natural.indices.contains(shown), even[shown] < min(natural[shown], shownMinWidth) else { return even }
+        let others = natural.indices.filter { $0 != shown }
+        var widths = natural
+        widths[shown] = min(natural[shown], shownMinWidth)
+        let rest = shared(others.map { natural[$0] }, room: room - widths[shown], floor: markWidth)
+        for (index, width) in zip(others, rest) { widths[index] = width }
+        // The others at their icons and still short: the shown tab gives way down to its floor.
+        widths[shown] = max(min(natural[shown], shownFloor), min(widths[shown], room - rest.reduce(0, +)))
+        return widths
+    }
+
+    /// The widths under the one cap whose total is `room`, each at most its natural width and none below
+    /// `floor` (a strip short even of the floors overflows).
+    static func shared(_ natural: [CGFloat], room: CGFloat, floor: CGFloat = 0) -> [CGFloat] {
+        guard natural.reduce(0, +) > room else { return natural }
+        var remaining = room, left = CGFloat(natural.count)
+        for width in natural.sorted() {
+            guard width <= remaining / left else { break }
+            remaining -= width
+            left -= 1
+        }
+        let cap = max(floor, remaining / max(left, 1))
+        return natural.map { min($0, cap) }
+    }
+}
+
+/// Lays the side panel's tabs in a row at `PanelTabMetrics.widths`: as wide as their titles while they fit,
+/// so the strip takes the room the panel's header has after its buttons.
+private struct PanelTabStripLayout: Layout {
+    /// The shown tab's place.
+    let shown: Int
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let height = subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+        return CGSize(width: widths(proposal.width, subviews).reduce(0, +) + spacing(subviews), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        for (subview, width) in zip(subviews, widths(bounds.width, subviews)) {
+            subview.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(width: width, height: bounds.height))
+            x += width + PanelTabMetrics.spacing
+        }
+    }
+
+    private func spacing(_ subviews: Subviews) -> CGFloat {
+        PanelTabMetrics.spacing * CGFloat(max(0, subviews.count - 1))
+    }
+
+    private func widths(_ available: CGFloat?, _ subviews: Subviews) -> [CGFloat] {
+        // Each tab with all the room it could take: its whole title.
+        let natural = subviews.map { $0.sizeThatFits(ProposedViewSize(width: .infinity, height: nil)).width }
+        return PanelTabMetrics.widths(natural: natural, shown: shown, room: (available ?? .infinity) - spacing(subviews))
+    }
+}
+
+/// A tab in the room the strip gives it (`fills`): a title cut to fit ends a few points short of that room at
+/// a letter, and the tab's background still fills it. Offered unlimited room, as the strip asks each tab for its
+/// whole title, it is as wide as what it holds.
+private struct PanelTabRoom: Layout {
+    var fills = true
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(proposal) ?? .zero
+        guard fills, let width = proposal.width, width.isFinite else { return size }
+        return CGSize(width: max(size.width, width), height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+    }
+}
+
 /// A tab that is open in the side panel but not shown. Hovering a titled tab shows its close
 /// button over the end of the title, so the strip does not shift; every tab closes from its menu.
 private struct WorkSurfaceTabButton<Menu: View>: View {
     let tab: WorkSurfaceTab
-    let compact: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
     @ViewBuilder let menu: () -> Menu
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 8) {
-                WorkSurfaceTabIcon(systemName: tab.systemName, harness: tab.harness, favicon: tab.favicon,
-                                   isLoading: tab.isLoading)
-                if !compact {
-                    Text(tab.title).font(.callout).lineLimit(1).truncationMode(.middle)
+        // Its title while part of it fits in the room the strip gives the tab, else its icon alone.
+        ViewThatFits(in: .horizontal) {
+            button(titled: true)
+                .overlay(alignment: .trailing) {
+                    if isHovering {
+                        ParityIconButton(systemName: "xmark", help: L10n.string("Close tab"), action: onClose)
+                            .background(ParityTheme.canvas, in: Circle())
+                            .padding(.trailing, 2)
+                    }
                 }
+            button(titled: false)
+        }
+        .contextMenu { menu() }
+        .background(isHovering ? ParityTheme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 9))
+        .onHover { isHovering = $0 }
+    }
+
+    private func button(titled: Bool) -> some View {
+        Button(action: onSelect) {
+            PanelTabRoom {
+                HStack(spacing: 8) {
+                    WorkSurfaceTabIcon(systemName: tab.systemName, harness: tab.harness, favicon: tab.favicon,
+                                       isLoading: tab.isLoading)
+                    if titled {
+                        Text(tab.title).font(.callout).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, titled ? 10 : 8)
+                // Ideally no wider than a few letters of the title, so `ViewThatFits` keeps the title while they
+                // fit; offered more, the title takes what it needs.
+                .frame(idealWidth: titled ? PanelTabMetrics.titledWidth : nil)
             }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, compact ? 8 : 10)
             .frame(height: 30)
+            // An icon alone stays in the middle of its tab's room.
+            .frame(maxWidth: titled ? nil : .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -352,16 +471,6 @@ private struct WorkSurfaceTabButton<Menu: View>: View {
         .help(tab.title)
         .accessibilityLabel(tab.title)
         .accessibilityAction(named: Text(L10n.string("Close tab")), onClose)
-        .contextMenu { menu() }
-        .overlay(alignment: .trailing) {
-            if isHovering, !compact {
-                ParityIconButton(systemName: "xmark", help: L10n.string("Close tab"), action: onClose)
-                    .background(ParityTheme.canvas, in: Circle())
-                    .padding(.trailing, 2)
-            }
-        }
-        .background(isHovering ? ParityTheme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 9))
-        .onHover { isHovering = $0 }
     }
 }
 

@@ -119,6 +119,26 @@ final class VaultTests: XCTestCase {
         let off = await center.authorize(VaultFillRequest(sessionID: task, itemName: nil, kind: .login,
                                                           origin: "https://www.github.com"))
         guard case .failure = off else { return XCTFail("filled while off") }
+
+        // Two accounts on one site under the site's name, as an import names them: the refusal tells them
+        // apart by username, and the username names one.
+        let other = VaultItem(name: "GitHub", sites: ["github.com"], username: "grace", policy: .always)
+        let both = VaultCenter(environment: VaultCenter.Environment(
+            secrets: InMemoryVaultSecretStore([item.id: VaultSecret(password: "correct horse"),
+                                               other.id: VaultSecret(password: "battery staple")]),
+            repository: InMemoryVaultRepository(items: [item, other]), hmac: MacVault.hmac, isAllowedBuild: true,
+            defaults: .vaultTests()))
+        for name in [nil, "GitHub"] {
+            let refused = await both.authorize(VaultFillRequest(sessionID: task, itemName: name, kind: .login,
+                                                                origin: "https://github.com"))
+            guard case let .failure(refusal) = refused else { return XCTFail("filled one of two of that name") }
+            XCTAssertTrue(refusal.message.contains("“GitHub” (ada)") && refusal.message.contains("“GitHub” (grace)"),
+                          refusal.message)
+        }
+        let byUsername = await both.authorize(VaultFillRequest(sessionID: task, itemName: "grace", kind: .login,
+                                                               origin: "https://github.com"))
+        guard case let .success(chosen) = byUsername else { return XCTFail("the username did not name its item") }
+        XCTAssertEqual(chosen.password, "battery staple")
     }
 }
 

@@ -174,6 +174,18 @@ final class ConnectorCenter: ConnectorToolProviding {
         var refreshRetrySleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
         /// The zone Google Calendar reads a time without an offset in: the Mac's.
         var timeZone: @Sendable () -> TimeZone = { .current }
+        /// Where this Mac's Xcode keeps `mcpbridge` (`XcodeBridge.locate`); nil where there is no
+        /// Xcode with one, and Xcode is then not offered.
+        var xcodeBridge: @Sendable () -> URL? = { nil }
+        /// Starts a stdio MCP server (Xcode's bridge) at a path.
+        var stdioLauncher: @Sendable (URL) -> any MCPStdioLaunching = { ProcessMCPStdioLauncher(executable: $0) }
+        /// The Mac's calendars, reminders, and contacts; nil where this build has none.
+        var macData: (any MacDataStoring)?
+        /// The App Store Connect API's address.
+        var appStoreConnect: URL = AppStoreConnectAPI.liveBase
+        /// Signs App Store Connect tokens; nil where this build cannot, and App Store Connect is then
+        /// not offered.
+        var es256: (any ES256Signing)?
     }
 
     /// One Google account and the services turned on for it, each a connector of its own that
@@ -250,6 +262,8 @@ final class ConnectorCenter: ConnectorToolProviding {
     @ObservationIgnored private var environment: Environment
     @ObservationIgnored private var sessions: [UUID: ConnectorSession] = [:]
     @ObservationIgnored private var googleSessions: [UUID: GoogleAPISession] = [:]
+    @ObservationIgnored private var appStoreSessions: [UUID: AppStoreConnectSession] = [:]
+    @ObservationIgnored private var xcodeClients: [UUID: MCPStdioClient] = [:]
     @ObservationIgnored private var connectTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var toolRefreshes: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var pendingDeletion: Task<Void, Never>?
@@ -284,6 +298,8 @@ final class ConnectorCenter: ConnectorToolProviding {
         client: (id: String, secret: String?)? = nil,
         preset: ConnectorPreset? = nil
     ) async throws -> ConnectorRecord {
+        // Xcode and the Mac's data are Yardlet's own servers, one of each on this Mac.
+        if let service = preset?.localService, service == .xcode || service.isMac { return addLocal(service) }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = trimmedName.isEmpty ? (preset?.name ?? serverURL.host() ?? "Connector") : trimmedName
         let matchingPreset = preset ?? ConnectorPreset.preset(for: serverURL)
@@ -365,7 +381,7 @@ final class ConnectorCenter: ConnectorToolProviding {
     var googleAccounts: [GoogleAccount] {
         var order: [UUID] = []
         var groups: [UUID: [ConnectorRecord]] = [:]
-        for record in connectors where record.localService != nil {
+        for record in connectors where record.isGoogle {
             if groups[record.credentialID] == nil { order.append(record.credentialID) }
             groups[record.credentialID, default: []].append(record)
         }
@@ -377,7 +393,7 @@ final class ConnectorCenter: ConnectorToolProviding {
     }
 
     private func googleRecords(_ accountID: UUID) -> [ConnectorRecord] {
-        connectors.filter { $0.localService != nil && $0.credentialID == accountID }
+        connectors.filter { $0.isGoogle && $0.credentialID == accountID }
     }
 
     /// Adds a Gmail account and signs it in (`addGoogleAccount` with Gmail alone).
@@ -391,7 +407,7 @@ final class ConnectorCenter: ConnectorToolProviding {
     /// address names its connectors once Google says whose account it is.
     @discardableResult
     func addGoogleAccount(services: Set<LocalConnectorService>) -> GoogleAccount? {
-        let chosen = LocalConnectorService.allCases.filter(services.contains)
+        let chosen = LocalConnectorService.google.filter(services.contains)
         guard !chosen.isEmpty else { return nil }
         var accountID: UUID?
         for service in chosen {
@@ -474,9 +490,12 @@ final class ConnectorCenter: ConnectorToolProviding {
         let key = taskKey(id)
         guard connectTasks[key] == nil else { return }
         connectTasks[key] = Task { [weak self] in
-            if record.localService != nil {
+            switch record.localService {
+            case let service? where service.isGoogle:
                 await self?.performGoogleConnect(account: key, signingInAgain: signingInAgain)
-            } else {
+            case let service?:
+                await self?.performLocalConnect(id, service: service)
+            case nil:
                 await self?.performConnect(id, signingInAgain: signingInAgain)
             }
         }
@@ -484,7 +503,7 @@ final class ConnectorCenter: ConnectorToolProviding {
 
     /// The connection a connector's work runs under: its Google account's for a Google service.
     private func taskKey(_ id: UUID) -> UUID {
-        guard let record = record(id), record.localService != nil else { return id }
+        guard let record = record(id), record.isGoogle else { return id }
         return record.credentialID
     }
 
@@ -517,7 +536,8 @@ final class ConnectorCenter: ConnectorToolProviding {
         forgetCredential(key, keepingClient: true)
         sessions[id] = nil
         googleSessions[key] = nil
-        let affected = record(id)?.localService == nil ? [id] : googleRecords(key).map(\.id)
+        closeLocalServer(id)
+        let affected = record(id)?.isGoogle == true ? googleRecords(key).map(\.id) : [id]
         for other in affected {
             failures[other] = nil
             update(other) { $0.status = .notConnected }
@@ -527,13 +547,14 @@ final class ConnectorCenter: ConnectorToolProviding {
     func remove(_ id: UUID) {
         let key = taskKey(id)
         // A Google service's sign-in stays while another service of its account uses it.
-        let shared = record(id)?.localService != nil
-            && connectors.contains { $0.id != id && $0.localService != nil && $0.credentialID == key }
+        let shared = record(id)?.isGoogle == true
+            && connectors.contains { $0.id != id && $0.isGoogle && $0.credentialID == key }
         if !shared {
             cancelConnect(id)
             forgetCredential(key, keepingClient: false)
             googleSessions[key] = nil
         }
+        closeLocalServer(id)
         toolRefreshes.removeValue(forKey: id)?.cancel()
         sessions[id] = nil
         failures[id] = nil
@@ -901,10 +922,12 @@ final class ConnectorCenter: ConnectorToolProviding {
                                                           timeZone: environment.timeZone(), now: environment.now)
                     .call(tool, arguments)
             case .googleDrive?:
-                return try await GoogleDriveToolRunner(api: GoogleREST(base: google.driveAPI, session: session),
-                                                       uploadBase: google.driveUpload)
+                let drive = GoogleDriveToolRunner(api: GoogleREST(base: google.driveAPI, session: session),
+                                                  uploadBase: google.driveUpload)
+                guard GoogleEditorsToolCatalog.names.contains(tool) else { return try await drive.call(tool, arguments) }
+                return try await GoogleEditorsToolRunner(endpoints: google, session: session, drive: drive, http: environment.http)
                     .call(tool, arguments)
-            case nil:
+            default:
                 return .error("Unknown tool: \(tool)")
             }
         } catch GoogleAPISession.Failure.signInRequired {
@@ -917,6 +940,198 @@ final class ConnectorCenter: ConnectorToolProviding {
             return .error("\(record.name): \(failure.localizedDescription)")
         } catch {
             return .error("Could not reach \(record.name): \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Apple services (Yardlet's own servers)
+
+    /// Whether this Mac can serve a directory entry: Xcode only where its bridge is, App Store
+    /// Connect only where tokens can be signed.
+    func isAvailable(_ preset: ConnectorPreset) -> Bool {
+        switch preset.localService {
+        case .xcode?: environment.xcodeBridge() != nil
+        case .appStoreConnect?: environment.es256 != nil
+        default: true
+        }
+    }
+
+    /// The Xcode this Mac has, as "Xcode 27.1"; nil without one.
+    var xcodeDescription: String? {
+        guard let bridge = environment.xcodeBridge() else { return nil }
+        return XcodeBridge.version(of: bridge).map { "Xcode \($0)" } ?? "Xcode"
+    }
+
+    /// Adds Xcode or one of the Mac's calendars, reminders, and contacts, which this Mac has one
+    /// of each; the one added already when it is. Connecting asks macOS for the Mac's data, or
+    /// Xcode's bridge for its tools.
+    @discardableResult
+    func addLocal(_ service: LocalConnectorService) -> ConnectorRecord {
+        if let existing = connectors.first(where: { $0.localService == service }) { return existing }
+        let record = ConnectorRecord(
+            name: service.name,
+            slug: ConnectorToolNaming.slug(for: service.slugBase, taken: Set(connectors.map(\.slug))),
+            serverURL: service == .xcode ? environment.xcodeBridge() ?? service.address : service.address,
+            authorization: .none,
+            presetID: service.presetID,
+            localService: service
+        )
+        connectors.append(record)
+        return record
+    }
+
+    /// Adds an App Store Connect API key and connects with it: the key goes to the secure store,
+    /// and the connector is named by its key ID. A key added again replaces the stored one. Throws
+    /// before storing anything when the private key or an ID cannot be one.
+    @discardableResult
+    func addAppStoreConnectKey(privateKey pem: String, keyID: String, issuerID: String?) async throws -> ConnectorRecord {
+        let key = try AppStoreConnectKey(id: keyID, issuer: issuerID, pem: pem, signer: environment.es256)
+        if let existing = connectors.first(where: { $0.localService == .appStoreConnect && $0.account == key.id }) {
+            try await replaceCredential(key.credential, for: existing.id)
+            appStoreSessions[existing.id] = nil
+            connect(existing.id)
+            return existing
+        }
+        let record = ConnectorRecord(
+            name: LocalConnectorService.appStoreConnect.name,
+            slug: ConnectorToolNaming.slug(for: LocalConnectorService.appStoreConnect.slugBase, taken: Set(connectors.map(\.slug))),
+            serverURL: environment.appStoreConnect,
+            authorization: .token,
+            presetID: LocalConnectorService.appStoreConnect.presetID,
+            localService: .appStoreConnect,
+            account: key.id
+        )
+        let id = record.id
+        try await store { try $0.save(key.credential, for: id) }
+        connectors.append(record)
+        connect(id)
+        return record
+    }
+
+    /// Connects a service Yardlet serves itself that is not Google's: Xcode lists its tools through
+    /// its bridge, App Store Connect checks the key with one read, and the Mac's data asks macOS
+    /// once (its prompt shows only the first time).
+    private func performLocalConnect(_ id: UUID, service: LocalConnectorService) async {
+        defer {
+            connectTasks[id] = nil
+            activity[id] = nil
+        }
+        await pendingDeletion?.value
+        guard let record = record(id) else { return }
+        failures[id] = nil
+        activity[id] = .connecting
+        do {
+            switch service {
+            case .xcode:
+                let tools = try await xcodeClient(record).listTools()
+                update(id) {
+                    $0.status = .connected
+                    $0.tools = tools
+                    $0.toolsUpdatedAt = environment.now()
+                }
+                return
+            case .appStoreConnect:
+                _ = try await appStoreConnectAPI(record).get(["v1", "apps"], [URLQueryItem(name: "limit", value: "1"),
+                                                                              URLQueryItem(name: "fields[apps]", value: "name")])
+            default:
+                guard let kind = MacDataToolRunner.kind(of: service) else { return }
+                guard let store = environment.macData else { throw MacDataError.notAllowed(kind, .unavailable) }
+                if store.access(kind) != .granted {
+                    guard try await store.requestAccess(kind) else { throw MacDataError.notAllowed(kind, .denied) }
+                }
+            }
+            update(id) {
+                $0.status = .connected
+                $0.toolsUpdatedAt = environment.now()
+            }
+        } catch let error where Self.isCancellation(error) {
+            return
+        } catch {
+            if Task.isCancelled { return }
+            failures[id] = localMessage(for: error, connector: record)
+            if case AppStoreConnectSession.Failure.keyRefused = error { update(id) { $0.status = .signInRequired } }
+        }
+    }
+
+    private func xcodeClient(_ record: ConnectorRecord) -> MCPStdioClient {
+        if let client = xcodeClients[record.id] { return client }
+        let bridge = environment.xcodeBridge() ?? record.serverURL
+        let client = MCPStdioClient(launcher: environment.stdioLauncher(bridge), clientVersion: environment.clientVersion)
+        xcodeClients[record.id] = client
+        return client
+    }
+
+    private func appStoreConnectAPI(_ record: ConnectorRecord) -> AppStoreConnectAPI {
+        let session = appStoreSessions[record.id] ?? AppStoreConnectSession(
+            id: record.id, credentials: environment.credentials, http: environment.http, signer: environment.es256,
+            now: environment.now)
+        appStoreSessions[record.id] = session
+        return AppStoreConnectAPI(base: record.serverURL, session: session)
+    }
+
+    /// Ends what a local server holds open: Xcode's bridge, an App Store Connect key in memory.
+    private func closeLocalServer(_ id: UUID) {
+        appStoreSessions[id] = nil
+        if let client = xcodeClients.removeValue(forKey: id) { Task { await client.close() } }
+    }
+
+    private func callAppStoreConnectTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
+        do {
+            return try await AppStoreConnectToolRunner(api: appStoreConnectAPI(record)).call(tool, arguments)
+        } catch AppStoreConnectSession.Failure.keyRefused {
+            update(record.id) { $0.status = .signInRequired }
+            failures[record.id] = L10n.string("App Store Connect refused the key.")
+            return .error("App Store Connect refused \(record.displayName)'s key: it was revoked, or its key ID or issuer ID "
+                + "is wrong. The user can add a key again in Yardlet Settings → Connectors → App Store Connect.")
+        } catch let failure as AppStoreConnectAPI.Failure {
+            return .error("\(record.name): \(failure.localizedDescription)")
+        } catch {
+            return .error("Could not reach \(record.name): \(error.localizedDescription)")
+        }
+    }
+
+    private func callXcodeTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
+        do {
+            return Self.toolResult(try await xcodeClient(record).callTool(name: tool, arguments: arguments))
+        } catch let failure as MCPStdioError {
+            if case .rpc(_, let message) = failure { return .error("Xcode: \(message)") }
+            return .error("Xcode: \(failure.localizedDescription) Xcode's tools work while Xcode is open with a project and "
+                + "Xcode Settings → Intelligence lets other agents use them.")
+        } catch {
+            return .error("Xcode: \(error.localizedDescription)")
+        }
+    }
+
+    /// Runs off the main actor: a wide range of events takes EventKit a moment.
+    private func callMacTool(_ record: ConnectorRecord, service: LocalConnectorService, tool: String,
+                             arguments: ToolJSON) async -> AgentToolResult {
+        guard let store = environment.macData else {
+            return .error("\(record.name) isn't available in this build of Yardlet.")
+        }
+        let runner = MacDataToolRunner(service: service, store: store, timeZone: environment.timeZone(), now: environment.now)
+        do {
+            return try await Task.detached { try await runner.call(tool, arguments) }.value
+        } catch let failure as MacDataError {
+            if case .notAllowed = failure { failures[record.id] = failure.localizedDescription }
+            return .error("\(record.name): \(failure.localizedDescription)")
+        } catch {
+            return .error("\(record.name): \(error.localizedDescription)")
+        }
+    }
+
+    private func localMessage(for error: Error, connector record: ConnectorRecord) -> String {
+        switch error {
+        case AppStoreConnectSession.Failure.keyRefused:
+            L10n.string("App Store Connect refused the key. Check its key ID and, for a team key, the issuer ID.")
+        case AppStoreConnectAPI.Failure.http(403, let message):
+            L10n.format("App Store Connect doesn't let this key read apps: %@", message)
+        // The bridge's own reason names the Intelligence setting when that is what is missing.
+        case let failure as MCPStdioError where failure.localizedDescription.contains("Intelligence"):
+            L10n.format("Xcode didn't answer: %@", failure.localizedDescription)
+        case let failure as MCPStdioError:
+            L10n.format("Xcode didn't answer: %@ Open Xcode with a project, and in Xcode Settings → Intelligence let other agents use Xcode's tools.",
+                        failure.localizedDescription)
+        default:
+            message(for: error, connector: record)
         }
     }
 
@@ -1036,7 +1251,13 @@ final class ConnectorCenter: ConnectorToolProviding {
             return .error("\(record.displayName) is not connected in Yardlet. The user can connect it in Yardlet "
                 + "Settings → Connectors; the same tool works again once they have.")
         }
-        if record.localService != nil { return await callGoogleTool(record, tool: toolName, arguments: arguments) }
+        switch record.localService {
+        case let service? where service.isGoogle: return await callGoogleTool(record, tool: toolName, arguments: arguments)
+        case .appStoreConnect?: return await callAppStoreConnectTool(record, tool: toolName, arguments: arguments)
+        case .xcode?: return await callXcodeTool(record, tool: toolName, arguments: arguments)
+        case let service?: return await callMacTool(record, service: service, tool: toolName, arguments: arguments)
+        case nil: break
+        }
         do {
             let result = try await session(for: record).callTool(name: toolName, arguments: arguments)
             return Self.toolResult(result)

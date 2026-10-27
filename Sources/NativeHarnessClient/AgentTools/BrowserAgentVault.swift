@@ -290,7 +290,13 @@ extension BrowserAgentTools {
         guard let ref = arguments["ref"]?.stringValue else {
             throw BrowserAgentToolError("browser_fill_credential needs the ref of a field in the sign-in form.")
         }
-        let node = try backendNode(ref, on: page)
+        let element = try element(ref, on: page)
+        // The vault fills only the page's own fields: not a frame from another site (docs/BROWSER_VAULT_DESIGN.md, "채우는 방법"), as not a frame of
+        // the page's own process (`ownerDocument` below).
+        guard element.session == nil else {
+            throw BrowserAgentToolError("\(ref) is inside a frame in the page; Yardlet fills only the page's own fields.")
+        }
+        let node = element.node
         let frame = try await mainFrame(of: page)
         let world = try await send(page, "Page.createIsolatedWorld", [
             "frameId": .string(frame.id), "worldName": .string(Self.vaultWorldName)

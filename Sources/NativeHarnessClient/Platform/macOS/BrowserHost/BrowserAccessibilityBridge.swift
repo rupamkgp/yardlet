@@ -207,7 +207,7 @@ final class BrowserAccessibilityBridge: BrowserAccessibilitySource {
         noteAccessibilityQuery("hitTest")
         guard let window = view.window else { return nil }
         let windowPoint = window.convertPoint(fromScreen: point)
-        let viewPoint = view.convert(windowPoint, from: nil)
+        let viewPoint = view.pagePoint(view.convert(windowPoint, from: nil))
         let scale = pixelsPerPoint
         guard let key = tree.exposedNode(at: (Double(viewPoint.x) * scale, Double(viewPoint.y) * scale)) else { return nil }
         return element(for: key)
@@ -251,7 +251,8 @@ final class BrowserAccessibilityBridge: BrowserAccessibilitySource {
     func viewRect(of key: Key) -> NSRect? {
         guard let bounds = tree.pageBounds(of: key) else { return nil }
         let scale = pixelsPerPoint
-        return NSRect(x: bounds.x / scale, y: bounds.y / scale, width: bounds.width / scale, height: bounds.height / scale)
+        let page = NSRect(x: bounds.x / scale, y: bounds.y / scale, width: bounds.width / scale, height: bounds.height / scale)
+        return view?.viewRect(page) ?? page
     }
 
     func screenFrame(of key: Key) -> NSRect {

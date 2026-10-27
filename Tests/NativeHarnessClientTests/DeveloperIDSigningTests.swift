@@ -81,9 +81,13 @@ final class DeveloperIDSigningTests: XCTestCase {
     /// (harnesses, their tools, the terminal), which macOS attributes to Yardlet; each usage string
     /// the system shows in the prompt.
     private static let commandPermissions = [
-        "com.apple.security.automation.apple-events": "NSAppleEventsUsageDescription",
-        "com.apple.security.device.audio-input": "NSMicrophoneUsageDescription",
-        "com.apple.security.device.camera": "NSCameraUsageDescription",
+        "com.apple.security.automation.apple-events": ["NSAppleEventsUsageDescription"],
+        "com.apple.security.device.audio-input": ["NSMicrophoneUsageDescription"],
+        "com.apple.security.device.camera": ["NSCameraUsageDescription"],
+        // The Apple connectors' own EventKit and Contacts use; reminders come under calendars.
+        "com.apple.security.personal-information.calendars": ["NSCalendarsFullAccessUsageDescription",
+                                                              "NSRemindersFullAccessUsageDescription"],
+        "com.apple.security.personal-information.addressbook": ["NSContactsUsageDescription"],
     ]
 
     func testEachPermissionACommandMayAskForHasTheAppsReason() throws {
@@ -92,7 +96,7 @@ final class DeveloperIDSigningTests: XCTestCase {
         for language in ["en", "ko"] {
             let strings = try XCTUnwrap(NSDictionary(contentsOf: root.appending(
                 path: "Sources/NativeHarnessClient/Resources/\(language).lproj/InfoPlist.strings")) as? [String: String])
-            for key in Self.commandPermissions.values {
+            for key in Self.commandPermissions.values.joined() {
                 XCTAssertNotNil(info[key] as? String, key)
                 XCTAssertFalse(strings[key, default: ""].isEmpty, "\(language) \(key)")
             }

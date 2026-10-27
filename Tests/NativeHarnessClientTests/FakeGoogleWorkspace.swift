@@ -2,9 +2,10 @@ import Foundation
 @testable import NativeHarnessClient
 @testable import YardletAgentTools
 
-/// Google's sign-in and Gmail API (`FakeGoogle`) with the Calendar API v3 and the Drive API v3 for
-/// a couple of accounts, as their references describe requests and answers. Each call is answered
-/// for the account its bearer token belongs to. Nothing leaves the machine.
+/// Google's sign-in and Gmail API (`FakeGoogle`) with the Calendar API v3, the Drive API v3, and the
+/// Docs, Sheets, and Slides APIs for a couple of accounts, as their references describe requests
+/// and answers. Each call is answered for the account its bearer token belongs to. Nothing leaves
+/// the machine.
 final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
     static let endpoints = GoogleOAuth.Endpoints(
         authorization: FakeGoogle.endpoints.authorization,
@@ -12,7 +13,10 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
         gmailAPI: FakeGoogle.endpoints.gmailAPI,
         calendarAPI: URL(string: "https://calendar.google.test/calendar/v3/")!,
         driveAPI: URL(string: "https://drive.google.test/drive/v3/")!,
-        driveUpload: URL(string: "https://drive.google.test/upload/drive/v3/")!)
+        driveUpload: URL(string: "https://drive.google.test/upload/drive/v3/")!,
+        docsAPI: URL(string: "https://docs.google.test/v1/")!,
+        sheetsAPI: URL(string: "https://sheets.google.test/v4/")!,
+        slidesAPI: URL(string: "https://slides.google.test/v1/")!)
 
     static let holidays = "ko.south_korea#holiday@group.v.calendar.google.com"
     static let allScopes = GoogleOAuth.scope(for: LocalConnectorService.allCases)
@@ -34,7 +38,7 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
     private var seen: [Seen] = []
     private var created = 0
     /// Files this fake's Drive says Yardlet created, which `drive.file` lets it change.
-    private var appFiles: Set<String> = ["app-note"]
+    private var appFiles: Set<String> = ["app-note", "app-doc", "app-sheet", "app-deck"]
 
     init(granting scope: String? = FakeGoogleWorkspace.allScopes) {
         google = FakeGoogle()
@@ -48,9 +52,20 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
         requests.filter { (method == nil || $0.method == method) && (path == nil || $0.path == path) }
     }
 
+    static let apiHosts: Set<String> = ["calendar.google.test", "drive.google.test", "docs.google.test",
+                                        "sheets.google.test", "slides.google.test", "thumbnails.google.test"]
+
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        guard let url = request.url, let host = url.host(), host == "calendar.google.test" || host == "drive.google.test" else {
+        guard let url = request.url, let host = url.host(), Self.apiHosts.contains(host) else {
             return try await google.send(request)
+        }
+        // A thumbnail's address is signed for the account: it is fetched with no token.
+        if host == "thumbnails.google.test" {
+            lock.withLock {
+                seen.append(Seen(method: request.httpMethod ?? "GET", path: url.path(), query: [:], body: nil,
+                                 account: request.value(forHTTPHeaderField: "Authorization")))
+            }
+            return (Self.pngBytes, Self.ok(url, type: "image/png"))
         }
         let account = google.account(of: request)
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -62,8 +77,11 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
         guard let account else {
             return reply(url, 401, ["error": .object(["code": .integer(401), "message": .string("Request had invalid authentication credentials.")])])
         }
-        if host == "calendar.google.test" { return calendar(url, entry, account: account) }
-        return drive(url, entry, account: account, contentType: request.value(forHTTPHeaderField: "Content-Type"))
+        switch host {
+        case "calendar.google.test": return calendar(url, entry, account: account)
+        case "docs.google.test", "sheets.google.test", "slides.google.test": return editors(url, entry)
+        default: return drive(url, entry, account: account, contentType: request.value(forHTTPHeaderField: "Content-Type"))
+        }
     }
 
     // MARK: Calendar
@@ -272,6 +290,188 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
             for (key, value) in metadata { file[key] = value }
             if let add = call.value("addParents") { file["parents"] = .array([.string(add)]) }
             return reply(url, 200, file)
+        default:
+            return notFound(url)
+        }
+    }
+
+    // MARK: Docs, Sheets, and Slides
+
+    static let pngBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+    static func run(_ text: String, _ start: Int, link: String? = nil) -> ToolJSON {
+        var run: [String: ToolJSON] = ["content": .string(text)]
+        if let link { run["textStyle"] = .object(["link": .object(["url": .string(link)])]) }
+        return .object(["startIndex": .integer(Int64(start)), "endIndex": .integer(Int64(start + text.utf16.count)),
+                        "textRun": .object(run)])
+    }
+
+    static func paragraph(_ start: Int, _ parts: [ToolJSON], style: String = "NORMAL_TEXT",
+                          bullet: String? = nil) -> ToolJSON {
+        let end = parts.compactMap { $0["endIndex"] }.last.flatMap { GoogleToolArguments.integer($0) } ?? start
+        var paragraph: [String: ToolJSON] = ["elements": .array(parts),
+                                             "paragraphStyle": .object(["namedStyleType": .string(style)])]
+        if let bullet { paragraph["bullet"] = .object(["listId": .string(bullet)]) }
+        return .object(["startIndex": .integer(Int64(start)), "endIndex": .integer(Int64(end)), "paragraph": .object(paragraph)])
+    }
+
+    /// "Launch plan": a heading, a list item, a paragraph with a link and an image, a 2 × 2 table,
+    /// and a last paragraph, at the indexes the Docs API would give them.
+    static let launchPlanBody: [ToolJSON] = [
+        .object(["endIndex": .integer(1), "sectionBreak": .object([:])]),
+        paragraph(1, [run("Launch plan\n", 1)], style: "HEADING_1"),
+        paragraph(13, [run("Ship\n", 13)], bullet: "kix.list1"),
+        paragraph(18, [run("See ", 18), run("spec", 22, link: "https://example.test/spec"),
+                       .object(["startIndex": .integer(26), "endIndex": .integer(27),
+                                "inlineObjectElement": .object(["inlineObjectId": .string("kix.image1")])]),
+                       run("\n", 27)]),
+        .object(["startIndex": .integer(28), "endIndex": .integer(58), "table": .object([
+            "rows": .integer(2), "columns": .integer(2),
+            "tableRows": .array([
+                .object(["startIndex": .integer(29), "endIndex": .integer(42), "tableCells": .array([
+                    .object(["startIndex": .integer(30), "endIndex": .integer(36), "content": .array([paragraph(31, [run("Item\n", 31)])])]),
+                    .object(["startIndex": .integer(36), "endIndex": .integer(42), "content": .array([paragraph(37, [run("Cost\n", 37)])])])
+                ])]),
+                .object(["startIndex": .integer(42), "endIndex": .integer(57), "tableCells": .array([
+                    .object(["startIndex": .integer(43), "endIndex": .integer(52), "content": .array([paragraph(44, [run("Servers\n", 44)])])]),
+                    .object(["startIndex": .integer(52), "endIndex": .integer(57), "content": .array([paragraph(53, [run("120\n", 53)])])])
+                ])])
+            ])
+        ])]),
+        paragraph(58, [run("Done.\n", 58)])
+    ]
+
+    /// A document long enough to come in parts: 2,000 paragraphs of 100 characters.
+    static let longBody: [ToolJSON] = [.object(["endIndex": .integer(1), "sectionBreak": .object([:])])]
+        + (0..<2_000).map { paragraph(1 + $0 * 100, [run(String(repeating: "x", count: 99) + "\n", 1 + $0 * 100)]) }
+
+    private static func tab(_ id: String, _ title: String, _ body: [ToolJSON]) -> ToolJSON {
+        .object(["tabProperties": .object(["tabId": .string(id), "title": .string(title), "index": .integer(0)]),
+                 "documentTab": .object(["body": .object(["content": .array(body)])])])
+    }
+
+    private static func slide(_ id: String, title: String, body: String) -> ToolJSON {
+        .object([
+            "objectId": .string(id), "pageType": .string("SLIDE"),
+            "slideProperties": .object([
+                "layoutObjectId": .string("L1"),
+                "notesPage": .object([
+                    "notesProperties": .object(["speakerNotesObjectId": .string("\(id)-notes")]),
+                    "pageElements": .array([.object(["objectId": .string("\(id)-notes"), "shape": .object([
+                        "shapeType": .string("TEXT_BOX"),
+                        "text": .object(["textElements": .array([.object(["textRun": .object(["content": .string("Say hello\n")])])])])
+                    ])])])
+                ])
+            ]),
+            "pageElements": .array([
+                .object(["objectId": .string("\(id)-title"),
+                         "size": .object(["width": .object(["magnitude": .integer(3_000_000), "unit": .string("EMU")])]),
+                         "transform": .object(["translateX": .integer(311_700), "unit": .string("EMU")]),
+                         "shape": .object(["shapeType": .string("TEXT_BOX"), "placeholder": .object(["type": .string("TITLE")]),
+                                           "text": .object(["textElements": .array([
+                                               .object(["paragraphMarker": .object([:])]),
+                                               .object(["textRun": .object(["content": .string("\(title)\n")])])
+                                           ])])])]),
+                .object(["objectId": .string("\(id)-body"),
+                         "shape": .object(["shapeType": .string("TEXT_BOX"), "placeholder": .object(["type": .string("BODY")]),
+                                           "text": .object(["textElements": .array([
+                                               .object(["textRun": .object(["content": .string("\(body)\n")])])
+                                           ])])])]),
+                .object(["objectId": .string("\(id)-image"), "image": .object(["contentUrl": .string("https://example.test/i.png")])])
+            ])
+        ])
+    }
+
+    private func editors(_ url: URL, _ call: Seen) -> (Data, HTTPURLResponse) {
+        let host = url.host() ?? ""
+        let base = ["docs.google.test": "/v1/", "sheets.google.test": "/v4/", "slides.google.test": "/v1/"][host] ?? "/"
+        let parts = call.path.replacingOccurrences(of: base, with: "").split(separator: "/")
+            .map { String($0).removingPercentEncoding ?? String($0) }
+        guard let collection = parts.first, parts.count >= 2 else { return notFound(url) }
+        var id = parts[1]
+        let batch = id.hasSuffix(":batchUpdate")
+        if batch { id = String(id.dropLast(":batchUpdate".count)) }
+        let madeHere = lock.withLock { appFiles.contains(id) }
+        // `drive.file` reaches only files the app created or copied, for writing.
+        if batch || call.method == "PUT" {
+            guard madeHere else {
+                return reply(url, 403, ["error": .object(["code": .integer(403), "message": .string("The caller does not have permission")])])
+            }
+            if batch {
+                let requests = call.json?["requests"]?.arrayValue ?? []
+                var answer: [String: ToolJSON] = ["replies": .array(requests.map { request -> ToolJSON in
+                    if request["addSheet"] != nil { return .object(["addSheet": .object(["properties": .object(["sheetId": .integer(123)])])]) }
+                    if request["createSlide"] != nil { return .object(["createSlide": .object(["objectId": .string("new-slide")])]) }
+                    return .object([:])
+                })]
+                if collection != "spreadsheets" { answer["writeControl"] = .object(["requiredRevisionId": .string("rev-8")]) }
+                return reply(url, 200, answer)
+            }
+            let rows = call.json?["values"]?.arrayValue ?? []
+            return reply(url, 200, ["spreadsheetId": .string(id), "updatedRange": .string(parts.count > 3 ? parts[3] : ""),
+                                    "updatedRows": .integer(Int64(rows.count)),
+                                    "updatedColumns": .integer(Int64(rows.first?.arrayValue?.count ?? 0)),
+                                    "updatedCells": .integer(Int64(rows.reduce(0) { $0 + ($1.arrayValue?.count ?? 0) }))])
+        }
+        switch (collection, parts.count, id) {
+        case ("documents", 2, "doc-1"):
+            return reply(url, 200, ["documentId": .string("doc-1"), "title": .string("Launch plan"), "revisionId": .string("rev-7"),
+                                    "body": .object([:]), "tabs": .array([Self.tab("t.0", "Tab 1", Self.launchPlanBody)])])
+        case ("documents", 2, "doc-long"):
+            return reply(url, 200, ["documentId": .string("doc-long"), "title": .string("Long"),
+                                    "tabs": .array([Self.tab("t.0", "Tab 1", Self.longBody)])])
+        case ("documents", 2, "doc-tabs"):
+            var first = Self.tab("t.0", "Plan", Array(Self.launchPlanBody.prefix(2))).objectValue ?? [:]
+            first["childTabs"] = .array([Self.tab("t.1", "Notes", [.object(["endIndex": .integer(1), "sectionBreak": .object([:])]),
+                                                                   Self.paragraph(1, [Self.run("Child tab\n", 1)])])])
+            return reply(url, 200, ["documentId": .string("doc-tabs"), "title": .string("Tabs"), "tabs": .array([.object(first)])])
+        case ("spreadsheets", 2, "sheet-1"):
+            if call.value("includeGridData") == "true" {
+                return reply(url, 200, ["spreadsheetId": .string("sheet-1"), "sheets": .array([.object(["data": .array([
+                    .object(["rowData": .array(Array(repeating: .object(["values": .array(Array(repeating:
+                        .object(["formattedValue": .string("0123456789")]), count: 26))]), count: 1_000))])
+                ])])])])
+            }
+            return reply(url, 200, [
+                "spreadsheetId": .string("sheet-1"), "spreadsheetUrl": .string("https://docs.google.com/spreadsheets/d/sheet-1/edit"),
+                "properties": .object(["title": .string("Budget"), "locale": .string("ko_KR"), "timeZone": .string("Asia/Seoul")]),
+                "sheets": .array([
+                    .object(["properties": .object(["sheetId": .integer(0), "title": .string("Costs"), "index": .integer(0),
+                                                    "sheetType": .string("GRID"),
+                                                    "gridProperties": .object(["rowCount": .integer(1_000), "columnCount": .integer(26),
+                                                                               "frozenRowCount": .integer(1)])])]),
+                    .object(["properties": .object(["sheetId": .integer(77), "title": .string("Chart"), "index": .integer(1),
+                                                    "sheetType": .string("OBJECT")])])
+                ])
+            ])
+        case ("spreadsheets", 4, "sheet-1") where parts[2] == "values":
+            let range = parts[3]
+            if range == "Data!A1:D3000" {
+                return reply(url, 200, ["range": .string(range), "majorDimension": .string("ROWS"), "values": .array(
+                    (1...3_000).map { row in .array([.string("item \(row)"), .integer(Int64(row)), .number(Double(row) / 4),
+                                                     .string("note for row \(row)")]) })])
+            }
+            let formulas = call.value("valueRenderOption") == "FORMULA"
+            return reply(url, 200, ["range": .string("Costs!A1:B3"), "majorDimension": .string("ROWS"), "values": .array([
+                .array([.string("item"), .string("cost")]), .array([.string("servers"), .string("120")]),
+                .array([.string("total"), .string(formulas ? "=SUM(B2:B2)" : "120")])
+            ])])
+        case ("presentations", 2, "slides-1"):
+            return reply(url, 200, ["presentationId": .string("slides-1"), "title": .string("Kickoff"), "revisionId": .string("r-3"),
+                                    "pageSize": .object(["width": .object(["magnitude": .integer(9_144_000), "unit": .string("EMU")])]),
+                                    "layouts": .array([.object(["objectId": .string("L1"), "layoutProperties": .object([
+                                        "name": .string("TITLE_AND_BODY"), "displayName": .string("Title and body")])])]),
+                                    "slides": .array([Self.slide("p1", title: "Kickoff", body: "Goals"),
+                                                      Self.slide("p2", title: "Plan", body: "Ship it")])])
+        case ("presentations", 2, "deck-long"):
+            return reply(url, 200, ["presentationId": .string("deck-long"), "title": .string("Long deck"),
+                                    "slides": .array((0..<300).map { Self.slide("s\($0)", title: "Slide \($0)",
+                                                                                  body: String(repeating: "y", count: 500)) })])
+        case ("presentations", 4, "slides-1") where parts[2] == "pages" && parts[3] == "p2":
+            return reply(url, 200, Self.slide("p2", title: "Plan", body: "Ship it").objectValue ?? [:])
+        case ("presentations", 5, "slides-1") where parts[2] == "pages" && parts[4] == "thumbnail":
+            return reply(url, 200, ["width": .integer(800), "height": .integer(450),
+                                    "contentUrl": .string("https://thumbnails.google.test/\(parts[3]).png")])
         default:
             return notFound(url)
         }

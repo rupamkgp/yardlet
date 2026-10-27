@@ -178,6 +178,12 @@ final class TaskSuggestionTests: XCTestCase {
         var failed = claude.completed
         failed.outcome = .failed
         guard case .tool = kind(failed, harness: .claudeCode, phase: .failed) else { return XCTFail("A failed call") }
+        // Every completed call's input is read, a command with a lone `}` before its first `{` among
+        // them (the session rail stopped the app on one).
+        var command = claude.completed
+        command.input = "sed -n '/^}/,/^{/p' main.c"
+        XCTAssertNil(ConversationTaskSuggestionProjection.suggestion(from: command))
+        XCTAssertNil(ConversationAgentRunProjection.arguments(in: command.input))
 
         // An ACP agent, in its own title, through the ACP projector.
         let acp = try XCTUnwrap(ACPEventProjector().activity(from: .object([

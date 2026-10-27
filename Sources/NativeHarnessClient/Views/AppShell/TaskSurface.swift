@@ -718,14 +718,9 @@ struct TaskDetail: View {
     /// A web link from the conversation in a new browser tab of the task, shown, with the panel open. A
     /// task with no room for another tab opens it in the default browser.
     private func openInTaskBrowser(_ url: URL) {
-        guard workspaceState.openBrowserTab(address: url.absoluteString) != nil else {
+        guard workspaceState.openBrowserPage(url) else {
             NSWorkspace.shared.open(url)
             return
-        }
-        if workspaceState.browserClient == nil {
-            if let key = TaskSurfaceNavigationProjection.browserKey(inTab: workspaceState.panels.trailingSurfaceID) {
-                workspaceState.browserTabs.preview(for: key).navigate()
-            }
         }
         workspaceState.keyboardFocus.move(to: .browser)
     }

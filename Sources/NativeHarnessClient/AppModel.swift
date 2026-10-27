@@ -62,6 +62,9 @@ final class AppModel {
     var claudeTranscriptTailBySessionID: TaskStateReader<ClaudeTranscriptTail> { claudeTranscriptTails.reader }
     private let claudeTranscriptTails = TaskStateTable<ClaudeTranscriptTail>()
     private(set) var codexHistorySelectionBySessionID: [UUID: CodexHistorySearchSelection] = [:]
+    /// A place in a task's conversation something outside it asked to show: a file's related task's call
+    /// (`revealCall`), which the task's conversation scrolls to once it holds the call.
+    var conversationPlaceRequests: [UUID: ConversationPlaceRequest] = [:]
     /// Every task's follow-up queue (plan B1): messages sent while a turn runs or queued on
     /// purpose. A pending one waits in Yardlet; a sent one sits in Claude Code's own queue under
     /// `providerMessageID` until the CLI reports taking it, when it becomes a chat bubble. The
@@ -265,6 +268,9 @@ final class AppModel {
     private let preferences: UserDefaults
     private let codexPendingRequestRepository: any CodexPendingServerRequestRepository
     private let codexTimelineItemRepository: any CodexTimelineItemRepository
+    /// The files each task read and edited, for a file's related tasks (`AppModel+FileTasks`). Nil in
+    /// tests and visual fixtures, which have no tasks of the person's to read.
+    let fileTaskIndex: FileTaskIndex?
     private let codexHistorySelectionRepository: any CodexHistorySelectionRepository
     private let transcriptRepository: any TranscriptRepository
     /// Writes detached-reading snapshots of `transcriptRepository` off the main thread. Reading
@@ -325,6 +331,9 @@ final class AppModel {
     /// What the session tools wait on and run: their approvals, subagents and nesting depth
     /// (`AppModel+SessionTools`). Tests give it volatile defaults.
     var sessionTools = SessionToolCenter()
+    /// Which account each task an agent started runs on, and why (`AppModel+AccountRouting`). The
+    /// app keeps it in a file; tests and fixtures in memory.
+    var accountAssignments = AccountAssignmentLog()
 
     init(
         store: SessionStore,
@@ -345,6 +354,7 @@ final class AppModel {
         preferences: UserDefaults = .yardlet,
         codexPendingRequestRepository: any CodexPendingServerRequestRepository = UserDefaultsCodexPendingServerRequestRepository(),
         codexTimelineItemRepository: any CodexTimelineItemRepository = UserDefaultsCodexTimelineItemRepository(),
+        fileTaskIndex: FileTaskIndex? = nil,
         codexHistorySelectionRepository: any CodexHistorySelectionRepository = UserDefaultsCodexHistorySelectionRepository(),
         transcriptRepository: any TranscriptRepository = UserDefaultsTranscriptRepository(),
         composerDraftRepository: any ComposerDraftRepository = InMemoryComposerDraftRepository(),
@@ -403,6 +413,7 @@ final class AppModel {
         // Streaming Codex tasks merge these into every timeline state; keep them in memory.
         self.codexPendingRequestRepository = CachedCodexPendingServerRequestRepository(codexPendingRequestRepository)
         self.codexTimelineItemRepository = CachedCodexTimelineItemRepository(codexTimelineItemRepository)
+        self.fileTaskIndex = fileTaskIndex
         self.codexHistorySelectionRepository = codexHistorySelectionRepository
         self.transcriptRepository = transcriptRepository
         self.transcriptSnapshots = TranscriptSnapshotWriter(repository: transcriptRepository)
@@ -502,17 +513,20 @@ final class AppModel {
                 directoryURL: storageRootURL.appending(path: "codex-timeline-items")
             )
             codexTimelineItems.moveCards(from: UserDefaultsCodexTimelineItemRepository(defaults: defaults))
-            return AppModel(
+            let model = AppModel(
                 store: SessionStore(repository: repository),
                 runtimeSelections: RuntimeSelectionStore(defaults: defaults),
                 // A harness whose new CLI failed Yardlet's check runs the version before it.
                 registry: HarnessRegistry(codexEnvironmentManager: codexEnvironmentManager,
                                           runtimeOverrides: .shared),
                 connections: ProviderConnectionStore(fileURL: storageRootURL.appending(path: "provider-connections.json"),
-                    snapshotCacheURL: storageRootURL.appending(path: ProviderConnectionStore.snapshotCacheFileName)),
+                    snapshotCacheURL: storageRootURL.appending(path: ProviderConnectionStore.snapshotCacheFileName),
+                    assignmentDefaults: defaults),
                 modelCatalogs: HarnessModelCatalogStore(fileURL: storageRootURL.appending(path: "model-catalogs.json")),
                 codexEnvironmentManager: codexEnvironmentManager,
                 codexTimelineItemRepository: codexTimelineItems,
+                fileTaskIndex: FileTaskIndex(repository: FileTouchRepository(
+                    directoryURL: storageRootURL.appending(path: "file-activity"))),
                 transcriptRepository: transcriptRepository,
                 composerDraftRepository: composerDraftRepository,
                 taskWorkspaceRepository: UserDefaultsTaskWorkspaceRepository(defaults: defaults),
@@ -530,6 +544,9 @@ final class AppModel {
                 legacyProjectFolderPreferences: LegacyProjectFolderPreferences.stored(in: defaults),
                 applicationAttention: MacApplicationAttention()
             )
+            model.accountAssignments = AccountAssignmentLog(
+                fileURL: storageRootURL.appending(path: AccountAssignmentLog.fileName))
+            return model
         } catch {
             return AppModel(
                 store: SessionStore(repository: InMemorySessionRepository()),
@@ -2895,7 +2912,12 @@ final class AppModel {
             codexTimelineItemRepository.remove(for: session.id)
             codexHistorySelectionRepository.remove(for: session.id)
             // An archived task keeps what became of its suggestions; a deleted one takes them along.
-            if case .discard = removal { taskSuggestions.remove(for: session.id) }
+            if case .discard = removal {
+                taskSuggestions.remove(for: session.id)
+                accountAssignments.remove(for: session.id)
+            }
+            // A deleted task's files read and edited go with it; an archived task's are kept.
+            if case .discard = removal, let fileTaskIndex { await fileTaskIndex.remove(session.id) }
             // Its subagents stop; a deleted task takes their kept conversations and its depth along.
             await stopSessionToolWork(for: session.id)
             if case .discard = removal { sessionTools.forget(session.id) }
@@ -3267,7 +3289,7 @@ final class AppModel {
             && $0.runtimeExecutableURL == source.runtimeExecutableURL }
     }
 
-    private func claudeSessionReader(for session: SessionRecord) -> ClaudeSubagentTranscriptReader {
+    func claudeSessionReader(for session: SessionRecord) -> ClaudeSubagentTranscriptReader {
         ClaudeSubagentTranscriptReader(configDirectory: ClaudeSubagentTranscriptReader.configDirectory(
             connection: session.connection, workspaceURL: session.workspaceURL))
     }
@@ -3344,7 +3366,7 @@ final class AppModel {
     }
 
     /// Reads a detached Claude task's conversation from Claude Code's own file, one read at a time.
-    private func refreshNativeClaudeConversation(for source: SessionRecord, afterChange: Bool = false) async {
+    func refreshNativeClaudeConversation(for source: SessionRecord, afterChange: Bool = false) async {
         await readSavedConversationOnce("claude|\(source.id)", afterChange: afterChange) {
             await self.readNativeClaudeConversation(for: source)
         }
@@ -3520,7 +3542,7 @@ final class AppModel {
     /// as another app writes it, reads only its newest page again and merges it into the turns it
     /// loaded. The reading snapshot stays the first paint until the thread arrives, and stays if it
     /// cannot be read. The read itself saves nothing.
-    private func readDetachedCodexThread(for source: SessionRecord, afterChange: Bool = false) async {
+    func readDetachedCodexThread(for source: SessionRecord, afterChange: Bool = false) async {
         await readSavedConversationOnce("codex|\(source.id)", afterChange: afterChange) {
             await self.readDetachedCodexThreadNow(for: source)
         }

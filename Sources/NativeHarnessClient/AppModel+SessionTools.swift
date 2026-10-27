@@ -63,6 +63,7 @@ extension AppModel: SessionToolHandling {
         case SessionToolCatalog.listProjects: return listProjects(caller: caller)
         case SessionToolCatalog.hideProject: return hideProject(arguments)
         case SessionToolCatalog.showProject: return showProject(arguments)
+        case SessionToolCatalog.listAccounts: return await listAccounts(arguments, caller: caller)
         default: return .error("Unknown tool: \(name)")
         }
     }
@@ -196,10 +197,14 @@ extension AppModel: SessionToolHandling {
             lastActivity: providerActivityBySessionID[session.id])
         if details.title.isEmpty { details.title = session.title }
         let children = store.sessions.filter { $0.parentTaskID == session.id }.map(\.id.uuidString)
+        let servers = resourceMonitor.servers(of: session.id).map {
+            ReadTaskDetails.Server(url: $0.url.absoluteString, process: $0.processName)
+        }
         var head = SessionToolText.json(ReadTaskDetails(
             task: details, folder: session.workspaceURL.path(percentEncoded: false),
             createdAt: SessionToolText.iso(session.createdAt), childTaskIds: children.isEmpty ? nil : children,
-            queuedMessages: followUps.queue(for: session.id).count))
+            queuedMessages: followUps.queue(for: session.id).count, servers: servers.isEmpty ? nil : servers,
+            account: accountAssignments.assignment(for: session.id)?.toolLine))
         head += "\n\nShowing \(conversation.shownTurns) of \(conversation.totalTurns) loaded turns."
         if let next = conversation.cursor { head += " Pass cursor \"\(next)\" for earlier turns." }
         head += " " + SessionToolText.untrustedNote
@@ -213,6 +218,15 @@ extension AppModel: SessionToolHandling {
         var createdAt: String
         var childTaskIds: [String]?
         var queuedMessages: Int
+        /// The servers the task's processes listen on now, as its header shows them.
+        var servers: [Server]?
+        /// The account an agent's start put it on, and why.
+        var account: String?
+
+        struct Server: Encodable {
+            var url: String
+            var process: String
+        }
     }
 
     /// The conversation the task's timeline draws: the Codex thread once it has turns, else the
@@ -469,6 +483,12 @@ extension AppModel: SessionToolHandling {
         guard let runtime = runtimeSelections.selectedURL(for: harness) else {
             return .error("Not created: \(harness.displayName) is not set up in Yardlet.")
         }
+        let account: AccountStart
+        switch await assignAccount(harness: harness, model: Self.modelOption(options, harness: harness),
+                                   requested: arguments["account"]?.stringValue) {
+        case let .success(value): account = value
+        case let .failure(error): return .error("Not created: \(error.message)")
+        }
         let chat = Self.bool(arguments["chat"]) == true
         if chat, !(arguments["project"]?.stringValue ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
             return .error("Not created: chat starts the task with no project, so it takes no project.")
@@ -486,6 +506,11 @@ extension AppModel: SessionToolHandling {
             case let .failure(error): return .error("Not created: \(error.message)")
             }
         }
+        let parentTaskID: UUID?
+        switch createdTaskParent(arguments, caller: caller) {
+        case let .success(value): parentTaskID = value
+        case let .failure(error): return .error("Not created: \(error.message)")
+        }
         if !chat, place.project?.id != caller.projectID || caller.projectID == nil && place.project != nil,
            sessionToolAsksPerson(caller) {
             let detail = L10n.format("%@ → %@", caller.title, place.project?.name ?? place.folder.lastPathComponent)
@@ -499,8 +524,8 @@ extension AppModel: SessionToolHandling {
         let child = await createSession(
             harness: harness, workspaceURL: place.folder, runtimeExecutableURL: runtime,
             title: SessionTitleProjection.provisionalTitle(from: prompt), initialPrompt: prompt,
-            connection: connections.selected(for: harness), projectID: place.project?.id,
-            providerOptions: options, selectsSession: false, parentTaskID: caller.hostTaskID,
+            connection: account.connection, projectID: place.project?.id,
+            providerOptions: options, selectsSession: false, parentTaskID: parentTaskID,
             holdsInitialPrompt: true)
         guard let child else {
             // A chat that never came to exist takes its still empty folder with it, as New Task's does.
@@ -512,6 +537,7 @@ extension AppModel: SessionToolHandling {
         }
         sessionTools.setDepth(caller.depth + 1, of: child.id)
         sessionTools.noteStarted(child.id, by: caller.id)
+        accountAssignments.record(account.assignment, for: child.id)
         let first = TaskMessage(senderID: caller.hostTaskID.uuidString, senderName: caller.title, body: prompt,
                                 relation: .parent, quotes: quotes).text(in: .yardlet)
         let wait = Self.bool(arguments["wait"]) == true
@@ -522,8 +548,8 @@ extension AppModel: SessionToolHandling {
                 await self?.startQueuedChildTask(start)
             })
             if notifies { watchForNotification(child.id, caller: caller) }
-            let queued = "Queued task \(child.id.uuidString) (\(child.title)), nested under this task; it starts when "
-                + "there is room. wait_tasks with this id waits for it."
+            let queued = "Queued task \(child.id.uuidString) (\(child.title)), \(createdTaskPlacement(parentTaskID, caller: caller)); it starts when "
+                + "there is room. wait_tasks with this id waits for it.\n" + account.assignment.toolLine
             guard wait else { return .text(queued) }
             let ended = await waitForAny([child.id], timeout: caller.remaining)
             return createdChildResult(child.id, ended: ended)
@@ -536,11 +562,34 @@ extension AppModel: SessionToolHandling {
         }
         if notifies { watchForNotification(child.id, caller: caller) }
         guard wait else {
-            return .text("Created task \(child.id.uuidString) (\(child.title)), nested under this task; its first "
-                + "turn is running. wait_tasks or read_task show its answer.")
+            return .text("Created task \(child.id.uuidString) (\(child.title)), \(createdTaskPlacement(parentTaskID, caller: caller)); its first "
+                + "turn is running. wait_tasks or read_task show its answer.\n" + account.assignment.toolLine)
         }
         let ended = await waitForAny([child.id], timeout: caller.remaining)
         return createdChildResult(child.id, ended: ended)
+    }
+
+    /// Where `create_task` nests the new task: under the caller, under the open task `parent_task_id`
+    /// names, or under none with `topLevel`, as New Task starts one.
+    private func createdTaskParent(_ arguments: JSONValue, caller: SessionToolCaller) -> Result<UUID?, SessionToolError> {
+        let reference = arguments["parent_task_id"]?.stringValue?.trimmingCharacters(in: .whitespaces) ?? ""
+        if Self.bool(arguments["topLevel"]) == true {
+            guard reference.isEmpty else {
+                return .failure(SessionToolError(message: "give topLevel or parent_task_id, not both."))
+            }
+            return .success(nil)
+        }
+        guard !reference.isEmpty, reference != SessionToolCatalog.selfReference else { return .success(caller.hostTaskID) }
+        guard let id = UUID(uuidString: reference), store.sessions.contains(where: { $0.id == id }) else {
+            return .failure(SessionToolError(message: "no open task \(reference) to nest under. list_tasks gives "
+                + "the task ids; omit parent_task_id to nest it under this task."))
+        }
+        return .success(id)
+    }
+
+    private func createdTaskPlacement(_ parentTaskID: UUID?, caller: SessionToolCaller) -> String {
+        guard let parentTaskID else { return "as a top-level task" }
+        return parentTaskID == caller.hostTaskID ? "nested under this task" : "nested under task \(parentTaskID.uuidString)"
     }
 
     /// What `create_task` with `wait` answers: the child's state and latest answer, and that it goes
@@ -549,7 +598,8 @@ extension AppModel: SessionToolHandling {
         let note = ended ? "" : sessionTools.isQueued(id)
             ? " It is queued and starts when there is room; wait_tasks with this id waits for it."
             : " It is still running; wait_tasks with this id waits again."
-        return .text("Created task \(id.uuidString).\(note)\n" + SessionToolText.json(sessionToolOutcome(of: id)))
+        let account = accountAssignments.assignment(for: id).map { "\n" + $0.toolLine } ?? ""
+        return .text("Created task \(id.uuidString).\(note)\(account)\n" + SessionToolText.json(sessionToolOutcome(of: id)))
     }
 
     // MARK: - archive_task

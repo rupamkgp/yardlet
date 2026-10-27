@@ -3,9 +3,9 @@ import Observation
 
 /// Task Resource Usage on the main actor: runs the one sampler for the whole app, every
 /// `activeInterval` while Yardlet is the active app and every `backgroundInterval` otherwise, and
-/// publishes what the sidebar and the Task Resource Usage window show. Only a change someone can
-/// see is published: a row's CPU to a tenth of a percent, its memory to a MiB, its process count,
-/// and the CPU of a busy task in whole percent.
+/// publishes what the sidebar, the Task Resource Usage window and a task's header (its servers) show.
+/// Only a change someone can see is published: a row's CPU to a tenth of a percent, its memory to a
+/// MiB, its process count, the CPU of a busy task in whole percent, and a task's ports.
 @MainActor
 @Observable
 final class TaskResourceMonitor {
@@ -42,6 +42,9 @@ final class TaskResourceMonitor {
     /// and not every row in the sidebar.
     var busyTaskCPU: [UUID: Int] { busyCPU.dictionary }
     @ObservationIgnored private let busyCPU = TaskStateTable<Int>()
+    /// The ports each task's processes listen on (`TaskServerFinder`); a task with none is absent. A
+    /// task's header reads its own, so a server starting redraws that header only.
+    @ObservationIgnored private let servers = TaskStateTable<[TaskServerPort]>()
 
     @ObservationIgnored var activeInterval: Duration = .seconds(3)
     @ObservationIgnored var backgroundInterval: Duration = .seconds(10)
@@ -94,9 +97,21 @@ final class TaskResourceMonitor {
 
     /// Takes one sample now and publishes it.
     func refresh() async {
-        let usages = await engine.sample(request())
+        let sample = await engine.takeSample(request())
         guard !Task.isCancelled else { return }
-        apply(usages)
+        apply(sample.usages)
+        applyServers(sample.servers)
+    }
+
+    /// The ports the task's processes listen on, lowest first; empty when it has none.
+    func servers(of task: UUID) -> [TaskServerPort] {
+        servers[task] ?? []
+    }
+
+    func applyServers(_ found: [UUID: [TaskServerPort]]) {
+        for id in Set(servers.dictionary.keys).union(found.keys) where servers[id] != found[id] {
+            servers[id] = found[id]
+        }
     }
 
     func apply(_ usages: [TaskResourceUsage]) {
@@ -142,12 +157,20 @@ final class TaskResourceMonitor {
 }
 
 extension AppModel {
-    /// What a resource sample needs from the app: each task's bash-mode shell, and the Claude
-    /// tasks whose conversation another app may run, with the config folder each one's account
-    /// reads (`isHeldElsewhere` reads the same folder).
+    /// What a resource sample needs from the app: each task's bash-mode shell, the Claude tasks
+    /// whose conversation another app may run, with the config folder each one's account reads
+    /// (`isHeldElsewhere` reads the same folder), and whether to find the tasks' servers, with each
+    /// Codex task's thread.
     func taskResourceRequest() -> TaskResourceRequest {
         var request = TaskResourceRequest(shells: taskShells.processIDs())
         guard !usesVisualFixture else { return request }
+        if TaskServersPreference.isOn() {
+            request.findsServers = true
+            for session in store.sessions where session.harness == .codex {
+                guard let thread = session.providerSessionID, !thread.isEmpty else { continue }
+                request.codexThreads[thread.lowercased()] = session.id
+            }
+        }
         let environment = ProcessInfo.processInfo.environment
         for session in store.sessions where session.harness == .claudeCode {
             guard let id = session.providerSessionID, !id.isEmpty else { continue }

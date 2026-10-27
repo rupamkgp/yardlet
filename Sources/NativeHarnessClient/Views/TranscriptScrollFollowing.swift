@@ -166,6 +166,11 @@ struct TranscriptScrollFollowing<RequestID: Hashable>: ViewModifier {
     @State private var blankMonitor: ConversationBlankViewportMonitor? =
         ConversationBlankViewportLog.isEnabled ? ConversationBlankViewportMonitor() : nil
     @State private var isUserScrolling = false
+    /// What arrived below the end of a followed conversation while the reader scrolled it. The
+    /// size-change anchor does not keep the end under the reader's gesture, and following does not
+    /// move the view under it, so the end moves away by this much without the reader moving: it is
+    /// not their distance from the end, and it comes into view when their gesture ends.
+    @State private var arrivedUnderGesture: CGFloat = 0
     @State private var continuedScroll = TranscriptContinuedScroll()
     @State private var topLoading = TranscriptTopLoading()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -249,9 +254,14 @@ struct TranscriptScrollFollowing<RequestID: Hashable>: ViewModifier {
                     || (continuedScroll.continues(from: old, to: new, at: Date()) && !restoring)
                 let userDriven = new.isUserMovement(from: old, interacting: readerScrolling,
                     positionedByUser: position.isPositionedByUser, restoring: restoring)
-                if new.viewport.width >= 80, new.viewport.height >= 60 {
-                    state.observe(distance: new.distance, userDriven: userDriven)
+                if userDriven, state.isFollowing, new.height != old.height {
+                    arrivedUnderGesture += max(0, new.distance - old.distance)
                 }
+                if new.distance <= 1 { arrivedUnderGesture = 0 }
+                if new.viewport.width >= 80, new.viewport.height >= 60 {
+                    state.observe(distance: new.distance - arrivedUnderGesture, userDriven: userDriven)
+                }
+                if !state.isFollowing { arrivedUnderGesture = 0 }
                 if pinsGrowthToBottom, state.isFollowing, !userDriven, new.height != old.height, new.distance > 1,
                    readingTracker?.isRestoring != true {
                     position.scrollTo(edge: .bottom)
@@ -290,9 +300,18 @@ struct TranscriptScrollFollowing<RequestID: Hashable>: ViewModifier {
                 if isUserScrolling { continuedScroll.end() }
                 if isUserScrolling || (new == .idle && wasUserScrolling) {
                     state.observe(
-                        distance: context.geometry.contentSize.height - context.geometry.visibleRect.maxY,
+                        distance: context.geometry.contentSize.height - context.geometry.visibleRect.maxY
+                            - arrivedUnderGesture,
                         userDriven: true
                     )
+                }
+                // The reader's gesture over a followed conversation ended: what arrived under it comes
+                // into view, as following would have brought it.
+                if new == .idle, wasUserScrolling {
+                    if pinsGrowthToBottom, state.isFollowing, arrivedUnderGesture > 0, readingTracker?.isRestoring != true {
+                        position.scrollTo(edge: .bottom)
+                    }
+                    arrivedUnderGesture = 0
                 }
             }
             .overlay(alignment: .bottomTrailing) {

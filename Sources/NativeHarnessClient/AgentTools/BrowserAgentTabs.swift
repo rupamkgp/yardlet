@@ -9,10 +9,13 @@ struct BrowserAgentTabInfo: Equatable, Sendable {
     var origin: String
     /// The fronted tab: the one the panel shows and the tools use when they name none.
     var isActive: Bool
-    /// False while the tab's page does not respond (`BrowserTab.unresponsive`) or its renderer ended.
+    /// False while the tab's page does not respond (`BrowserTab.unresponsive`), its renderer ended, or the
+    /// host could not open it.
     var isResponding = true
     /// The error code of the tab's renderer that ended (`BrowserTabCrash.errorCode`).
     var crash: String?
+    /// Why the host could not open the tab (`BrowserTab.openFailure`).
+    var openFailure: String?
 }
 
 /// The task's tabs, for the tab tools and for a tool that names a tab.
@@ -32,11 +35,13 @@ protocol BrowserAgentTabDirectory: AnyObject {
     /// A tab whose page does not respond, opened again in its place under the same side-panel tab
     /// (`BrowserHostClient.replace`); returns the new tab's page.
     func replace(_ tabID: String, for sessionID: UUID) throws -> BrowserAgentPage
-    /// Chromium's own windows in the browser (the passkey dialog, a site's sign-in window, the print dialog);
-    /// empty when none is open.
-    var browserDialogs: [BrowserChromiumWindow] { get }
-    /// Closes them as Escape would: a passkey request ends with NotAllowedError, a sign-in or printing is cancelled.
-    func closeBrowserDialogs() -> Bool
+    /// Chromium's own windows over the task's tabs (the passkey dialog, a site's sign-in window), and those whose tab
+    /// is not known (the print dialog), which may be any task's; another task's windows are in neither.
+    func browserDialogs(for sessionID: UUID) -> (own: [BrowserChromiumWindow], unknownTab: [BrowserChromiumWindow])
+    /// Closes the task's own as Escape would: a passkey request ends with NotAllowedError, a sign-in is cancelled.
+    func closeBrowserDialogs(for sessionID: UUID) -> Bool
+    /// The task's turn ended: the screen sizes and color schemes the agent set on its tabs go, and its handoffs end.
+    func endAgentEmulation(for sessionID: UUID) async
 }
 
 /// The agent's side of each task's browser tabs. The host keeps the task's tabs, which the task's
@@ -134,10 +139,17 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         client.closeTabs(forSession: sessionID)
     }
 
-    var browserDialogs: [BrowserChromiumWindow] { client()?.chromiumWindows ?? [] }
+    func browserDialogs(for sessionID: UUID) -> (own: [BrowserChromiumWindow], unknownTab: [BrowserChromiumWindow]) {
+        guard let client = client() else { return ([], []) }
+        return (client.chromiumWindows(forSession: sessionID), client.chromiumWindows.filter { $0.tab == nil })
+    }
 
-    func closeBrowserDialogs() -> Bool {
-        client()?.closeChromiumWindows() ?? false
+    func closeBrowserDialogs(for sessionID: UUID) -> Bool {
+        client()?.closeChromiumWindows(forSession: sessionID) ?? false
+    }
+
+    func endAgentEmulation(for sessionID: UUID) async {
+        for tab in client()?.tabs(forSession: sessionID) ?? [] { await tab.endAgentEmulation() }
     }
 
     // MARK: Internals
@@ -181,7 +193,16 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         let page = BrowserAgentPage(cdp: tab.devTools, tabID: tab.id) { [weak tab] command in tab?.send(command) }
         page.unresponsive = { [weak tab] in tab?.unresponsive }
         page.crash = { [weak tab] in tab?.crash }
+        page.openFailure = { [weak tab] in tab?.openFailure }
         page.viewport = { [weak tab] in tab?.viewport }
+        page.emulation = { [weak tab] in tab?.emulation }
+        page.emulate = { [weak tab] in try await tab?.emulate($0) }
+        page.emulateColorScheme = { [weak tab] in try await tab?.emulateColorScheme($0) }
+        page.tabKey = tab.key
+        page.isClosed = { [weak tab] in tab?.isClosed ?? true }
+        page.handOff = { [weak tab] in tab?.handOff(reason: $0) }
+        page.handoff = { [weak tab] in tab?.handoff }
+        page.endHandoff = { [weak tab] in tab?.endHandoff() }
         let observer = tab.addEventObserver { [weak page] event in page?.receive(event) }
         let entry = Entry(tab: tab, page: page, observer: observer)
         entries[tab.id] = entry
@@ -195,7 +216,8 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
 
     private func info(_ tab: BrowserTab, fronted: BrowserTab?) -> BrowserAgentTabInfo {
         BrowserAgentTabInfo(id: String(tab.id), origin: Self.origin(of: tab.currentURL ?? "about:blank"), isActive: tab === fronted,
-                            isResponding: tab.unresponsive == nil && tab.crash == nil, crash: tab.crash?.errorCode)
+                            isResponding: tab.unresponsive == nil && tab.crash == nil && tab.openFailure == nil,
+                            crash: tab.crash?.errorCode, openFailure: tab.openFailure?.message)
     }
 
     static func origin(of address: String) -> String {

@@ -33,7 +33,7 @@ enum ConversationTaskSuggestionProjection {
     /// A shared-transcript call (Claude Code, ACP) that Yardlet answered as a suggestion.
     static func suggestion(from activity: HarnessActivity) -> ConversationTaskSuggestion? {
         guard activity.outcome != .failed, activity.subtask == nil, activity.diff == nil else { return nil }
-        return suggestion(arguments: arguments(in: activity.input), result: activity.output)
+        return suggestion(arguments: ConversationAgentRunProjection.arguments(in: activity.input), result: activity.output)
     }
 
     /// A Codex MCP call to the `yardlet` server's `spawn_task`.
@@ -77,14 +77,5 @@ enum ConversationTaskSuggestionProjection {
             parentTaskID: suggestion.parentTaskReference.flatMap { UUID(uuidString: $0) },
             startsAsChat: suggestion.startsAsChat
         )
-    }
-
-    /// The JSON object a transcript keeps as a call's input. An ACP agent's input may follow a line
-    /// of its own; the object is then read from its first brace.
-    private static func arguments(in input: String?) -> JSONValue? {
-        guard let input, let start = input.firstIndex(of: "{"), let end = input.lastIndex(of: "}") else { return nil }
-        let value = try? JSONDecoder().decode(JSONValue.self, from: Data(input[start...end].utf8))
-        guard case .object = value else { return nil }
-        return value
     }
 }

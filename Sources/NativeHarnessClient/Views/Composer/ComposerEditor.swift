@@ -191,6 +191,11 @@ struct ComposerEditor<Draft: ComposerDraftEditing, Header: View, Chips: View, Fo
                 }
                 textField
             }
+            .scrollsPastLines(metrics.lineLimit.upperBound)
+            .textFieldStyle(.plain)
+            .font(isBashMode
+                ? .system(size: 13 * interfaceScale, design: .monospaced)
+                : ParityTheme.conversationFont(scale: interfaceScale))
             .padding(metrics.text)
 
             if let notice = draft.notice {
@@ -282,12 +287,10 @@ struct ComposerEditor<Draft: ComposerDraftEditing, Header: View, Chips: View, Fo
     }
 
     private var textField: some View {
+        // It grows with its text; past the line limit's upper bound the editor scrolls it
+        // (`scrollsPastLines`), which also gives it its font and style.
         TextField(suggestion ?? placeholder, text: $draft.text, axis: .vertical)
-            .textFieldStyle(.plain)
-            .font(isBashMode
-                ? .system(size: 13 * interfaceScale, design: .monospaced)
-                : ParityTheme.conversationFont(scale: interfaceScale))
-            .lineLimit(metrics.lineLimit)
+            .lineLimit(metrics.lineLimit.lowerBound...)
             .frame(minHeight: metrics.minTextHeight, alignment: .topLeading)
             .focused(isFocused)
             .accessibilityLabel(placeholder)

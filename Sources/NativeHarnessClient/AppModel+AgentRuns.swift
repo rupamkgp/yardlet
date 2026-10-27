@@ -3,8 +3,8 @@ import YardletAgentTools
 
 // `run_agent` (docs/AGENT_BROWSER_TOOLS.md, "세션 도구"): a prompt run as a subagent on a harness, inside the calling
 // turn, as Claude Code's Agent tool or Codex's `spawn_agent` runs one on its own harness. Yardlet
-// starts one harness session headless through the same adapters its tasks use — the harness's
-// default account, its default permission mode or read only when the caller is read only (never
+// starts one harness session headless through the same adapters its tasks use — the account
+// automatic assignment picks or the call names, its default permission mode or read only when the caller is read only (never
 // more than the caller), the caller's folder, the Yardlet MCP server so it can nest once more —
 // sends the prompt, and answers the call with its final answer. It has no sidebar row. Its
 // requests wait in the calling task's conversation; its conversation is kept with that task, and
@@ -57,10 +57,17 @@ extension AppModel {
                 return .error("Not started: the person did not approve a subagent in that folder.")
             }
         }
+        let account: AccountStart
+        switch await assignAccount(harness: harness, model: Self.modelOption(options, harness: harness),
+                                   requested: arguments["account"]?.stringValue) {
+        case let .success(value): account = value
+        case let .failure(error): return .error("Not started: \(error.message)")
+        }
         let model = arguments["model"]?.stringValue?.trimmingCharacters(in: .whitespaces)
         let run = AgentRun(callerID: caller.id, hostTaskID: caller.hostTaskID, harness: harness,
                            model: model?.isEmpty == false ? model : nil, prompt: prompt, workspaceURL: folder,
                            depth: caller.depth + 1, permission: permission)
+        run.accountStart = account
         let background = Self.bool(arguments["background"]) == true
         run.notifiesCaller = background && Self.bool(arguments["notify"]) == true
         run.state = .queued
@@ -80,7 +87,7 @@ extension AppModel {
             if run.notifiesCaller { watchForNotification(run.id, caller: caller) }
             if background {
                 return .text("Queued agent \(run.id.uuidString) on \(harness.displayName); it starts when there is "
-                    + "room. wait_tasks with this id waits for it.")
+                    + "room. wait_tasks with this id waits for it.\n" + account.assignment.toolLine)
             }
             return .text(await agentRunAnswer(run, caller: caller))
         }
@@ -94,7 +101,7 @@ extension AppModel {
         if run.notifiesCaller { watchForNotification(run.id, caller: caller) }
         if background {
             return .text("Started agent \(run.id.uuidString) on \(harness.displayName). wait_tasks with this id "
-                + "returns its answer.")
+                + "returns its answer.\n" + account.assignment.toolLine)
         }
         return .text(await agentRunAnswer(run, caller: caller))
     }
@@ -125,6 +132,7 @@ extension AppModel {
         var text = "\(ConversationAgentRunProjection.agentIDLabel)\(run.id.uuidString)\n"
             + "harness: \(run.harness.rawValue)" + (run.model.map { " · model: \($0)" } ?? "")
             + " · state: \(run.state.word)"
+            + (run.accountStart.map { "\n" + $0.assignment.toolLine } ?? "")
         if case let .failed(reason) = run.state { text += " · \(reason)" }
         if run.state == .queued {
             text += "\nIt is queued and starts when there is room; wait_tasks with this id waits for it."
@@ -164,7 +172,8 @@ extension AppModel {
         guard let runtime = runtimeSelections.selectedURL(for: run.harness) else {
             throw SessionToolError(message: "\(run.harness.displayName) is not set up in Yardlet.")
         }
-        let connection = connections.selected(for: run.harness)
+        // A judge has no assignment and runs on the account new tasks start on.
+        let connection = run.accountStart.map(\.connection) ?? connections.selected(for: run.harness)
         try connection?.validate(for: run.harness)
         let adapter = await registry.adapter(for: run.harness, executableURL: runtime,
                                              environmentScope: .native, connection: connection)

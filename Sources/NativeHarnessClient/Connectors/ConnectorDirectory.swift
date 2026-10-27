@@ -19,6 +19,14 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
         /// Yardlet's own server for the service (`LocalConnectorService`), signed in to each
         /// Google account with the Google OAuth app the person registered once (Gmail).
         case googleAccount
+        /// Yardlet's own App Store Connect server, with an API key the person adds: the private
+        /// key file App Store Connect gave them once, its key ID, and a team key's issuer ID.
+        case appStoreConnectKey
+        /// Yardlet's own server for the Mac's calendars, reminders, or contacts: macOS asks the
+        /// person once, when they turn it on.
+        case macPermission
+        /// An app on this Mac serves the tools (Xcode, through `mcpbridge`); nothing to sign in to.
+        case localApp
     }
 
     var id: String
@@ -58,9 +66,12 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
     private static let googleOffline = ["access_type": "offline", "prompt": "consent"]
     private static let googleSetup = URL(string: "https://console.cloud.google.com/auth/clients")!
 
-    /// The Google services Yardlet serves itself, signed in with one Google OAuth app.
+    /// The service Yardlet serves itself: Google's, App Store Connect, the Mac's data, or Xcode.
     var localService: LocalConnectorService? {
-        signIn == .googleAccount ? LocalConnectorService(presetID: id) : nil
+        switch signIn {
+        case .googleAccount, .appStoreConnectKey, .macPermission, .localApp: LocalConnectorService(presetID: id)
+        case .oauth, .registeredClient, .token, .none: nil
+        }
     }
 
     /// Whether a name another app gives a service stands for this one: the directory's name, a
@@ -106,6 +117,17 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         authorizationParameters: googleOffline, symbol: "externaldrive", setupURL: googleSetup,
                         note: "Yardlet's own Google Drive server, with the same Google OAuth app as Gmail.",
                         claudeAINames: ["claude.ai Google Drive"], codexPlugins: ["google-drive", "google_drive"]),
+        // The Mac's own calendars, reminders, and contacts (2026-10-26): iCloud has no OAuth API, so
+        // Yardlet reads what the Mac keeps in sync, through EventKit and Contacts, once macOS lets it.
+        ConnectorPreset(id: "apple-calendar", name: "Apple Calendar", serverURL: LocalConnectorService.appleCalendar.address,
+                        signIn: .macPermission, symbol: "calendar",
+                        note: "The calendars on this Mac, iCloud's and the other accounts' in Calendar. macOS asks once."),
+        ConnectorPreset(id: "apple-reminders", name: "Apple Reminders", serverURL: LocalConnectorService.appleReminders.address,
+                        signIn: .macPermission, symbol: "checklist",
+                        note: "The reminders on this Mac. macOS asks once."),
+        ConnectorPreset(id: "apple-contacts", name: "Apple Contacts", serverURL: LocalConnectorService.appleContacts.address,
+                        signIn: .macPermission, symbol: "person.crop.circle",
+                        note: "The contacts on this Mac, read only. macOS asks once."),
         ConnectorPreset(id: "github", name: "GitHub", serverURL: URL(string: "https://api.githubcopilot.com/mcp/")!,
                         signIn: .token, acceptsRegisteredClient: true, symbol: "chevron.left.forwardslash.chevron.right",
                         setupURL: URL(string: "https://github.com/settings/personal-access-tokens/new")!,
@@ -152,6 +174,17 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
         ConnectorPreset(id: "gamma", name: "Gamma", serverURL: URL(string: "https://mcp.gamma.app/mcp")!,
                         signIn: .oauth, symbol: "rectangle.stack"),
         // Building and running software
+        // Xcode's own MCP server (Xcode 26.3 and later), which `mcpbridge` reaches; offered only on
+        // a Mac with Xcode (`XcodeBridge.locate`).
+        ConnectorPreset(id: "xcode", name: "Xcode", serverURL: LocalConnectorService.xcode.address,
+                        signIn: .localApp, symbol: "hammer",
+                        note: "Xcode's own tools, while Xcode is open with a project and its Intelligence settings let other agents use them.",
+                        packages: ["mcpbridge"]),
+        // Apple's App Store Connect API with the person's own API key; no third-party server holds it.
+        ConnectorPreset(id: "app-store-connect", name: "App Store Connect", serverURL: AppStoreConnectAPI.liveBase,
+                        signIn: .appStoreConnectKey, symbol: "app.badge",
+                        setupURL: URL(string: "https://appstoreconnect.apple.com/access/integrations/api")!,
+                        note: "An App Store Connect API key: its .p8 file, key ID, and, for a team key, the issuer ID."),
         ConnectorPreset(id: "gitlab", name: "GitLab", serverURL: URL(string: "https://gitlab.com/api/v4/mcp")!,
                         signIn: .oauth, symbol: "arrow.triangle.branch"),
         ConnectorPreset(id: "supabase", name: "Supabase", serverURL: URL(string: "https://mcp.supabase.com/mcp")!,
@@ -179,6 +212,12 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         signIn: .oauth, symbol: "creditcard"),
         ConnectorPreset(id: "square", name: "Square", serverURL: URL(string: "https://mcp.squareup.com/mcp")!,
                         signIn: .oauth, symbol: "square.grid.2x2"),
+        // Mercury's own server (docs.mercury.com/docs/connecting-mercury-mcp), read only: Yardlet asks
+        // for `read` and `offline_access` alone, so payment and transfer requests, categories, and
+        // transaction notes stay out (docs/CONNECTORS.md, "디렉터리").
+        ConnectorPreset(id: "mercury", name: "Mercury", serverURL: URL(string: "https://mcp.mercury.com/mcp")!,
+                        signIn: .oauth, scope: "read offline_access", symbol: "building.columns",
+                        claudeAINames: ["claude.ai Mercury"]),
         ConnectorPreset(id: "webflow", name: "Webflow", serverURL: URL(string: "https://mcp.webflow.com/mcp")!,
                         signIn: .oauth, symbol: "macwindow"),
         ConnectorPreset(id: "wix", name: "Wix", serverURL: URL(string: "https://mcp.wix.com/mcp")!,
@@ -249,7 +288,7 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
     /// Everything a sign-in needs comes from the server: one click adds and connects.
     var connectsInOneClick: Bool {
         switch target {
-        case .preset(let preset): preset.signIn == .oauth || preset.signIn == .none
+        case .preset(let preset): [.oauth, .none, .macPermission, .localApp].contains(preset.signIn)
         case .custom: true
         }
     }

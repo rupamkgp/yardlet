@@ -752,7 +752,8 @@ actor HarnessAccountBroker {
                     id: "\(bucket.key):\(windowID)", label: buckets.count > 1 ? "\(bucket.name) · \(label)" : label,
                     usedFraction: min(1, used / 100), detail: L10n.format("%.0f%% remaining", max(0, 100 - used)),
                     resetsAt: window["resetsAt"]?.doubleValue.map(Date.init(timeIntervalSince1970:)),
-                    evidence: .exactQuota
+                    evidence: .exactQuota,
+                    windowMinutes: window["windowDurationMins"]?.doubleValue
                 )
             }
         }
@@ -790,7 +791,8 @@ actor HarnessAccountBroker {
                 usedFraction: min(1, window.usedPercent / 100),
                 detail: L10n.format("%.0f%% remaining", max(0, 100 - window.usedPercent)),
                 resetsAt: window.resetsAt,
-                evidence: .exactQuota
+                evidence: .exactQuota,
+                windowMinutes: window.durationMinutes
             )
         }
     }

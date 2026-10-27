@@ -17,6 +17,14 @@ provider ID·scope·기록 위치가 그대로 유지된다. Claude 기록 읽�
 `projects` 링크 하나만 따라가고, 그 아래의 링크·FIFO는 이전처럼 거절한다. 현재 구현·검증과 CLI별 범위는 [PROVIDER_CONNECTIONS.md](PROVIDER_CONNECTIONS.md)를
 따른다. 아래 설치 기록은 당시 이력이다.
 
+2026-10-27 계정 자동 배정: 에이전트가 시작하는 하위 작업(`create_task`)·하위 에이전트(`run_agent`)·사람이 시작하는
+제안 칩은 같은 하네스의 자동 배정 계정 가운데 하나에서 시작한다. 고른 계정은 새 작업의 `connection_binding`으로 provider 세션 ID·scope
+(`.native`)와 함께 처음부터 저장되고, 이후 재개·포크·제목 조회는 지금처럼 그 binding을 따른다. 기존 작업의 계정·기록·scope는 옮기지
+않는다. 기본 배정 대상은 기본 로그인과 대화 기록을 같은 곳에 두는 계정이라, Session Switch의 Claude 폴더 셋(모두 `projects` →
+`~/.claude/projects`, 2026-10-27 이 Mac에서 읽어 확인)에서 시작한 하위 작업은 어느 계정이든 같은 기록 폴더에 남고 한도 카드의 계정 전환
+(2026-10-06 예외)도 그대로 쓸 수 있다. 별도 `CODEX_HOME`의 Codex 로그인은 기록이 따로라 사람이 넣기 전에는 배정하지 않는다. 인증·기록
+파일을 복사하거나 계정 폴더를 바꾸지 않는다. 배정 이유는 Yardlet 파일 `~/.yardlet/account-assignments.json`(작업 ID → 계정 ID·창·시각)이다.
+
 ## 변경 이유와 동작
 
 2026-10-23 Codex 작업별 모드: 선택한 Plan/Default preset을 기존 provider options의
@@ -600,3 +608,28 @@ Claude 앱에서 보관했는데 Yardlet 목록에 있는 작업 20, 최근 활�
   `testLiveDryRunOverTheClaudeAppsSessions`: 출처 293(열림 69), 새로 가져올 것 24(채팅 1·프로젝트 23), 활동 앞당김 19, 제목 0, 보관 20(바쁨은
   모름으로 계산). Codex는 `~/.codex/state_5.sqlite` 사본을 같은 규칙으로 센 것: 새로 가져올 것 2(둘 다 `~/Desktop/workspace/yardlet-sandbox`의
   QA 스레드), 임시 폴더라 건너뜀 3, 활동 앞당김 4(`recency_at` 기준), 보관 0.
+
+## 파일을 다룬 작업의 색인 — 2026-10-26
+
+파일에서 그 파일을 다룬 작업은 각 작업이 읽고 고친 파일을 Yardlet의 폴더에 따로
+둔다. provider 기록은 읽기만 하고, 하네스 설정과 기록, 세션 색인(`session-index.sqlite3`)의 형식은 바꾸지 않는다.
+
+- **위치:** `~/.yardlet/file-activity/<작업 UUID>.json`, 작업마다 한 파일(`FileTouchRepository`). 형식은 `FileTouches` JSON이다:
+  파일 경로마다 마지막 고침과 마지막 읽음(시각, 호출 ID), 결과를 아직 읽지 않은 호출(256개까지), Claude Code 기록을 어디까지 읽었는지
+  (provider 세션 ID, 장치, inode, 다 읽은 줄의 끝 바이트, `projects` 아래 경로).
+- **만드는 때:** 사람이 검토 화면이나 파일 패널에서 파일을 볼 때만 만든다. 그 파일의 저장소에서 일한, 보관하지 않은 작업만 읽는다.
+  - Claude Code 작업은 대화 읽기와 같은 규칙으로(작업에 저장된 provider ID, 그 계정 설정 폴더의 `projects` 아래 그 ID의 파일 하나, 링크
+    하나만 따라감) 기록을 처음 물을 때 처음부터 읽고, 그다음은 같은 파일(장치, inode)이 줄지 않았으면 덧붙은 바이트만 읽는다. 바뀌거나
+    줄어든 파일, 다른 provider ID는 처음부터 다시 읽는다. 쓰는 중인 마지막 줄은 다음에 읽는다. `"type":"tool_use"`가 든 줄과 열린 호출의
+    결과 줄만 파싱한다(`ClaudeFileTouchScanner`).
+  - Codex와 다른 하네스 작업은 Yardlet이 그때 메모리에 든 대화(Codex 스레드의 파일 변경과 명령의 읽기, 다른 하네스의 파일 변경)를 더한다.
+    Codex rollout은 읽지 않는다.
+- **크기와 시간(실측, 2026-10-26):** 한 저장소의 작업 12개(가장 큰 기록 197 MB)를 처음 물을 때 4.9초(디버그 빌드), 그다음 3 ms, 색인 12개
+  파일 108 KB. 작업 하나가 수 KB에서 수십 KB이며 파일 경로 수에 따라 는다.
+- **지우는 법:** 폴더째 지워도 된다. 다음에 파일을 볼 때 Claude Code 작업의 것은 기록에서 다시 만들고, 다른 작업의 것은 그 뒤에 Yardlet이 읽는
+  것부터 다시 모은다. 작업을 삭제하면 그 파일도 지우고(`FileTaskIndex.remove`), 보관하면 남긴다. 앱을 지우면 Yardlet 폴더와 함께 없어진다.
+- **찾는 것:** 작업 트리와 원래 저장소의 같은 파일은 저장소 기본 폴더와 그 안의 상대 경로로 맞춘다(`FileRepositoryResolver`: 작업의
+  `origin_workspace_path`, `.claude/worktrees/<이름>` 관례, `.git` 파일의 `commondir`). 디스크의 이름과 Git의 작은 파일 둘만 읽고 Git 명령은
+  돌리지 않는다.
+- **열 때:** 관련 작업을 누르면 그 작업의 대화를 위로 스크롤할 때와 같은 읽기(`readEarlierClaudeHistory`, `loadMoreCodexTurns`)로 그 호출이
+  들 때까지 앞부분을 더 읽고(256번까지), 그 호출이 든 턴으로 간다. 아무것도 보내거나 붙이거나 재개하지 않는다.

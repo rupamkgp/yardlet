@@ -283,6 +283,25 @@ final class ConversationBlankFrameTests: XCTestCase {
         window.report()
     }
 
+    /// A trackpad swipe toward the end while the answer streams, its momentum included: what arrives
+    /// under the reader's gesture is not the reader leaving the end, so following goes on and the
+    /// conversation ends at the end. (Following stopped a fragment short of the end, under the
+    /// gesture, and fell further behind with every word after it.)
+    func testSwipingTowardTheEndWhileItStreamsKeepsFollowing() throws {
+        let window = try makeWindow([.claude("Long", turns: 12)])
+        defer { window.close() }
+        window.show(0)
+        window.send(0, "Please fix the next parser case.")
+        window.streamWork(0, calls: 3)
+        window.streamText(0, paragraphs: 3)
+        for round in 0..<3 {
+            window.measure("swipe toward the end as it streams \(round)", seconds: 0.05) { window.swipeTowardTheEnd(0) }
+            window.measure("stream on after the swipe \(round)", seconds: 0.3) { window.streamText(0, paragraphs: 2) }
+            XCTAssertLessThanOrEqual(window.distanceFromEnd, 1, "Following went on through swipe \(round)")
+        }
+        window.report()
+    }
+
     /// The turn finishes and its work folds: the conversation gets much shorter under the reader.
     func testFinishingAndFoldingNeverDrawsABlankConversation() throws {
         let window = try makeWindow([.claude("Long", turns: 40)])
@@ -625,6 +644,40 @@ final class ConversationBlankFrameTests: XCTestCase {
                 probe.run("scroll", for: 0.016)
             }
             probe.run("scrolled", for: 0.2)
+        }
+
+        /// The reader's trackpad swipe toward the end, and its momentum, while the running turn's answer
+        /// streams on: phased events, which SwiftUI reports as the reader's scrolling until the
+        /// momentum ends.
+        func swipeTowardTheEnd(_ index: Int) {
+            guard let scroll = conversation else { return }
+            func swipe(_ delta: Int32, phase: Int64 = 0, momentum: Int64 = 0) {
+                guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta,
+                                          wheel2: 0, wheel3: 0) else { return }
+                event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                event.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+                event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+                if let wheel = NSEvent(cgEvent: event) { scroll.scrollWheel(with: wheel) }
+                probe.run("swipe", for: 0.016)
+            }
+            var fragment = 0
+            func words() {
+                fragment += 1
+                emit(index, .assistantDelta(fragment.isMultiple(of: 4) ? "\n\nParagraph \(fragment): "
+                    : "some more words that wrap along the line \(fragment) "), wait: 0)
+            }
+            // Fingers on the trackpad, then toward the end (began, changed, ended), then the momentum
+            // (begin, continue, end).
+            swipe(0, phase: 128)
+            swipe(-4, phase: 1)
+            for _ in 0..<6 { swipe(-8, phase: 2); words() }
+            swipe(0, phase: 4)
+            swipe(-8, momentum: 1)
+            for step in 0..<30 {
+                swipe(Int32(-max(1, 8 - step / 4)), momentum: 2)
+                if step.isMultiple(of: 3) { words() }
+            }
+            swipe(0, momentum: 3)
         }
 
         /// The running turn's answer and its end, which folds its work.

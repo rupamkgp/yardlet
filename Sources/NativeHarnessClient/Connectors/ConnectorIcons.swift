@@ -123,6 +123,13 @@ extension ConnectorPreset {
         "notion": "https://www.notion.com/front-static/logo-ios.png",
         "slack": "https://slack.com/favicon.ico",
         "gmail": "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+        // The Mac's own apps draw from the icons macOS gives them (`ConnectorIconStore`), and App
+        // Store Connect's is on Apple's developer site (checked 2026-10-26, 96 px at 2x).
+        "apple-calendar": "file:///System/Applications/Calendar.app",
+        "apple-reminders": "file:///System/Applications/Reminders.app",
+        "apple-contacts": "file:///System/Applications/Contacts.app",
+        "xcode": "file:///Applications/Xcode.app",
+        "app-store-connect": "https://developer.apple.com/assets/elements/icons/app-store-connect/app-store-connect-96x96_2x.png",
         "google-calendar": "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
         "google-drive": "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
         "github": "https://github.com/fluidicon.png",
@@ -151,6 +158,7 @@ extension ConnectorPreset {
         "stripe": "https://stripe.com/favicon.ico",
         "paypal": "https://www.paypal.com/favicon.ico",
         "square": "https://squareup.com/apple-touch-icon.png",
+        "mercury": "https://mercury.com/apple-icon.png",
         "webflow": "https://webflow.com/apple-touch-icon.png",
         "wix": "https://www.wix.com/favicon.ico",
         "figma-desktop": "https://static.figma.com/app/icon/2/touch-180.png",

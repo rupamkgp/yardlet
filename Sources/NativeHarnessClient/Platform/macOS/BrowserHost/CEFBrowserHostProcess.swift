@@ -59,9 +59,6 @@ final class CEFBrowserHostProcess: BrowserHostConnection {
     private var didTerminate = false
     /// Signaled once the host has exited, for `waitUntilExit(timeout:)`.
     private let exited = DispatchSemaphore(value: 0)
-    /// Chromium's own window (the passkey dialog) and how it reaches the person.
-    private var chromiumWindow = ChromiumWindowPresentation()
-    private var activationObserver: (any NSObjectProtocol)?
 
     init(paths: BrowserHostPaths) throws {
         // Unguessable, and distinct per app, process and launch, so an installed Yardlet and a
@@ -103,6 +100,10 @@ final class CEFBrowserHostProcess: BrowserHostConnection {
         if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--ui-fixture-browser-check=") }) {
             let directory = String(argument.dropFirst("--ui-fixture-browser-check=".count))
             process.arguments! += ["--accessibility-record", directory + "/accessibility-raw"]
+        }
+        // A QA run fills the browser with a few tabs (`many-tabs`).
+        if let limit = CommandLine.arguments.first(where: { $0.hasPrefix("--ui-fixture-browser-limit=") }) {
+            process.arguments! += ["--browser-limit", String(limit.dropFirst("--ui-fixture-browser-limit=".count))]
         }
 #endif
         var environment = ProcessInfo.processInfo.environment
@@ -226,38 +227,7 @@ final class CEFBrowserHostProcess: BrowserHostConnection {
     nonisolated var cachedSurfaceCount: Int { surfaces.count }
 
     private func receive(_ events: [BrowserHostEvent]) {
-        for event in events {
-            if case .chromiumWindow(let isShown, _, _) = event { chromiumWindowChanged(isShown) }
-            eventHandler?(event)
-        }
-    }
-
-    /// See `ChromiumWindowPresentation`; the host hands activation back when the window closes.
-    private func chromiumWindowChanged(_ isShown: Bool) {
-        if isShown, activationObserver == nil {
-            activationObserver = NotificationCenter.default.addObserver(
-                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.present(self.chromiumWindow.appCameToFront())
-                }
-            }
-        }
-        present(chromiumWindow.windowChanged(isShown: isShown, appIsActive: NSApp.isActive))
-    }
-
-    private func present(_ steps: [ChromiumWindowPresentation.Step]) {
-        guard !didTerminate else { return }
-        for step in steps {
-            switch step {
-            case .raise:
-                send(.raiseChromiumWindows)
-            case .handOver:
-                guard !QABackground.isOn else { continue }
-                NSRunningApplication(processIdentifier: processIdentifier)?.activate(from: .current, options: [])
-            }
-        }
+        for event in events { eventHandler?(event) }
     }
 
     /// Used only on the event pipe's readability queue, which runs one handler at a time.
@@ -273,9 +243,6 @@ final class CEFBrowserHostProcess: BrowserHostConnection {
     private func hostExited(reason: String) {
         guard !didTerminate else { return }
         didTerminate = true
-        _ = chromiumWindow.windowChanged(isShown: false, appIsActive: false)
-        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
-        activationObserver = nil
         frameRouter.removeAll()
         surfaces.close()
         try? input.close()
@@ -324,7 +291,16 @@ final class MacBrowserHost: NativeSurfaceResource {
         client.onTabsMoved = { [unowned self] in self.profiles.tabsMoved(from: $0, to: $1) }
         client.onHostEnded = { [unowned self] in self.removeUnusedProfiles() }
         client.externalApps = LaunchServicesApps()
+        client.onChromiumWindowsChange = { [unowned self] in self.chromiumWindows.present() }
         return client
+    }()
+    /// Where Chromium's own windows show: over the panel that shows their tab.
+    private(set) lazy var chromiumWindows: ChromiumWindowPresenter = {
+        let presenter = ChromiumWindowPresenter()
+        presenter.windows = { [unowned self] in self.client.chromiumWindows }
+        presenter.send = { [weak self] in self?.process?.send($0) }
+        presenter.hostProcessID = { [weak self] in self?.process?.processIdentifier }
+        return presenter
     }()
     /// Which profile each task's tabs use (docs/BROWSER_SESSION_ISOLATION.md).
     private(set) lazy var profiles = BrowserTaskProfiles(root: paths.root)
@@ -387,6 +363,15 @@ final class MacBrowserHost: NativeSurfaceResource {
 
     func stopShowingFrames(of tab: BrowserTabID, in display: BrowserFrameDisplay) {
         process?.frameRouter.remove(display, for: tab)
+    }
+
+    /// A panel shows the tab, or stops: Chromium's windows over the tab show over that panel (`ChromiumWindowPresenter`).
+    func panelShows(_ tab: BrowserTabID, in view: BrowserHostView) {
+        chromiumWindows.panelShows(tab, in: view)
+    }
+
+    func panelStopsShowing(_ tab: BrowserTabID, in view: BrowserHostView) {
+        chromiumWindows.panelStopsShowing(tab, in: view)
     }
 
     /// Also sends the tab's page frames to a small preview (the rail's Preview card), off the main

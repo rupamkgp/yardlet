@@ -61,6 +61,9 @@ final class MacAgentToolService: NativeSurfaceResource {
         connectorEnvironment.copyToClipboard = { text in
             TranscriptClipboard.copy(text)
         }
+        connectorEnvironment.xcodeBridge = { XcodeBridge.locate() }
+        connectorEnvironment.macData = MacEventKitStore.shared
+        connectorEnvironment.es256 = MacES256Signer()
         connectors = ConnectorCenter(environment: connectorEnvironment)
         broker.connectors = connectors
         connectors.onToolsChanged = { [weak broker = self.broker] in broker?.toolsMayHaveChanged() }

@@ -47,10 +47,17 @@ enum GoogleOAuth {
         /// The Drive API's base, `…/drive/v3/`, and its upload base, `…/upload/drive/v3/`.
         var driveAPI: URL = Endpoints.liveDrive
         var driveUpload: URL = Endpoints.liveDriveUpload
+        /// The Docs, Sheets, and Slides APIs' bases, which the Drive connector's editing tools call.
+        var docsAPI: URL = Endpoints.liveDocs
+        var sheetsAPI: URL = Endpoints.liveSheets
+        var slidesAPI: URL = Endpoints.liveSlides
 
         private static let liveCalendar = URL(string: "https://www.googleapis.com/calendar/v3/")!
         private static let liveDrive = URL(string: "https://www.googleapis.com/drive/v3/")!
         private static let liveDriveUpload = URL(string: "https://www.googleapis.com/upload/drive/v3/")!
+        private static let liveDocs = URL(string: "https://docs.googleapis.com/v1/")!
+        private static let liveSheets = URL(string: "https://sheets.googleapis.com/v4/")!
+        private static let liveSlides = URL(string: "https://slides.googleapis.com/v1/")!
 
         /// developers.google.com/identity/protocols/oauth2/native-app and the Gmail, Calendar, and
         /// Drive API references.
@@ -60,12 +67,13 @@ enum GoogleOAuth {
             gmailAPI: URL(string: "https://gmail.googleapis.com/gmail/v1/")!
         )
 
-        /// The API base a service's requests go to.
+        /// The API base a service's requests go to; a service not Google's keeps its own address.
         func base(for service: LocalConnectorService) -> URL {
             switch service {
             case .gmail: gmailAPI
             case .googleCalendar: calendarAPI
             case .googleDrive: driveAPI
+            default: service.address
             }
         }
     }

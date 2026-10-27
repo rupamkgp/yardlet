@@ -194,6 +194,9 @@ final class AgentRun: Identifiable {
     /// A judge of the routing evaluation: no Yardlet tools or instructions, no
     /// conversation kept, no ledger line, and it stops rather than wait on a request.
     var isEvaluationJudge = false
+    /// The account it runs on, and why; nil runs the account new tasks start on.
+    var accountStart: AppModel.AccountStart?
+    var connection: ProviderConnection? { accountStart?.connection }
 
     var state: State = .starting
     /// The subagent's conversation: the shared transcript, or a Codex thread's.

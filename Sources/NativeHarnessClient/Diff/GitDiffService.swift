@@ -338,6 +338,20 @@ actor GitDiffService {
         return summary
     }
 
+    /// A file's text as `revision` holds it (`HEAD`, a commit's hash, or "" for the index), for the
+    /// review's rendered view of a Markdown change. Nil when the revision has no such file, or it is
+    /// longer than a diff's own limit. `path` is relative to the repository's top folder.
+    func fileText(workspaceURL: URL, revision: String, path: String) async throws -> String? {
+        let deadline = ContinuousClock.now + processTimeout
+        let root = try await repositoryRoot(of: workspaceURL, deadline: deadline)
+        let result = try await read(workspaceURL: root, arguments: ["cat-file", "blob", "\(revision):\(path)"],
+                                    deadline: deadline)
+        // Git ends with 128 when the revision holds no such file.
+        if result.status == 128 { return nil }
+        try check(result, allowed: [0])
+        return result.isTruncated ? nil : result.text
+    }
+
     /// The repository's top folder, which the paths in its diff are relative to.
     func repositoryRoot(workspaceURL: URL) async throws -> URL {
         try await repositoryRoot(of: workspaceURL, deadline: ContinuousClock.now + processTimeout)

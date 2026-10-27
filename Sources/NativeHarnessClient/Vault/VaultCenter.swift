@@ -241,9 +241,20 @@ final class VaultCenter: ObservableObject {
         let matching = items.filter { item in item.sites.contains { VaultSite.matches($0, origin: request.origin) } }
         let item: VaultItem
         if let name = request.itemName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            guard let named = items.first(where: { $0.name.compare(name, options: [.caseInsensitive]) == .orderedSame }) else {
+            // Several accounts on one site often share its name (an import names items by site), so an item
+            // is named by its name or its username.
+            func isNamed(_ item: VaultItem) -> Bool {
+                item.name.compare(name, options: [.caseInsensitive]) == .orderedSame
+                    || !item.username.isEmpty && item.username.compare(name, options: [.caseInsensitive]) == .orderedSame
+            }
+            let here = matching.filter(isNamed)
+            guard here.count < 2 else {
+                return refuse(request, item: nil, "Several items for \(host) are named “\(name)”: "
+                    + here.map(Self.label).joined(separator: ", ") + ". Name one by its username.")
+            }
+            guard let named = here.first ?? items.first(where: isNamed) else {
                 return refuse(request, item: nil, "No saved item is named “\(name)”."
-                    + (matching.isEmpty ? "" : " Items for \(host): " + matching.map { "“\($0.name)”" }.joined(separator: ", ") + "."))
+                    + (matching.isEmpty ? "" : " Items for \(host): " + matching.map(Self.label).joined(separator: ", ") + "."))
             }
             guard matching.contains(where: { $0.id == named.id }) else {
                 // An item named for another site: a page asking for it is a phishing sign, so the person hears of it.
@@ -261,7 +272,7 @@ final class VaultCenter: ObservableObject {
             }
             guard matching.count == 1 else {
                 return refuse(request, item: nil, "Several items are saved for \(host): "
-                    + matching.map { "“\($0.name)”" }.joined(separator: ", ") + ". Name one with item.")
+                    + matching.map(Self.label).joined(separator: ", ") + ". Name one with item, by its name or username.")
             }
             item = only
         }
@@ -331,6 +342,11 @@ final class VaultCenter: ObservableObject {
         guard var secret = try? environment.secrets.load(itemID), secret.passkey != nil else { return }
         secret.passkey?.signCount = count
         try? environment.secrets.save(secret, for: itemID)
+    }
+
+    /// An item as a refusal lists it: its name, and the username that tells apart items of one name.
+    private static func label(_ item: VaultItem) -> String {
+        item.username.isEmpty ? "“\(item.name)”" : "“\(item.name)” (\(item.username))"
     }
 
     private func refuse(_ request: VaultFillRequest, item: VaultItem?, _ message: String) -> Result<VaultFillGrant, VaultRefusal> {

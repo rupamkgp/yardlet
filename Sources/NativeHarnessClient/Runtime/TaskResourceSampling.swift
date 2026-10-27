@@ -92,6 +92,20 @@ protocol ProcessTableReading: Sendable {
     /// What the process has used, or nil when it cannot be read (it has ended, or belongs to
     /// another user).
     func usage(of processID: Int32) -> ProcessUsageReading?
+    /// The TCP ports the process listens on that `localhost` reaches: bound to a loopback address or
+    /// to every address. Empty when it listens on none or cannot be read.
+    func listeningPorts(of processID: Int32) -> [Int]
+    /// The values of the environment variables `names` the process started with, those it has; empty
+    /// when it cannot be read (it has ended, or belongs to another user).
+    func environment(_ names: Set<String>, of processID: Int32) -> [String: String]
+    /// The process's name, as Activity Monitor shows it.
+    func name(of processID: Int32) -> String?
+}
+
+extension ProcessTableReading {
+    func listeningPorts(of processID: Int32) -> [Int] { [] }
+    func environment(_ names: Set<String>, of processID: Int32) -> [String: String] { [:] }
+    func name(of processID: Int32) -> String? { nil }
 }
 
 /// When a sample was taken: time since boot without sleep, for the interval a CPU figure covers,
@@ -169,6 +183,14 @@ struct TaskResourceSampler {
     private var previousTotals: [ProcessKey: UInt64] = [:]
     private var previousMembers: [TaskResourceOwner: Set<ProcessKey>] = [:]
     private var previousTime: TaskResourceSampleTime?
+    /// The last sample's processes that Yardlet's own roots started, by owner, nearest the root
+    /// first: the processes a task's servers can be (`TaskServerFinder`). The roots themselves (the
+    /// harness, the shell) are left out.
+    private(set) var yardletDescendants: [TaskResourceOwner: [ProcessTableEntry]] = [:]
+    /// The last sample's process table, and the processes some root's tree took, for the servers whose
+    /// shell ended and left them to launchd.
+    private(set) var lastEntries: [ProcessTableEntry] = []
+    private(set) var claimedProcessIDs = Set<Int32>()
     /// When each root's process started, from the first sample that saw it, for as long as the root
     /// is given. A registration whose process ended unnoticed is not followed into another process
     /// that later took its ID.
@@ -197,6 +219,7 @@ struct TaskResourceSampler {
         var members: [TaskResourceOwner: [ProcessTableEntry]] = [:]
         var locations: [TaskResourceOwner: Set<TaskResourceLocation>] = [:]
         var nextRootStarts: [RootKey: Int64] = [:]
+        var descendants: [TaskResourceOwner: [ProcessTableEntry]] = [:]
         for root in roots {
             let rootKey = RootKey(processID: root.processID, owner: root.owner)
             let known = rootStarts[rootKey]
@@ -218,11 +241,17 @@ struct TaskResourceSampler {
                 index += 1
                 guard claimed.insert(processID).inserted, let process = byID[processID] else { continue }
                 tree.append(process)
+                if root.location == .yardlet, processID != root.processID {
+                    descendants[root.owner, default: []].append(process)
+                }
                 queue.append(contentsOf: children[processID] ?? [])
             }
             members[root.owner] = tree
         }
         rootStarts = nextRootStarts
+        yardletDescendants = descendants
+        lastEntries = entries
+        claimedProcessIDs = claimed
 
         var totals: [ProcessKey: UInt64] = [:]
         var memory: [TaskResourceOwner: UInt64] = [:]
@@ -449,6 +478,16 @@ struct TaskResourceRequest: Sendable {
     /// Claude tasks with a conversation another app may be running. A task's conversation counts
     /// only through its own account's `sessions` folder, as `AppModel.isHeldElsewhere` reads it.
     var claudeConversations: [ClaudeConversationReference] = []
+    /// Whether to find the ports the tasks' servers listen on (`TaskServersPreference`).
+    var findsServers = false
+    /// Each Codex task by its thread, for the servers a shared App Server runs for it.
+    var codexThreads: [String: UUID] = [:]
+}
+
+/// One sample: each owner's use, and the servers each task's processes run.
+struct TaskResourceSample: Equatable, Sendable {
+    var usages: [TaskResourceUsage] = []
+    var servers: [UUID: [TaskServerPort]] = [:]
 }
 
 /// Samples off the main actor: gathers the roots (Yardlet's registered processes, the tasks'
@@ -457,6 +496,7 @@ struct TaskResourceRequest: Sendable {
 actor TaskResourceEngine {
     private var sampler = TaskResourceSampler()
     private var averager = TaskResourceAverager()
+    private var serverFinder = TaskServerFinder()
     private var claudeSessions = ClaudeSessionRegistryReader()
     private let table: any ProcessTableReading
     private let registry: TaskProcessRegistry
@@ -476,9 +516,27 @@ actor TaskResourceEngine {
     }
 
     func sample(_ request: TaskResourceRequest) -> [TaskResourceUsage] {
+        takeSample(request).usages
+    }
+
+    /// Measures the trees and, when the request asks, finds the ports the tasks' processes listen on
+    /// (`TaskServerFinder`).
+    func takeSample(_ request: TaskResourceRequest) -> TaskResourceSample {
         let roots = roots(for: request)
         let measurements = sampler.sample(roots, table: table, at: clock())
-        return averager.update(measurements)
+        var sample = TaskResourceSample(usages: averager.update(measurements))
+        if request.findsServers {
+            var claudeTasks: [String: UUID] = [:]
+            for reference in request.claudeConversations where claudeTasks[reference.providerSessionID.lowercased()] == nil {
+                claudeTasks[reference.providerSessionID.lowercased()] = reference.taskID
+            }
+            // With no root the sampler reads no table; servers left to launchd can still be running.
+            sample.servers = serverFinder.servers(
+                descendants: sampler.yardletDescendants, entries: roots.isEmpty ? table.entries() : sampler.lastEntries,
+                claimed: sampler.claimedProcessIDs, table: table,
+                claudeSessions: claudeTasks, codexThreads: request.codexThreads)
+        }
+        return sample
     }
 
     func roots(for request: TaskResourceRequest) -> [TaskResourceRoot] {

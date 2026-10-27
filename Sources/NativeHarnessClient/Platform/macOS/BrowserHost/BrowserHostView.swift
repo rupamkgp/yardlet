@@ -50,6 +50,9 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
     var onEscape: (() -> Bool)?
     weak var accessibilitySource: BrowserAccessibilitySource?
 
+    /// Holds the page's frames and popups in the page's own points, placed and scaled where the page is drawn
+    /// (`pageFrame`): the whole view, or an emulated screen size fit into it.
+    private let pageLayer = CALayer()
     private let contentLayer = CALayer()
     private let popupLayer = CALayer()
     /// Shows the page's frames from the event pipe's queue (`MacBrowserHost.showFrames(of:in:)`).
@@ -96,11 +99,16 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
         // for a moment) stays inside it.
         clipsToBounds = true
         layer?.backgroundColor = NSColor.white.cgColor
+        pageLayer.anchorPoint = .zero
+        pageLayer.masksToBounds = true
+        pageLayer.backgroundColor = NSColor.white.cgColor
+        pageLayer.actions = ["bounds": NSNull(), "position": NSNull(), "transform": NSNull()]
+        layer?.addSublayer(pageLayer)
         for sublayer in [contentLayer, popupLayer] {
             sublayer.anchorPoint = .zero
             sublayer.contentsGravity = .topLeft
             sublayer.actions = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull(), "hidden": NSNull()]
-            layer?.addSublayer(sublayer)
+            pageLayer.addSublayer(sublayer)
         }
         popupLayer.isHidden = true
         popupLayer.zPosition = 1
@@ -137,17 +145,74 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: Viewport
 
+    /// The screen size the shown tab's page is emulated at (`BrowserTab.emulation`): the tab is drawn at it and
+    /// the view fits it in, scaled down when it is larger. Nil: the page takes the view's size.
+    var emulatedSize: CGSize? {
+        didSet {
+            guard emulatedSize != oldValue else { return }
+            placePage()
+            reportViewportIfChanged()
+        }
+    }
+
     var viewport: BrowserViewport {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         var screenX = 0.0, screenY = 0.0
+        let page = pageFrame
         if let window, let screen = window.screen ?? NSScreen.main {
-            let onScreen = window.convertToScreen(convert(bounds, to: nil))
+            let onScreen = window.convertToScreen(convert(CGRect(origin: page.origin, size: bounds.size), to: nil))
             screenX = onScreen.minX
             screenY = screen.frame.maxY - onScreen.maxY
         }
-        return BrowserViewport(width: max(1, bounds.width.rounded()), height: max(1, bounds.height.rounded()),
+        let size = emulatedSize ?? bounds.size
+        return BrowserViewport(width: max(1, size.width.rounded()), height: max(1, size.height.rounded()),
                                scale: scale, screenX: screenX, screenY: screenY,
                                framesPerSecond: window?.screen.map { max(1, $0.maximumFramesPerSecond) })
+    }
+
+    /// Where the page is drawn in the view and at what scale: the whole view, or an emulated size scaled down to
+    /// fit, across the middle and from the top (`BrowserViewportEmulation.pageFrame`).
+    var pageFrame: (origin: CGPoint, scale: CGFloat) {
+        guard let emulatedSize else { return (.zero, 1) }
+        return BrowserViewportEmulation.pageFrame(for: emulatedSize, in: bounds.size)
+    }
+
+    /// A point in the view as the page's own (its CSS pixels at zoom 1).
+    func pagePoint(_ point: NSPoint) -> NSPoint {
+        let page = pageFrame
+        return NSPoint(x: (point.x - page.origin.x) / page.scale, y: (point.y - page.origin.y) / page.scale)
+    }
+
+    /// A rectangle in the page's points as the view shows it.
+    func viewRect(_ rect: NSRect) -> NSRect {
+        let page = pageFrame
+        return NSRect(x: page.origin.x + rect.minX * page.scale, y: page.origin.y + rect.minY * page.scale,
+                      width: rect.width * page.scale, height: rect.height * page.scale)
+    }
+
+    /// Places the page's layer where `pageFrame` says, with the space around an emulated size in the gray macOS
+    /// puts behind a page (Preview's).
+    private func placePage() {
+        let page = pageFrame
+        let size = emulatedSize ?? bounds.size
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pageLayer.bounds = CGRect(origin: .zero, size: size)
+        pageLayer.position = page.origin
+        pageLayer.setAffineTransform(CGAffineTransform(scaleX: page.scale, y: page.scale))
+        var backdrop = NSColor.white.cgColor
+        var edge: CGColor?
+        if emulatedSize != nil {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                backdrop = NSColor.underPageBackgroundColor.cgColor
+                edge = NSColor.separatorColor.cgColor
+            }
+        }
+        layer?.backgroundColor = backdrop
+        // One point around the page, whatever its scale.
+        pageLayer.borderColor = edge
+        pageLayer.borderWidth = edge == nil ? 0 : 1 / max(page.scale, 0.01)
+        CATransaction.commit()
     }
 
     /// Nobody can see the view: it has no window, its window is miniaturized, covered, on another
@@ -169,7 +234,13 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
 
     override func layout() {
         super.layout()
+        placePage()
         reportViewportIfChanged()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        placePage()
     }
 
     override func viewDidMoveToWindow() {
@@ -362,7 +433,7 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
     /// follows, so inertia continues in the page; mouse wheels send line deltas.
     override func scrollWheel(with event: NSEvent) {
         guard let tabID else { return }
-        let point = convert(event.locationInWindow, from: nil)
+        let point = pagePoint(convert(event.locationInWindow, from: nil))
         var deltaX = event.scrollingDeltaX
         var deltaY = event.scrollingDeltaY
         var modifiers = Self.modifiers(event.modifierFlags)
@@ -394,7 +465,10 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
 
     private func sendMouse(_ kind: BrowserMouseInput.Kind, _ button: BrowserMouseButton?, _ event: NSEvent) {
         guard let tabID else { return }
-        let point = convert(event.locationInWindow, from: nil)
+        let point = pagePoint(convert(event.locationInWindow, from: nil))
+        // A press beside an emulated screen size is not on the page.
+        if kind == .down, emulatedSize != nil, let size = emulatedSize,
+           !CGRect(origin: .zero, size: size).contains(point) { return }
         var modifiers = Self.modifiers(event.modifierFlags)
         let pressed = NSEvent.pressedMouseButtons
         if kind != .up {
@@ -440,7 +514,7 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func sendDrag(_ phase: BrowserDragInput.Phase, _ sender: any NSDraggingInfo, files: [String], tab: BrowserTabID) {
-        let point = convert(sender.draggingLocation, from: nil)
+        let point = pagePoint(convert(sender.draggingLocation, from: nil))
         var allowed: BrowserDragOperations = []
         let mask = sender.draggingSourceOperationMask
         if mask.contains(.copy) { allowed.insert(.copy) }
@@ -718,7 +792,7 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
             rect = NSRect(x: 0, y: 0, width: 0, height: 20)
         }
         guard let window else { return .zero }
-        return window.convertToScreen(convert(rect, to: nil))
+        return window.convertToScreen(convert(viewRect(rect), to: nil))
     }
 
     override func doCommand(by selector: Selector) {
@@ -729,7 +803,8 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: Context menu
 
-    /// Yardlet's own items after the page's (the vault's "Add to Password Manager…" and "Make a Yardlet Passkey").
+    /// Yardlet's own items after the page's (the vault's "Add to Password Manager…" and "Make a Yardlet Passkey", and
+    /// "Import Sign-ins from Another Browser…").
     var extraContextMenuItems: (() -> [(title: String, action: () -> Void)])?
     private var extraMenuAction: (() -> Void)?
 
@@ -764,7 +839,8 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
         // Show after the current event finishes; popUp runs its own tracking loop.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            menu.popUp(positioning: nil, at: NSPoint(x: contextMenu.x, y: contextMenu.y), in: self)
+            menu.popUp(positioning: nil, at: self.viewRect(NSRect(x: contextMenu.x, y: contextMenu.y, width: 0, height: 0)).origin,
+                       in: self)
             let chosen = self.menuCommand
             self.menuCommand = nil
             self.sendCommand?(.contextMenuResult(tab: tabID, menu: contextMenu.id, commandID: chosen))

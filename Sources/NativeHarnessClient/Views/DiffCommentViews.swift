@@ -67,13 +67,14 @@ struct DiffCommentCard: View {
     @ViewBuilder
     private var editor: some View {
         TextField(L10n.string("Add a comment…"), text: $editedText, axis: .vertical)
-            .textFieldStyle(.plain)
-            .font(.system(size: 12.5 * interfaceScale))
-            .lineLimit(1...12)
+            .lineLimit(1...)
             .focused($isFocused)
             .onSubmit(save)
             .onExitCommand(perform: cancel)
             .accessibilityLabel(title)
+            .scrollsPastLines(12)
+            .textFieldStyle(.plain)
+            .font(.system(size: 12.5 * interfaceScale))
         editorButtons
     }
 

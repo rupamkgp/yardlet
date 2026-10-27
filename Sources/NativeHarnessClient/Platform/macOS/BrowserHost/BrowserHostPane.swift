@@ -40,6 +40,12 @@ final class BrowserHostPaneController {
     /// error code, until the page loads again.
     private(set) var crash: BrowserTabCrash?
     private(set) var isAgentDriving = false
+    /// The screen size the shown tab's page is emulated at, and who chose it (`BrowserTab.emulation`), for the
+    /// Viewport menu.
+    private(set) var emulation: BrowserViewportEmulation?
+    /// The agent handed the shown tab to the person and waits for their answer (`BrowserTab.handoff`): a bar over the
+    /// page with its reason, Done and Decline.
+    private(set) var handoff: BrowserHandoff?
     /// What the shown tab's page asks permission for (`BrowserTab.permissionPrompt`): Chrome's permission
     /// bubble, as a bar over the page.
     private(set) var permissionPrompt: BrowserPermissionPrompt?
@@ -56,6 +62,8 @@ final class BrowserHostPaneController {
     var isVaultFilling = false
     var isMakingPasskey = false
     var vaultDraft: BrowserVaultDraft?
+    /// "Import Sign-ins from Another Browser…" from the page's menu, while its sheet is open.
+    var loginImport: BrowserLoginImportRequest?
     /// Two-factor codes (§14): a code field to fill the current code into; a setup QR code to save.
     var vaultCodeOffer: BrowserVaultCodeOffer?
     var vaultSetupOffer: BrowserVaultSetupOffer?
@@ -226,10 +234,18 @@ final class BrowserHostPaneController {
         stopAccessibility(sendingDisable: true)
         // The keyboard focus stays with the view for the next tab; this page no longer has it.
         if view?.hasKeyboardFocus == true { tab.send(.focus(tab: tab.id, isFocused: false)) }
-        if let view { MacBrowserHost.shared.stopShowingFrames(of: tab.id, in: view.frameDisplay) }
+        if let view {
+            MacBrowserHost.shared.stopShowingFrames(of: tab.id, in: view.frameDisplay)
+            MacBrowserHost.shared.panelStopsShowing(tab.id, in: view)
+        }
         client.detachPanel(from: tab, occluded: isPanelOccluded)
         tab.eventHandler = nil
         tab.onAgentActivity = nil
+        tab.onEmulationChange = nil
+        tab.onHandoffChange = nil
+        emulation = nil
+        handoff = nil
+        view?.emulatedSize = nil
         releaseVault(tab)
         isPanelOccluded = false
         self.tab = nil
@@ -245,7 +261,10 @@ final class BrowserHostPaneController {
 
     func retry() {
         clearError()
-        if let tab {
+        if let tab, tab.openFailure != nil {
+            // The host could not open the tab: it opens again in its place.
+            reopen(tab)
+        } else if let tab {
             tab.send(.navigation(tab: tab.id, action: .reload))
         } else {
             view?.clear()
@@ -267,10 +286,22 @@ final class BrowserHostPaneController {
         alwaysAllowExternalApp = false
         blockedPopups = tab.blockedPopups
         clearError()
+        // A tab the host could not open says why, though it failed before this panel showed it.
+        if let failure = tab.openFailure { errorMessage = Self.message(for: failure) }
         findResult = nil
         isFindVisible = false
         tab.eventHandler = { [weak self] event in self?.handle(event) }
         tab.onAgentActivity = { [weak self] in self?.agentUsedBrowser() }
+        tab.onEmulationChange = { [weak self, weak tab] in
+            guard let self, let tab, self.tab === tab else { return }
+            self.showEmulation(of: tab)
+        }
+        showEmulation(of: tab)
+        tab.onHandoffChange = { [weak self, weak tab] in
+            guard let self, let tab, self.tab === tab else { return }
+            self.showHandoff(of: tab)
+        }
+        showHandoff(of: tab)
         adoptVault(tab, in: view)
         view.tabID = tab.id
         view.isPasswordFieldFocused = tab.isPasswordFieldFocused
@@ -285,11 +316,41 @@ final class BrowserHostPaneController {
         client.attachPanel(to: tab)
         isPanelOccluded = false
         if view.isOccluded { panelOcclusionChanged(true) }
+        // Chromium's window over this tab (a passkey dialog) shows over this panel.
+        MacBrowserHost.shared.panelShows(tab.id, in: view)
         view.resendViewport()
         // A tab opened again shows the page it opens before the page reports its address.
         showAddress(tab.currentURL ?? workspace.browserTabs.tab(key)?.address ?? "")
         // The person closed this tab while another showed, and its page asks first: the panel brought it here to ask.
         if let question = tab.closeQuestion { presentJavaScriptDialog(question) }
+    }
+
+    // MARK: Screen sizes
+
+    /// The view draws the tab at its emulated size, or at the view's own.
+    private func showEmulation(of tab: BrowserTab) {
+        emulation = tab.emulation
+        view?.emulatedSize = tab.emulation.map { CGSize(width: $0.width, height: $0.height) }
+    }
+
+    /// The person's Viewport menu: a size the page is shown at until they or the agent change it, or the panel's own
+    /// size again (Responsive, nil).
+    func setViewport(_ preset: BrowserViewportEmulation.Preset?) {
+        guard let tab else { return }
+        Task { try? await tab.emulate(preset.map { BrowserViewportEmulation($0, owner: .person) }) }
+    }
+
+    // MARK: Handing the tab to the person
+
+    private func showHandoff(of tab: BrowserTab) {
+        handoff = tab.handoff?.answer == nil ? tab.handoff : nil
+    }
+
+    /// The person's Done or Decline in the handoff bar: the agent's wait reads it, and the notification goes.
+    func answerHandoff(_ answer: BrowserHandoff.Answer) {
+        guard let tab, let handoff = tab.handoff else { return }
+        tab.answerHandoff(answer)
+        MacAgentToolService.shared.broker.handoffs?.handoffEnded(notice: BrowserAgentTools.handoffNotice(handoff.id))
     }
 
     // MARK: A page that does not respond
@@ -314,7 +375,13 @@ final class BrowserHostPaneController {
     /// Opens the page again in place of the stuck one (its renderer ended first when Chromium holds it).
     func reloadUnresponsivePage() {
         guard let tab else { return }
-        let address = tab.lastPageURL ?? workspace.browserTabs.tab(key)?.address ?? "about:blank"
+        reopen(tab)
+    }
+
+    /// Opens the tab again in its place, under the same side-panel tab, at `url` or its page: a stuck page,
+    /// or a tab the host could not open.
+    private func reopen(_ tab: BrowserTab, at url: String? = nil) {
+        let address = url ?? tab.lastPageURL ?? workspace.browserTabs.tab(key)?.address ?? "about:blank"
         do {
             try client.replace(tab, url: address.isEmpty ? "about:blank" : address)
         } catch {
@@ -359,6 +426,7 @@ final class BrowserHostPaneController {
         guard let tab, occluded != isPanelOccluded else { return }
         isPanelOccluded = occluded
         client.setPanelOccluded(occluded, on: tab)
+        MacBrowserHost.shared.chromiumWindows.present()
     }
 
     // MARK: Navigation
@@ -368,7 +436,9 @@ final class BrowserHostPaneController {
         do {
             let url = try BrowserURLPolicy.addressFieldURL(addressInput)
             errorMessage = nil
-            if let tab {
+            if let tab, tab.openFailure != nil {
+                reopen(tab, at: url)
+            } else if let tab {
                 tab.notePersonInput()
                 tab.send(.navigate(tab: tab.id, url: url))
             } else {
@@ -386,6 +456,7 @@ final class BrowserHostPaneController {
 
     func navigate(_ action: BrowserNavigationAction) {
         guard let tab else { return }
+        if action == .reload, tab.openFailure != nil { return retry() }
         tab.notePersonInput()
         if action == .reload { errorMessage = nil }
         tab.send(.navigation(tab: tab.id, action: action))
@@ -607,9 +678,9 @@ final class BrowserHostPaneController {
             findResult = result
         case .accessibilityTree, .accessibilityLocations, .scrollOffset:
             accessibility?.handle(event)
-        case .failed(let message, _):
-            // The tab could not be created, or the host failed as a whole.
-            errorMessage = message
+        case .failed(let message, let failed, let limit):
+            // The tab could not open (Try again opens it again in its place), or the host failed as a whole.
+            errorMessage = failed == nil ? message : Self.message(for: BrowserTabOpenFailure(message: message, limit: limit))
             errorAddress = nil
         case .terminated(let reason):
             picker = nil
@@ -888,6 +959,13 @@ final class BrowserHostPaneController {
         }
     }
 
+    /// What the error card says of a tab the host could not open.
+    static func message(for failure: BrowserTabOpenFailure) -> String {
+        failure.limit != nil
+            ? L10n.string("The browser has too many tabs open. Close a tab in this or another task, then try again.")
+            : L10n.format("This tab could not open: %@", failure.message)
+    }
+
     private static func message(for error: Error) -> String {
         switch error as? BrowserURLPolicy.AddressError {
         case .blockedScheme(let scheme):
@@ -956,6 +1034,7 @@ struct BrowserHostPane: View {
                         .accessibilityLabel(L10n.string("The agent is using this browser"))
                 }
                 if controller.hasTab {
+                    settingsMenu
                     ParityIconButton(systemName: "arrow.up.forward.app", help: L10n.string("Open externally")) {
                         controller.openExternally()
                     }
@@ -984,6 +1063,7 @@ struct BrowserHostPane: View {
                     errorState(title: L10n.string("Page unavailable"), message: errorMessage, action: L10n.string("Try again"))
                 }
                 VStack(spacing: 0) {
+                    if let handoff = controller.handoff { handoffBar(handoff) }
                     if controller.isUnresponsive { unresponsiveBar }
                     if let prompt = controller.permissionPrompt { permissionBar(prompt) }
                     if let question = controller.externalAppQuestion { externalAppBar(question) }
@@ -1016,12 +1096,105 @@ struct BrowserHostPane: View {
                 controller.vaultDraft = nil
             }
         }
+        .sheet(item: $controller.loginImport) { request in
+            BrowserLoginImportSheet(request: request) { profile, sites in
+                try await controller.importLogins(from: profile, sites: sites)
+            } onDone: {
+                controller.loginImport = nil
+            }
+        }
         .onAppear {
             controller.onNewTab = onNewTab
             controller.onCloseTab = onCloseTab
             controller.onShowTab = onShowTab
             controller.onPickElement = onPickElement
         }
+    }
+
+    /// The Claude app's Browser pane settings menu and its Viewport submenu: the panel's own size (Responsive), two
+    /// desktop sizes, a phone and a tablet, and the size in use when it is none of them; one the agent set says so.
+    private var settingsMenu: some View {
+        Menu {
+            Menu(L10n.string("Viewport")) {
+                Picker(L10n.string("Viewport"), selection: viewportSelection) {
+                    Text(viewportTitle(L10n.string("Responsive"), id: "responsive")).tag("responsive")
+                    ForEach(Self.viewportPresets, id: \.preset.id) { item in
+                        Text(viewportTitle(item.title, id: item.preset.id)).tag(item.preset.id)
+                    }
+                    if let emulation = controller.emulation, emulation.preset == nil {
+                        Text(viewportTitle(L10n.format("Custom (%@)", Self.size(emulation.width, emulation.height)), id: "custom"))
+                            .tag("custom")
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .parityPointer()
+        .accessibilityLabel(L10n.string("Browser settings"))
+        .help(L10n.string("Browser settings"))
+    }
+
+    private static let viewportPresets: [(title: String, preset: BrowserViewportEmulation.Preset)] = [
+        (size(1280, 800), BrowserViewportEmulation.laptop),
+        (size(1024, 768), BrowserViewportEmulation.computer),
+        (L10n.format("Mobile (%@)", size(375, 812)), BrowserViewportEmulation.mobile),
+        (L10n.format("Tablet (%@)", size(768, 1024)), BrowserViewportEmulation.tablet)
+    ]
+
+    private static func size(_ width: Int, _ height: Int) -> String {
+        L10n.format("%@ × %@", String(width), String(height))
+    }
+
+    /// The selected row says when the agent chose it, as the Claude app's "Set by Claude".
+    private func viewportTitle(_ title: String, id: String) -> String {
+        guard controller.emulation?.owner == .agent, viewportSelection.wrappedValue == id else { return title }
+        return L10n.format("%@ · Set by the agent", title)
+    }
+
+    private var viewportSelection: Binding<String> {
+        Binding {
+            guard let emulation = controller.emulation else { return "responsive" }
+            return emulation.preset?.id ?? "custom"
+        } set: { id in
+            guard id != "custom" else { return }
+            controller.setViewport(Self.viewportPresets.first { $0.preset.id == id }?.preset)
+        }
+    }
+
+    /// The agent handed this tab to the person (`browser_handoff`): what it asks, and the answers it waits for.
+    private func handoffBar(_ handoff: BrowserHandoff) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "hand.point.up.left").foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.string("The agent handed this tab to you"))
+                    .font(.callout.weight(.semibold))
+                Text(handoff.reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Button(L10n.string("Decline")) { controller.answerHandoff(.declined) }
+                .controlSize(.small).parityPointer()
+            Button(L10n.string("I'm done")) { controller.answerHandoff(.done) }
+                .controlSize(.small).parityProminentButton().parityPointer()
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ParityTheme.subtleFill)
+        .background(.background)
+        .overlay(alignment: .bottom) { Rectangle().fill(ParityTheme.separator).frame(height: 1) }
+        .accessibilityElement(children: .contain)
     }
 
     /// Chrome's "Page Unresponsive", with its Wait and a Reload in place of Exit pages.

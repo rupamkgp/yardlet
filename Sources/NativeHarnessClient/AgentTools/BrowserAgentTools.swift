@@ -1,6 +1,17 @@
 import Foundation
 import YardletAgentTools
 
+/// The app's side of `browser_handoff`: it shows the handed-over tab in the task's panel and tells the person, and
+/// takes the notice back when the handoff ends.
+@MainActor
+protocol BrowserHandoffPresenting: AnyObject {
+    /// `notice` names this handoff's notification.
+    func handoffStarted(session: UUID, tabKey: UUID?, reason: String, notice: String)
+    func handoffEnded(notice: String)
+    /// The longest one call from the task's harness may wait (`SessionToolPolicy.waitCeiling`).
+    func handoffWaitCeiling(for session: UUID) -> Duration
+}
+
 struct BrowserAgentToolError: Error, Equatable {
     var message: String
 
@@ -38,10 +49,22 @@ final class BrowserAgentTools {
     var passkeyGeneration = 0
     /// Pages holding an armed passkey (weakly).
     var pagesWithPasskeys: [ObjectIdentifier: () -> BrowserAgentPage?] = [:]
+    /// The app, which shows a handed-over tab and tells the person; nil (tests) hands over without telling anyone.
+    weak var handoffs: (any BrowserHandoffPresenting)?
+    /// How long `browser_handoff` waits when the call does not say.
+    static let handoffDefaultWait: Duration = .seconds(600)
+    /// The notifications of each task's handoffs not ended yet, which go when its turn ends.
+    private var handoffNotices: [UUID: Set<String>] = [:]
 
     /// Tools that still work while a JavaScript dialog pauses the page.
     private static let usableDuringDialog: Set<String> = [
         AgentToolCatalog.handleDialog, AgentToolCatalog.fileUpload, AgentToolCatalog.consoleMessages
+    ]
+    /// Tools that send the page input events (CDP `Input.*`), which Chromium drops while a window of its own is over
+    /// the tab, as Chrome does under a tab's dialog: what each sends.
+    private static let inputTools: [String: String] = [
+        AgentToolCatalog.click: "click", AgentToolCatalog.type: "typing", AgentToolCatalog.pressKey: "key press",
+        AgentToolCatalog.scroll: "scroll"
     ]
 
     /// The tools over a task's tab directory (the app's `BrowserAgentTabs`).
@@ -75,6 +98,15 @@ final class BrowserAgentTools {
         closePage(sessionID)
     }
 
+    /// The task's turn ended: what the agent set on its tabs for the turn goes (screen sizes, color schemes).
+    func taskTurnEnded(_ sessionID: UUID) async {
+        for notice in handoffNotices.removeValue(forKey: sessionID) ?? [] { handoffs?.handoffEnded(notice: notice) }
+        await directory?.endAgentEmulation(for: sessionID)
+    }
+
+    /// The notification of a handoff, by its id.
+    static func handoffNotice(_ id: UUID) -> String { "yardlet-handoff-\(id.uuidString)" }
+
     func run(tool: String, arguments: JSONValue, sessionID: UUID) async -> AgentToolResult {
         guard AgentToolCatalog.definition(named: tool) != nil || VaultToolCatalog.definition(named: tool) != nil else {
             return .error("Unknown Yardlet tool: \(tool)")
@@ -90,20 +122,25 @@ final class BrowserAgentTools {
         return vaultScrub.scrub(result)
     }
 
-    /// A page tool on the tab it names. browser_navigate on a tab whose page does not respond opens the
-    /// page in its place first (`BrowserAgentTabDirectory.replace`), since the stuck page cannot move.
+    /// A page tool on the tab it names. browser_navigate on a tab whose page does not respond, or that the
+    /// host could not open, opens the tab in its place first (`BrowserAgentTabDirectory.replace`), since
+    /// that page cannot move.
     private func runOnPage(_ tool: String, _ arguments: JSONValue, sessionID: UUID) async
         -> (result: AgentToolResult, page: BrowserAgentPage?) {
         switch await page(for: sessionID, arguments) {
         case .success(var page):
             var replaced: String?
-            if tool == AgentToolCatalog.navigate, let stuck = page.unresponsive(), let directory {
+            let stuck = page.unresponsive(), unopened = page.openFailure()
+            if tool == AgentToolCatalog.navigate, stuck != nil || unopened != nil, let directory {
                 do {
                     let old = page.tabID
                     page = try directory.replace(String(old), for: sessionID)
                     page.workspaceRoots = workspaceRoots(sessionID)
-                    replaced = "Tab \(old)'s page was not responding (\(Self.describe(stuck))); the tab was opened again in its "
-                        + "place as tabId \"\(page.tabID)\", and the address loaded there."
+                    replaced = stuck.map {
+                        "Tab \(old)'s page was not responding (\(Self.describe($0))); the tab was opened again in its "
+                            + "place as tabId \"\(page.tabID)\", and the address loaded there."
+                    } ?? "Tab \(old) could not open (\(unopened?.message ?? "")); the tab was opened again in its place as "
+                        + "tabId \"\(page.tabID)\"."
                 } catch let error as BrowserAgentToolError {
                     return (.error(error.message), page)
                 } catch {
@@ -151,13 +188,16 @@ final class BrowserAgentTools {
                     ? "The task's browser panel is open and shows the active tab; other tabs run in the background."
                     : "The task's browser panel is closed: the pages still work, as background pages, so timing and "
                         + "animation can be off. Prefer browser_snapshot to screenshots for reading them."
-                let stuck = tabs.filter { !$0.isResponding && $0.crash == nil }.map(\.id)
+                let stuck = tabs.filter { !$0.isResponding && $0.crash == nil && $0.openFailure == nil }.map(\.id)
                 let stuckNote = stuck.isEmpty ? "" : "\nNot responding: tab " + stuck.joined(separator: ", tab ")
                     + " (its page's renderer is busy; browser_navigate opens a page again in its place, browser_tab_close closes it)."
                 let crashed = tabs.compactMap { tab in tab.crash.map { "tab \(tab.id) (\($0))" } }
                 let crashNote = crashed.isEmpty ? "" : "\nCrashed: " + crashed.joined(separator: ", ")
                     + " (its page's renderer ended; browser_navigate opens a page again in its place, browser_tab_close closes it)."
-                return .text(Self.json(listing) + "\n" + note + stuckNote + crashNote)
+                let unopened = tabs.compactMap { tab in tab.openFailure.map { "tab \(tab.id) (\($0))" } }
+                let unopenedNote = unopened.isEmpty ? "" : "\nCould not open: " + unopened.joined(separator: ", ")
+                    + " (it has no page; browser_navigate opens it again in its place, browser_tab_close closes it)."
+                return .text(Self.json(listing) + "\n" + note + stuckNote + crashNote + unopenedNote)
             case AgentToolCatalog.tabNew:
                 let foreground = arguments["foreground"]?.boolValue ?? false
                 let tab = try directory.newTab(for: sessionID, foreground: foreground)
@@ -193,13 +233,21 @@ final class BrowserAgentTools {
         if let dialog = page.dialog, !Self.usableDuringDialog.contains(tool) {
             return .error("\(Self.describe(dialog)) The page is paused until you answer it with browser_handle_dialog.")
         }
+        // Input the tab would drop is not sent and does not read as done; reading the page and moving it still work.
+        if let input = Self.inputTools[tool] {
+            let over = browserDialogs(sessionID).own.filter { $0.tab == page.tabID }
+            if !over.isEmpty {
+                return .error("The \(input) was not sent to tab \(page.tabID). " + Self.describeBrowserDialog(over)
+                    + " browser_handle_dialog with accept false closes it; " + Self.closeOutcome(over) + ".")
+            }
+        }
         do {
             // Answering a dialog or a file chooser needs no CDP, and CDP waits while a dialog is open.
             if page.dialog == nil, tool != AgentToolCatalog.handleDialog, tool != AgentToolCatalog.fileUpload {
                 try await enableDomains(page)
             }
             var result = try await perform(tool, arguments, on: page, sessionID: sessionID)
-            result.content += notices(after: tool, on: page).map { .text($0) }
+            result.content += notices(after: tool, on: page, sessionID: sessionID).map { .text($0) }
             if let note = unresponsiveNote(page) { result.content.append(.text(note)) }
             return result
         } catch is BrowserAgentDialogOpened {
@@ -207,15 +255,26 @@ final class BrowserAgentTools {
             return .text("\(dialog) It opened during \(tool). The page is paused until you answer it with "
                 + "browser_handle_dialog.")
         } catch let error as BrowserAgentToolError {
-            return .error(error.message + browserDialogNote(after: tool) + (unresponsiveNote(page).map { "\n" + $0 } ?? ""))
+            return failure(error.message, after: tool, on: page, sessionID: sessionID)
         } catch {
-            return .error(Self.describe(error) + browserDialogNote(after: tool) + (unresponsiveNote(page).map { "\n" + $0 } ?? ""))
+            return failure(Self.describe(error), after: tool, on: page, sessionID: sessionID)
         }
     }
 
-    /// What is known when the tab's page does not respond or its renderer ended: a fact, with the tools
-    /// that act on the tab.
+    /// A page tool's failure, with what is known of the tab. A tab the host could not open failed for that
+    /// alone: its calls are refused, which would otherwise read as a browser that is not running.
+    private func failure(_ message: String, after tool: String, on page: BrowserAgentPage, sessionID: UUID?) -> AgentToolResult {
+        if page.openFailure() != nil, let note = unresponsiveNote(page) { return .error(note) }
+        return .error(message + browserDialogNote(after: tool, sessionID: sessionID) + (unresponsiveNote(page).map { "\n" + $0 } ?? ""))
+    }
+
+    /// What is known when the tab's page does not respond, its renderer ended, or the host could not open
+    /// it: a fact, with the tools that act on the tab.
     private func unresponsiveNote(_ page: BrowserAgentPage) -> String? {
+        if let unopened = page.openFailure() {
+            return "This tab could not open: \(unopened.message). It has no page. browser_navigate opens it again in its "
+                + "place; browser_tab_close closes the tab."
+        }
         if let stuck = page.unresponsive() {
             return "This tab's page is not responding: \(Self.describe(stuck)). The browser host and the tab are open; "
                 + "a tab the panel does not show still answers. browser_navigate opens a page again in its place; "
@@ -237,15 +296,26 @@ final class BrowserAgentTools {
         }
     }
 
-    /// A failed tool still says that a window of Chromium's own waits: it is often why a page stopped.
-    private func browserDialogNote(after tool: String) -> String {
-        guard let windows = directory?.browserDialogs, !windows.isEmpty, tool != AgentToolCatalog.handleDialog else { return "" }
-        return "\n" + Self.describeBrowserDialog(windows) + " browser_handle_dialog with accept false closes it."
+    /// Chromium's windows over the task's tabs, and those whose tab is not known; none without a task (tests).
+    private func browserDialogs(_ sessionID: UUID?) -> (own: [BrowserChromiumWindow], unknownTab: [BrowserChromiumWindow]) {
+        guard let sessionID, let directory else { return ([], []) }
+        return directory.browserDialogs(for: sessionID)
+    }
+
+    /// A failed tool still says that a window of Chromium's own waits over one of the task's tabs: it is often why
+    /// a page stopped. So may one whose tab is not known (the print dialog), which may be another task's.
+    private func browserDialogNote(after tool: String, sessionID: UUID?) -> String {
+        guard tool != AgentToolCatalog.handleDialog else { return "" }
+        let (own, unknownTab) = browserDialogs(sessionID)
+        var notes: [String] = []
+        if !own.isEmpty { notes.append(Self.describeBrowserDialog(own) + " browser_handle_dialog with accept false closes it.") }
+        if !unknownTab.isEmpty { notes.append(Self.describeUnknownTabDialog(unknownTab)) }
+        return notes.map { "\n" + $0 }.joined()
     }
 
     /// What the page did besides the tool's own result: a dialog or file chooser now waiting, or an
     /// address the policy refused.
-    private func notices(after tool: String, on page: BrowserAgentPage) -> [String] {
+    private func notices(after tool: String, on page: BrowserAgentPage, sessionID: UUID?) -> [String] {
         var notices: [String] = []
         let blocked = page.takeBlockedNavigations()
         if !blocked.isEmpty {
@@ -264,9 +334,11 @@ final class BrowserAgentTools {
         for request in page.takeExternalApps() {
             notices.append(Self.describe(request))
         }
-        if let windows = directory?.browserDialogs, !windows.isEmpty, tool != AgentToolCatalog.handleDialog {
-            notices.append(Self.describeBrowserDialog(windows) + " browser_handle_dialog with accept false closes it; "
-                + Self.closeOutcome(windows) + ".")
+        // Only the task's own: another task's window is over that task's tab, not this one's.
+        let own = browserDialogs(sessionID).own
+        if !own.isEmpty, tool != AgentToolCatalog.handleDialog {
+            notices.append(Self.describeBrowserDialog(own) + " browser_handle_dialog with accept false closes it; "
+                + Self.closeOutcome(own) + ".")
         }
         if let dialog = page.dialog, tool != AgentToolCatalog.handleDialog {
             notices.append("\(Self.describe(dialog)) Answer it with browser_handle_dialog.")
@@ -283,25 +355,48 @@ final class BrowserAgentTools {
         return notices
     }
 
-    /// Chromium's own windows over the browser panel, which wait for the person: the passkey dialog, a site's
-    /// sign-in window (HTTP authentication), the print dialog.
+    /// Chromium's own windows over the task's tabs, which wait for the person: the passkey dialog, a site's sign-in
+    /// window (HTTP authentication). Chromium ties each to its tab, as Chrome does: the person sees it over the tab
+    /// where a panel shows the tab, and the tab takes no input meanwhile.
     static func describeBrowserDialog(_ windows: [BrowserChromiumWindow]) -> String {
-        kinds(of: windows).map { kind in
+        let described = kinds(of: windows).map { kind in
             let named = name(of: kind, in: windows)
             let name = named.prefix(1).uppercased() + named.dropFirst()
+            let place = Self.over(windows.filter { $0.kind == kind })
             return switch kind {
             case .passkey:
-                "\(name) is open over the browser: it waits for the person at this Mac (a passkey, a phone's QR code or a security "
+                "\(name) is open \(place): it waits for the person at this Mac (a passkey, a phone's QR code or a security "
                     + "key, or a note that none is available), and the page's request waits until it closes."
             case .signIn:
-                "\(name) is open over the browser: it asks the person at this Mac for a username and password, and the page waits "
+                "\(name) is open \(place): it asks the person at this Mac for a username and password, and the page waits "
                     + "until it closes."
             case .print:
-                "\(name) is open over the browser: it waits for the person at this Mac, and the page waits until it closes."
+                "\(name) is open \(place): it waits for the person at this Mac, and the page waits until it closes."
             case .other:
-                "\(name) is open over the browser and waits for the person at this Mac."
+                "\(name) is open \(place) and waits for the person at this Mac."
             }
-        }.joined(separator: " ")
+        }
+        let tabs = windows.contains { $0.tab != nil }
+        return (described + (tabs ? ["Chromium ignores input to that tab until it closes. The person sees it only while this task's "
+            + "browser panel shows that tab; browser_handoff shows the tab to the person."] : [])).joined(separator: " ")
+    }
+
+    /// "over tab 32", "over tabs 32 and 39".
+    private static func over(_ windows: [BrowserChromiumWindow]) -> String {
+        let tabs = Array(Set(windows.compactMap(\.tab))).sorted().map(String.init)
+        return switch tabs.count {
+        case 0: "over the browser"
+        case 1: "over tab \(tabs[0])"
+        default: "over tabs \(tabs.dropLast().joined(separator: ", ")) and \(tabs.last!)"
+        }
+    }
+
+    /// Chromium's windows whose tab the browser does not know (the print dialog runs without one): they may be
+    /// another task's, and only the person closes them.
+    static func describeUnknownTabDialog(_ windows: [BrowserChromiumWindow]) -> String {
+        let names = kinds(of: windows).map { name(of: $0, in: windows) }.joined(separator: " and ")
+        return names.prefix(1).uppercased() + names.dropFirst() + " is open in the browser, and which tab opened it is not known, "
+            + "so it may be another task's. It waits for the person at this Mac, who alone can close it."
     }
 
     /// What closing those windows does to the page.
@@ -373,8 +468,10 @@ final class BrowserAgentTools {
         case AgentToolCatalog.screenshot: try await screenshot(arguments, on: page)
         case AgentToolCatalog.consoleMessages: consoleMessages(arguments, on: page)
         case AgentToolCatalog.evaluate: try await evaluate(arguments, on: page)
-        case AgentToolCatalog.handleDialog: try handleDialog(arguments, on: page)
+        case AgentToolCatalog.handleDialog: try handleDialog(arguments, on: page, sessionID: sessionID)
         case AgentToolCatalog.fileUpload: try fileUpload(arguments, on: page)
+        case AgentToolCatalog.resize: try await resize(arguments, on: page)
+        case AgentToolCatalog.handoff: try await handOff(arguments, on: page, sessionID: sessionID)
         default: throw BrowserAgentToolError("Unknown Yardlet tool: \(tool)")
         }
     }
@@ -385,6 +482,8 @@ final class BrowserAgentTools {
         for domain in ["Page", "Runtime", "Log"] {
             _ = try await send(page, "\(domain).enable")
         }
+        // Frames from other sites (a payment form, an embedded sign-in) answer on sessions of their own.
+        try? await page.cdp.attachFrames()
         page.domainsEnabled = true
     }
 
@@ -445,11 +544,71 @@ final class BrowserAgentTools {
 
     private func snapshot(on page: BrowserAgentPage) async throws -> AgentToolResult {
         let mark = page.cdp.eventLog.count
-        let tree = try await send(page, "Accessibility.getFullAXTree")
-        let rendered = BrowserAgentSnapshot.render(nodes: tree["nodes"]?.arrayValue ?? [])
-        page.replaceRefs(rendered.refs, eventMark: mark)
+        let read = try await readFrames(page)
+        let rendered = BrowserAgentSnapshot.render(frames: read.frames)
+        page.replaceRefs(rendered.refs, frameOwners: read.owners, eventMark: mark)
         let location = try await pageLocation(page)
         return .text("Page URL: \(location.url)\nPage title: \(location.title)\n\n\(rendered.text)")
+    }
+
+    /// How long one frame's tree may take; a frame that does not answer in time is left out of the snapshot.
+    private static let frameTimeout: Duration = .seconds(5)
+
+    /// The page's accessibility trees, frame by frame (Chromium gives each document its own): the main frame, the
+    /// frames that render in its process (by `frameId`), and each frame from another site on its own session
+    /// (`BrowserFrameSession`) with the frames of its process. Each frame is placed under the iframe that holds it
+    /// (`DOM.getFrameOwner`), and `owners` keeps where each other-site frame's iframe is, for its coordinates.
+    private func readFrames(_ page: BrowserAgentPage) async throws
+        -> (frames: [BrowserAgentSnapshot.Frame], owners: [String: BrowserAgentSnapshot.Ref]) {
+        let main = try await send(page, "Accessibility.getFullAXTree")
+        var frames = [BrowserAgentSnapshot.Frame(nodes: main["nodes"]?.arrayValue ?? [])]
+        let sessions = page.cdp.frameSessions
+        let remote = Set(sessions.map(\.frameID))
+        await addProcessFrames(of: nil, root: 0, to: &frames, skipping: remote, on: page)
+        var roots: [String: Int] = [:]
+        for session in sessions {
+            guard let tree = try? await send(page, "Accessibility.getFullAXTree", session: session.id,
+                                             timeout: Self.frameTimeout) else { continue }
+            frames.append(BrowserAgentSnapshot.Frame(nodes: tree["nodes"]?.arrayValue ?? [], session: session.id))
+            roots[session.id] = frames.count - 1
+            await addProcessFrames(of: session.id, root: frames.count - 1, to: &frames, skipping: remote, on: page)
+        }
+        var owners: [String: BrowserAgentSnapshot.Ref] = [:]
+        for session in sessions {
+            guard let index = roots[session.id],
+                  let owner = try? await send(page, "DOM.getFrameOwner", ["frameId": .string(session.frameID)],
+                                              session: session.parent, timeout: Self.frameTimeout)["backendNodeId"]?.integerValue
+            else { continue }
+            owners[session.id] = BrowserAgentSnapshot.Ref(node: Int(owner), session: session.parent)
+            if let holder = frames.indices.first(where: { frames[$0].session == session.parent && frames[$0].holds(Int(owner)) }) {
+                frames[holder].children[Int(owner)] = index
+            }
+        }
+        return (frames, owners)
+    }
+
+    /// The frames below `root` that render in the same process as it: each one's tree, under its iframe.
+    private func addProcessFrames(of session: String?, root: Int, to frames: inout [BrowserAgentSnapshot.Frame],
+                                  skipping remote: Set<String>, on page: BrowserAgentPage) async {
+        guard let tree = try? await send(page, "Page.getFrameTree", session: session, timeout: Self.frameTimeout),
+              let top = tree["frameTree"] else { return }
+        var indexByFrame: [String: Int] = [:]
+        if let id = top["frame"]?["id"]?.stringValue { indexByFrame[id] = root }
+        var pending = top["childFrames"]?.arrayValue ?? []
+        while !pending.isEmpty {
+            let child = pending.removeFirst()
+            guard let id = child["frame"]?["id"]?.stringValue, !remote.contains(id),
+                  let parent = child["frame"]?["parentId"]?.stringValue.flatMap({ indexByFrame[$0] }),
+                  let nodes = try? await send(page, "Accessibility.getFullAXTree", ["frameId": .string(id)], session: session,
+                                              timeout: Self.frameTimeout)["nodes"]?.arrayValue,
+                  let owner = try? await send(page, "DOM.getFrameOwner", ["frameId": .string(id)], session: session,
+                                              timeout: Self.frameTimeout)["backendNodeId"]?.integerValue
+            else { continue }
+            frames.append(BrowserAgentSnapshot.Frame(nodes: nodes, session: session))
+            frames[parent].children[Int(owner)] = frames.count - 1
+            indexByFrame[id] = frames.count - 1
+            pending += child["childFrames"]?.arrayValue ?? []
+        }
     }
 
     private func click(_ arguments: JSONValue, on page: BrowserAgentPage) async throws -> AgentToolResult {
@@ -498,13 +657,13 @@ final class BrowserAgentTools {
         guard let ref = arguments["ref"]?.stringValue, let text = arguments["text"]?.stringValue else {
             throw BrowserAgentToolError("browser_type needs a ref and text.")
         }
-        let node = try backendNode(ref, on: page)
+        let element = try self.element(ref, on: page)
         do {
-            _ = try await send(page, "DOM.focus", ["backendNodeId": .integer(Int64(node))], ref: ref)
+            _ = try await send(page, "DOM.focus", ["backendNodeId": .integer(Int64(element.node))], session: element.session, ref: ref)
         } catch let error as BrowserAgentToolError where !error.message.contains(" is stale") {
             throw BrowserAgentToolError("\(ref) cannot take keyboard focus, so it is not a text field.")
         }
-        let kind = try await call(page, ref: ref, node: node, function: """
+        let kind = try await call(page, ref: ref, element: element, function: """
             function() {
               if (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement) {
                 if (this.readOnly || this.disabled) return 'readonly';
@@ -558,8 +717,7 @@ final class BrowserAgentTools {
         let ref = arguments["ref"]?.stringValue
         if deltaX == 0, deltaY == 0 {
             guard let ref else { throw BrowserAgentToolError("browser_scroll needs deltaX or deltaY, or a ref.") }
-            let node = try backendNode(ref, on: page)
-            _ = try await send(page, "DOM.scrollIntoViewIfNeeded", ["backendNodeId": .integer(Int64(node))], ref: ref)
+            try await scrollIntoView(ref, try element(ref, on: page), on: page)
         } else {
             let point: (x: Double, y: Double)
             if let ref {
@@ -590,8 +748,8 @@ final class BrowserAgentTools {
               let values = arguments["values"]?.arrayValue?.compactMap(\.stringValue), !values.isEmpty else {
             throw BrowserAgentToolError("browser_select_option needs a ref and at least one value.")
         }
-        let node = try backendNode(ref, on: page)
-        let outcome = try await call(page, ref: ref, node: node, arguments: [.object(["value": .array(values.map { .string($0) })])],
+        let element = try self.element(ref, on: page)
+        let outcome = try await call(page, ref: ref, element: element, arguments: [.object(["value": .array(values.map { .string($0) })])],
                                      function: """
             function(wanted) {
               if (!(this instanceof HTMLSelectElement)) return { error: 'is not a select element' };
@@ -665,9 +823,9 @@ final class BrowserAgentTools {
         var pageHeight = 0.0
         let clip: (x: Double, y: Double, width: Double, height: Double)
         if let ref = arguments["ref"]?.stringValue {
-            let node = try backendNode(ref, on: page)
-            _ = try await send(page, "DOM.scrollIntoViewIfNeeded", ["backendNodeId": .integer(Int64(node))], ref: ref)
-            let box = try await bounds(of: ref, node: node, on: page)
+            let element = try self.element(ref, on: page)
+            try await scrollIntoView(ref, element, on: page)
+            let box = try await bounds(of: ref, element: element, on: page)
             let scrolled = try await send(page, "Page.getLayoutMetrics")["cssVisualViewport"]
             clip = (box.x + (scrolled?["pageX"]?.doubleValue ?? 0), box.y + (scrolled?["pageY"]?.doubleValue ?? 0),
                     box.width, box.height)
@@ -699,6 +857,9 @@ final class BrowserAgentTools {
             throw error
         }
         if covered { await restoreVaultFields(on: page) }
+        // Capturing beyond the viewport lays the page out for the moment as Chromium likes, which drops an emulated
+        // phone's touch points; the emulation goes back as it was.
+        if fullPage, let emulation = page.emulation() { try? await page.emulate(emulation) }
         guard let data = shot["data"]?.stringValue else { throw BrowserAgentToolError("The browser returned no image.") }
         let location = try? await pageLocation(page)
         var text = "Screenshot of \(location?.url ?? "the page"), \(Self.format(clip.width))×\(Self.format(clip.height)) CSS pixels."
@@ -714,24 +875,140 @@ final class BrowserAgentTools {
     private func drawn<T>(atLeast size: (width: Double, height: Double), pixelRatio: Double, on page: BrowserAgentPage,
                           _ capture: () async throws -> T) async throws -> T {
         guard let viewport = page.viewport() else { return try await capture() }
+        // An emulated screen size already holds the layout viewport at the view's size (one CSS pixel a point).
+        let emulated = page.emulation() != nil
         // CSS pixels to the view's points (the page's zoom); the host's view has whole points.
-        let points = pixelRatio / max(viewport.scale, 0.1)
+        let points = emulated ? 1 : pixelRatio / max(viewport.scale, 0.1)
         var drawn = viewport
         drawn.width = max(viewport.width, (size.width * points).rounded(.up))
         drawn.height = max(viewport.height, (size.height * points).rounded(.up))
         guard drawn != viewport else { return try await capture() }
-        _ = try await send(page, "Emulation.setDeviceMetricsOverride", [
-            "width": .integer(Int64(viewport.width)), "height": .integer(Int64(viewport.height)),
-            "deviceScaleFactor": .integer(0), "mobile": .bool(false)
-        ])
+        if !emulated {
+            _ = try await send(page, "Emulation.setDeviceMetricsOverride", [
+                "width": .integer(Int64(viewport.width)), "height": .integer(Int64(viewport.height)),
+                "deviceScaleFactor": .integer(0), "mobile": .bool(false)
+            ])
+        }
         page.resize(to: drawn)
         let result: Result<T, any Error>
         do { result = .success(try await capture()) } catch { result = .failure(error) }
         // The panel's size again, unless the panel resized the tab meanwhile; the view first, so the page
         // is never laid out at the drawn size.
         if page.viewport() == drawn { page.resize(to: viewport) }
-        _ = try? await send(page, "Emulation.clearDeviceMetricsOverride")
+        if !emulated { _ = try? await send(page, "Emulation.clearDeviceMetricsOverride") }
         return try result.get()
+    }
+
+    /// The Claude app's `resize_window` in the Browser pane: a preset or a custom size, and the color scheme, on the
+    /// tab, which the agent's turn end clears (`taskTurnEnded`).
+    private func resize(_ arguments: JSONValue, on page: BrowserAgentPage) async throws -> AgentToolResult {
+        let preset = arguments["preset"]?.stringValue
+        let width = arguments["width"]?.doubleValue
+        let height = arguments["height"]?.doubleValue
+        let scheme = arguments["colorScheme"]?.stringValue
+        if let scheme, !["light", "dark"].contains(scheme) {
+            throw BrowserAgentToolError("Unknown colorScheme \"\(scheme.prefix(40))\". Use light or dark.")
+        }
+        var parts: [String] = []
+        let previous = page.emulation()
+        let sides = 1...Double(BrowserViewportEmulation.maximumSide)
+        if preset == "desktop" {
+            try await page.emulate(nil)
+            parts.append("Viewport emulation cleared; the tab is back to its own size (the panel's)")
+        } else if preset != nil || width != nil || height != nil {
+            let emulation: BrowserViewportEmulation
+            if let preset {
+                guard let size = [BrowserViewportEmulation.mobile, BrowserViewportEmulation.tablet].first(where: { $0.id == preset }) else {
+                    throw BrowserAgentToolError("Unknown preset \"\(preset.prefix(40))\". Use mobile, tablet, or desktop.")
+                }
+                emulation = BrowserViewportEmulation(size, owner: .agent)
+            } else if let width, let height, sides.contains(width), sides.contains(height) {
+                emulation = BrowserViewportEmulation(width: Int(width.rounded()), height: Int(height.rounded()), owner: .agent)
+            } else {
+                throw BrowserAgentToolError("A custom viewport needs both width and height, each a number from 1 to "
+                    + "\(BrowserViewportEmulation.maximumSide). Use preset \"mobile\" or \"tablet\" for a device size, or "
+                    + "preset \"desktop\" to clear the emulation and return to the tab's own size.")
+            }
+            try await page.emulate(emulation)
+            var text = "Viewport set to \(emulation.width)x\(emulation.height)\(preset.map { " (\($0))" } ?? "") on this tab "
+                + "(the panel shows it scaled down to fit when it is larger). Reset it with preset \"desktop\" as soon as you "
+                + "finish testing; Yardlet also clears a size you set when your turn ends"
+            if emulation.mobile { text += ". The page sees a touch phone with Android Chrome's user agent; your clicks still arrive as mouse clicks" }
+            parts.append(text)
+        }
+        if let previous, previous.owner == .person, preset != nil || width != nil || height != nil {
+            parts.append("This replaced the \(previous.width)x\(previous.height) size the person picked in the panel's Viewport menu")
+        }
+        if let scheme {
+            try await page.emulateColorScheme(scheme)
+            parts.append("Color scheme emulation set to \(scheme) on this tab; it survives reloads until you set it again or your "
+                + "turn ends")
+        }
+        guard !parts.isEmpty else {
+            throw BrowserAgentToolError("Provide a preset (mobile, tablet or desktop), width and height, or colorScheme.")
+        }
+        return .text(parts.joined(separator: ". ") + ".")
+    }
+
+    /// Hands the tab to the person and waits: for their Done or Decline in the panel's bar, for `text` on the page,
+    /// for the end of the agent's turn, or for the timeout, after which the tab stays theirs and a call waits again.
+    private func handOff(_ arguments: JSONValue, on page: BrowserAgentPage, sessionID: UUID?) async throws -> AgentToolResult {
+        guard let reason = arguments["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty else {
+            throw BrowserAgentToolError("browser_handoff needs a reason: what the person is to do in the tab.")
+        }
+        let text = arguments["text"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        let ceiling = sessionID.flatMap { handoffs?.handoffWaitCeiling(for: $0) } ?? .seconds(25 * 60)
+        let asked = arguments["timeout"]?.doubleValue.map { Duration.milliseconds(Int(max(0, $0) * 1000)) } ?? Self.handoffDefaultWait
+        let timeout = min(asked, ceiling)
+        guard let started = page.handOff(String(reason.prefix(500))) else {
+            throw BrowserAgentToolError("This browser cannot hand a tab to the person.")
+        }
+        let notice = Self.handoffNotice(started.handoff.id)
+        if started.isNew, let sessionID {
+            handoffNotices[sessionID, default: []].insert(notice)
+            handoffs?.handoffStarted(session: sessionID, tabKey: page.tabKey, reason: started.handoff.reason, notice: notice)
+        }
+        let start = ContinuousClock.now
+        func waited() -> String { Self.format(Double((ContinuousClock.now - start).components.seconds)) + " seconds" }
+        func end() {
+            page.endHandoff()
+            if let sessionID { handoffNotices[sessionID]?.remove(notice) }
+            handoffs?.handoffEnded(notice: notice)
+        }
+        while true {
+            if page.isClosed() {
+                if let sessionID { handoffNotices[sessionID]?.remove(notice) }
+                handoffs?.handoffEnded(notice: notice)
+                throw BrowserAgentToolError("The tab closed before the person answered.")
+            }
+            switch page.handoff()?.answer {
+            case .done?:
+                end()
+                let location = try? await pageLocation(page)
+                return .text("The person said they are done in the tab, after \(waited()). The page is at "
+                    + "\(location?.url ?? "an unknown address") (“\(location?.title ?? "")”).")
+            case .declined?:
+                end()
+                return .text("The person declined to do this in the tab, after \(waited()). The tab is as they left it.")
+            case .turnEnded?:
+                end()
+                return .text("The task's turn ended before the person answered; the tab is no longer handed to them.")
+            case nil:
+                break
+            }
+            if let text, page.dialog == nil,
+               let body = try? await evaluateValue(page, "document.body ? document.body.innerText : ''").stringValue,
+               body.contains(text) {
+                end()
+                return .text("“\(text)” appeared on the page after \(waited()), so the person's part is done; the tab is "
+                    + "yours again.")
+            }
+            if ContinuousClock.now - start >= timeout {
+                return .text("The person has not answered after \(waited()). The tab stays handed to them, with its bar in "
+                    + "the panel, until they answer or your turn ends; browser_handoff on this tab waits again.")
+            }
+            try? await Task.sleep(for: max(pollInterval, .milliseconds(250)))
+        }
     }
 
     private func consoleMessages(_ arguments: JSONValue, on page: BrowserAgentPage) -> AgentToolResult {
@@ -775,13 +1052,13 @@ final class BrowserAgentTools {
         }
         let result: JSONValue
         if let ref = arguments["ref"]?.stringValue {
-            let node = try backendNode(ref, on: page)
-            let objectID = try await objectID(ref: ref, node: node, on: page)
+            let element = try self.element(ref, on: page)
+            let objectID = try await objectID(ref: ref, element: element, on: page)
             result = try await send(page, "Runtime.callFunctionOn", [
                 "functionDeclaration": .string(function), "objectId": .string(objectID),
                 "arguments": .array([.object(["objectId": .string(objectID)])]),
                 "returnByValue": .bool(true), "awaitPromise": .bool(true), "userGesture": .bool(true)
-            ], ref: ref)
+            ], session: element.session, ref: ref)
         } else {
             // A function is called; any other expression is returned as it is.
             let expression = "(async () => { const value = (\n\(function)\n); "
@@ -849,23 +1126,28 @@ final class BrowserAgentTools {
         return AgentToolResult(content: content)
     }
 
-    private func handleDialog(_ arguments: JSONValue, on page: BrowserAgentPage) throws -> AgentToolResult {
+    private func handleDialog(_ arguments: JSONValue, on page: BrowserAgentPage, sessionID: UUID?) throws -> AgentToolResult {
         guard let accept = arguments["accept"]?.boolValue else {
             throw BrowserAgentToolError("browser_handle_dialog needs accept (true or false).")
         }
-        if page.dialog == nil, let windows = directory?.browserDialogs, !windows.isEmpty {
+        let (windows, unknownTab) = browserDialogs(sessionID)
+        if page.dialog == nil, let sessionID, !windows.isEmpty {
             // Only the person can finish a passkey request, a sign-in or printing; the agent can only let it go.
             guard !accept else {
                 throw BrowserAgentToolError(Self.describeBrowserDialog(windows) + " Only the person at this Mac can complete it; "
                     + "browser_handle_dialog with accept false closes it.")
             }
-            guard directory?.closeBrowserDialogs() == true else { throw BrowserAgentToolError("Chromium's window could not be closed.") }
+            guard directory?.closeBrowserDialogs(for: sessionID) == true else {
+                throw BrowserAgentToolError("Chromium's window could not be closed.")
+            }
             let names = Self.kinds(of: windows).map { Self.name(of: $0, in: windows) }.joined(separator: " and ")
             let passkey = windows.contains { $0.kind == .passkey } ? " The site can then offer another way to sign in." : ""
             return .text("Closed \(names); " + Self.closeOutcome(windows) + "." + passkey)
         }
         guard let dialog = page.answerDialog(accept: accept, text: arguments["promptText"]?.stringValue) else {
-            throw BrowserAgentToolError("No JavaScript dialog is open.")
+            // Another task's window, or one whose tab is not known, is not this task's to close.
+            throw BrowserAgentToolError("No JavaScript dialog is open." + (unknownTab.isEmpty ? ""
+                : " " + Self.describeUnknownTabDialog(unknownTab) + " browser_handle_dialog does not close it."))
         }
         let kind = dialog.kind == .beforeUnload ? "leave-page" : dialog.kind.rawValue
         return .text("\(accept ? "Accepted" : "Dismissed") the \(kind) dialog “\(dialog.message)”.")
@@ -922,7 +1204,7 @@ final class BrowserAgentTools {
         return event
     }
 
-    func backendNode(_ ref: String, on page: BrowserAgentPage) throws -> Int {
+    func element(_ ref: String, on page: BrowserAgentPage) throws -> BrowserAgentSnapshot.Ref {
         let normalized = ref.hasPrefix("@") ? ref : "@" + ref
         if let node = page.refs[normalized] {
             if page.navigatedSinceSnapshot {
@@ -941,29 +1223,66 @@ final class BrowserAgentTools {
     }
 
     private func center(of ref: String, on page: BrowserAgentPage) async throws -> (x: Double, y: Double) {
-        let node = try backendNode(ref, on: page)
-        _ = try await send(page, "DOM.scrollIntoViewIfNeeded", ["backendNodeId": .integer(Int64(node))], ref: ref)
-        let box = try await bounds(of: ref, node: node, on: page)
+        let element = try element(ref, on: page)
+        try await scrollIntoView(ref, element, on: page)
+        let box = try await bounds(of: ref, element: element, on: page)
         return (box.x + box.width / 2, box.y + box.height / 2)
     }
 
-    /// The element's box in viewport CSS pixels.
-    private func bounds(of ref: String, node: Int, on page: BrowserAgentPage) async throws
+    /// Brings the element into view: in a frame from another site, each iframe that holds it first, outermost first.
+    private func scrollIntoView(_ ref: String, _ element: BrowserAgentSnapshot.Ref, on page: BrowserAgentPage) async throws {
+        for owner in try frameOwners(of: element, ref: ref, on: page).reversed() {
+            _ = try await send(page, "DOM.scrollIntoViewIfNeeded", ["backendNodeId": .integer(Int64(owner.node))],
+                               session: owner.session, ref: ref)
+        }
+        _ = try await send(page, "DOM.scrollIntoViewIfNeeded", ["backendNodeId": .integer(Int64(element.node))],
+                           session: element.session, ref: ref)
+    }
+
+    /// The iframes that hold an element of a frame from another site, innermost first.
+    private func frameOwners(of element: BrowserAgentSnapshot.Ref, ref: String, on page: BrowserAgentPage) throws
+        -> [BrowserAgentSnapshot.Ref] {
+        var owners: [BrowserAgentSnapshot.Ref] = []
+        var session = element.session
+        while let frame = session {
+            guard let owner = page.frameOwners[frame], owners.count < 20 else {
+                throw BrowserAgentToolError("\(ref) is stale: its frame changed since the last snapshot. Call browser_snapshot again.")
+            }
+            owners.append(owner)
+            session = owner.session
+        }
+        return owners
+    }
+
+    /// The element's box in the tab's viewport CSS pixels. A frame from another site gives its elements' boxes in its
+    /// own viewport, which starts at the content box of the iframe that holds it.
+    private func bounds(of ref: String, element: BrowserAgentSnapshot.Ref, on page: BrowserAgentPage) async throws
         -> (x: Double, y: Double, width: Double, height: Double) {
-        let quads = try await send(page, "DOM.getContentQuads", ["backendNodeId": .integer(Int64(node))], ref: ref)
+        let quads = try await send(page, "DOM.getContentQuads", ["backendNodeId": .integer(Int64(element.node))],
+                                   session: element.session, ref: ref)
+        var offset = (x: 0.0, y: 0.0)
+        for owner in try frameOwners(of: element, ref: ref, on: page) {
+            let model = try await send(page, "DOM.getBoxModel", ["backendNodeId": .integer(Int64(owner.node))],
+                                       session: owner.session, ref: ref)
+            let content = model["model"]?["content"]?.arrayValue?.compactMap(\.doubleValue) ?? []
+            guard content.count == 8 else { throw BrowserAgentToolError("\(ref)'s frame has no box on the page.") }
+            offset.x += stride(from: 0, to: 8, by: 2).map { content[$0] }.min()!
+            offset.y += stride(from: 1, to: 8, by: 2).map { content[$0] }.min()!
+        }
         for quad in quads["quads"]?.arrayValue ?? [] {
             let points = quad.arrayValue?.compactMap(\.doubleValue) ?? []
             guard points.count == 8 else { continue }
             let xs = stride(from: 0, to: 8, by: 2).map { points[$0] }
             let ys = stride(from: 1, to: 8, by: 2).map { points[$0] }
-            let box = (x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+            let box = (x: xs.min()! + offset.x, y: ys.min()! + offset.y, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
             if box.width >= 1, box.height >= 1 { return box }
         }
         throw BrowserAgentToolError("\(ref) has no visible box on the page (it may be hidden or empty).")
     }
 
-    private func objectID(ref: String, node: Int, on page: BrowserAgentPage) async throws -> String {
-        let resolved = try await send(page, "DOM.resolveNode", ["backendNodeId": .integer(Int64(node))], ref: ref)
+    private func objectID(ref: String, element: BrowserAgentSnapshot.Ref, on page: BrowserAgentPage) async throws -> String {
+        let resolved = try await send(page, "DOM.resolveNode", ["backendNodeId": .integer(Int64(element.node))],
+                                      session: element.session, ref: ref)
         guard let id = resolved["object"]?["objectId"]?.stringValue else {
             throw BrowserAgentToolError("\(ref) could not be found on the page. Call browser_snapshot again.")
         }
@@ -971,13 +1290,13 @@ final class BrowserAgentTools {
     }
 
     /// Calls a function with the element as `this` and returns its JSON result.
-    private func call(_ page: BrowserAgentPage, ref: String, node: Int, arguments: [JSONValue] = [],
+    private func call(_ page: BrowserAgentPage, ref: String, element: BrowserAgentSnapshot.Ref, arguments: [JSONValue] = [],
                       function: String) async throws -> JSONValue {
-        let objectID = try await objectID(ref: ref, node: node, on: page)
+        let objectID = try await objectID(ref: ref, element: element, on: page)
         let result = try await send(page, "Runtime.callFunctionOn", [
             "functionDeclaration": .string(function), "objectId": .string(objectID),
             "arguments": .array(arguments), "returnByValue": .bool(true)
-        ], ref: ref)
+        ], session: element.session, ref: ref)
         if let details = result["exceptionDetails"] {
             throw BrowserAgentToolError("The page raised an error: "
                 + (details["exception"]?["description"]?.stringValue ?? details["text"]?.stringValue ?? "unknown"))
@@ -1025,14 +1344,15 @@ final class BrowserAgentTools {
     /// dialog that opens meanwhile pauses the page, and with it the command's answer, so the wait
     /// ends there (`BrowserAgentDialogOpened`) instead of at the command's time limit.
     func send(
-        _ page: BrowserAgentPage, _ method: String, _ params: [String: JSONValue] = [:],
+        _ page: BrowserAgentPage, _ method: String, _ params: [String: JSONValue] = [:], session: String? = nil,
         timeout: Duration? = nil, ref: String? = nil
     ) async throws -> JSONValue {
         do {
-            return try await sendUnlessDialogOpens(page, method, params, timeout: timeout ?? commandTimeout)
+            return try await sendUnlessDialogOpens(page, method, params, session: session, timeout: timeout ?? commandTimeout)
         } catch BrowserDevToolsError.protocolError(_, let error) {
             let message = error["message"]?.stringValue ?? error.readableText ?? "unknown error"
-            if let ref, message.localizedCaseInsensitiveContains("node") {
+            // A node that is gone, or the frame session it was in (the frame navigated or closed).
+            if let ref, message.localizedCaseInsensitiveContains("node") || message.localizedCaseInsensitiveContains("session") {
                 throw BrowserAgentToolError("\(ref) is stale: the page changed since the last snapshot. Call "
                     + "browser_snapshot again.")
             }
@@ -1041,7 +1361,7 @@ final class BrowserAgentTools {
     }
 
     private func sendUnlessDialogOpens(
-        _ page: BrowserAgentPage, _ method: String, _ params: [String: JSONValue], timeout: Duration
+        _ page: BrowserAgentPage, _ method: String, _ params: [String: JSONValue], session: String?, timeout: Duration
     ) async throws -> JSONValue {
         guard page.dialog == nil else { throw BrowserAgentDialogOpened() }
         let answered = BrowserAgentOnce()
@@ -1053,7 +1373,7 @@ final class BrowserAgentTools {
             Task { @MainActor in
                 let result: Result<JSONValue, any Error>
                 do {
-                    result = .success(try await page.cdp.send(method, params, timeout: timeout))
+                    result = .success(try await page.cdp.send(method, params, session: session, timeout: timeout))
                 } catch {
                     result = .failure(error)
                 }

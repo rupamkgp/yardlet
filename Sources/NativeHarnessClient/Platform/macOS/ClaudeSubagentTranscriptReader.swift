@@ -1040,6 +1040,41 @@ extension ClaudeSubagentTranscriptReader {
     }
 }
 
+extension ClaudeSubagentTranscriptReader {
+    /// The files the conversation's calls read and edited (`ClaudeFileTouchScanner`), read on from
+    /// `previous`: only what Claude appended since, and nothing when the file has not grown. The file is
+    /// found beneath the config's projects as the conversation itself is, at the place `previous` found
+    /// it while that is still the same file. Nil when the conversation has no transcript.
+    func fileTouchScan(sessionID: String, previous: FileTouches) throws -> FileTouches? {
+        let files = projectFiles
+        let cursor = previous.claudeScan.flatMap { $0.providerSessionID == sessionID ? $0 : nil }
+        var found: (path: [String], file: OpenFile)?
+        if let cursor, let path = cursor.path, path.last?.lowercased() == "\(sessionID.lowercased()).jsonl",
+           let file = files.openRegularFile(path),
+           file.identity.device == cursor.device, file.identity.inode == cursor.inode {
+            found = (path, file)
+        } else if let path = try transcriptPath(sessionID: sessionID), let file = files.openRegularFile(path) {
+            found = (path, file)
+        }
+        guard let (path, file) = found else { return nil }
+        if let cursor, cursor.device == file.identity.device, cursor.inode == file.identity.inode,
+           cursor.offset == file.size, cursor.path == path {
+            return previous
+        }
+        var touches = try ClaudeFileTouchScanner.scan(
+            providerSessionID: sessionID, device: file.identity.device, inode: file.identity.inode,
+            size: file.size, previous: previous
+        ) { offset, count in
+            try autoreleasepool {
+                try file.handle.seek(toOffset: UInt64(offset))
+                return try file.handle.read(upToCount: count) ?? Data()
+            }
+        }
+        touches.claudeScan?.path = path
+        return touches
+    }
+}
+
 extension JSONValue {
     /// A value Foundation's JSONSerialization read; nil for a type JSON does not have.
     init?(foundation value: Any) {

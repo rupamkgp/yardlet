@@ -5,3 +5,7 @@
 "NSAppleEventsUsageDescription" = "Yardlet에서 실행 중인 명령(하네스의 도구나 터미널의 프로그램)이 다른 앱을 제어하려고 합니다.";
 "NSMicrophoneUsageDescription" = "Yardlet 내장 브라우저에서 사이트에 마이크를 허용했거나, Yardlet에서 실행 중인 명령(하네스의 음성 받아쓰기나 터미널의 프로그램)이 마이크를 사용하려고 합니다.";
 "NSCameraUsageDescription" = "Yardlet 내장 브라우저에서 사이트에 카메라를 허용했거나, Yardlet에서 실행 중인 명령(하네스의 도구나 터미널의 프로그램)이 카메라를 사용하려고 합니다.";
+/* Apple 캘린더·미리 알림·연락처 커넥터(사람이 켤 때 한 번 묻는다)와 Yardlet이 실행하는 명령의 개인정보 권한 창. macOS는 명령의 요청도 Yardlet의 요청으로 본다. */
+"NSCalendarsFullAccessUsageDescription" = "Apple 캘린더 커넥터를 켜면 Yardlet의 작업이 캘린더를 읽고 바꿀 수 있습니다. 또는 Yardlet에서 실행 중인 명령이 캘린더를 사용하려고 합니다.";
+"NSRemindersFullAccessUsageDescription" = "Apple 미리 알림 커넥터를 켜면 Yardlet의 작업이 미리 알림을 읽고 추가할 수 있습니다. 또는 Yardlet에서 실행 중인 명령이 미리 알림을 사용하려고 합니다.";
+"NSContactsUsageDescription" = "Apple 연락처 커넥터를 켜면 Yardlet의 작업이 연락처를 찾아볼 수 있습니다. 또는 Yardlet에서 실행 중인 명령이 연락처를 사용하려고 합니다.";

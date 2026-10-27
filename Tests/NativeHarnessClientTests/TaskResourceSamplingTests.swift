@@ -255,7 +255,7 @@ final class TaskResourceSamplingTests: XCTestCase {
     }
 
     /// A task's terminal panel registers its shell under the task, and what the shell starts counts
-    /// with it; stopping the panel removes it.
+    /// with it, a server it starts among the task's servers; stopping the panel removes it.
     @MainActor
     func testATasksTerminalShellCountsForTheTask() async throws {
         let home = try temporaryFolder("terminal-home")
@@ -271,10 +271,15 @@ final class TaskResourceSamplingTests: XCTestCase {
         let shellPID = view.process.shellPid
         XCTAssertEqual(TaskProcessRegistry.shared.registered[shellPID], .task(task))
 
-        _ = await session.typeWhenReady("sleep 30 &\n")
+        let listener = try Self.listener(in: home)
+        _ = await session.typeWhenReady("/usr/bin/python3 '\(listener.path)' '\(home.path)/port' &\n")
         let engine = TaskResourceEngine(table: LiveProcessTable(), registry: TaskProcessRegistry.shared)
         let usage = try await Self.waitForTree(of: .task(task), processes: 2, engine: engine)
         XCTAssertEqual(usage.locations, [.yardlet])
+        let port = try await Self.listening(home.appending(path: "port"))
+        let sample = await engine.takeSample(TaskResourceRequest(findsServers: true))
+        XCTAssertEqual(sample.servers[task]?.map(\.port), [port.port])
+        XCTAssertEqual(sample.servers[task]?.map(\.processID), [port.processID])
 
         session.stop()
         XCTAssertNil(TaskProcessRegistry.shared.registered[shellPID])
@@ -315,6 +320,104 @@ final class TaskResourceSamplingTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 30)
         XCTAssertGreaterThan(shell.processID, 0)
         XCTAssertEqual((shell as any TaskShell).processID, shell.processID)
+    }
+
+    // MARK: - Servers
+
+    /// A port belongs to the task whose Yardlet-started tree listens on it: not the harness or shell at
+    /// the root, not a process another app runs, and under a shared Codex App Server only through the
+    /// `CODEX_THREAD_ID` the command's process or its nearest ancestor carries. A server its shell left to
+    /// launchd is the task's whose Yardlet Claude conversation or Codex thread its environment names. A
+    /// port the server and its worker share is listed once, for the process nearer the task.
+    func testAPortBelongsToTheTaskWhoseProcessesListenOnIt() {
+        let table = FakeProcessTable()
+        let yardletClaude = ["CLAUDE_CODE_ENTRYPOINT": "native-harness-client"]
+        table.set(1, parent: 0)                                 // launchd
+        table.set(500, parent: 1)                               // Yardlet
+        table.set(600, parent: 500, ports: [9_000])             // task A's Claude Code CLI
+        table.set(601, parent: 600, ports: [3_000], name: "node")
+        table.set(602, parent: 601, ports: [3_000], name: "node")
+        table.set(700, parent: 1)                               // the Claude app's CLI for task B
+        table.set(701, parent: 700, ports: [4_000])
+        table.set(800, parent: 500)                             // a Codex App Server
+        table.set(801, parent: 800, environment: ["CODEX_THREAD_ID": "Thread-C"])
+        table.set(802, parent: 801, ports: [5_173], name: "vite")
+        table.set(803, parent: 800, ports: [7_000])             // its MCP server
+        table.set(804, parent: 800, ports: [8_000], environment: ["CODEX_THREAD_ID": "elsewhere"])
+        table.set(900, parent: 500)                             // task A's terminal shell
+        table.set(901, parent: 900, ports: [6_006], name: "storybook")
+        // Left to launchd when their shells ended.
+        table.set(1_000, parent: 1, ports: [55_433], environment: yardletClaude.merging(
+            ["CLAUDE_CODE_SESSION_ID": "Session-A"]) { $1 }, name: "postgres")
+        table.set(1_001, parent: 1, ports: [5_437], environment: [
+            "CLAUDE_CODE_ENTRYPOINT": "claude-desktop", "CLAUDE_CODE_SESSION_ID": "session-a"])
+        table.set(1_002, parent: 1, environment: ["CODEX_THREAD_ID": "thread-c"])
+        table.set(1_003, parent: 1_002, ports: [8_080], name: "python3")
+        table.set(1_004, parent: 1, ports: [9_999])
+        let taskA = UUID(), taskB = UUID(), taskC = UUID()
+        let server = TaskResourceOwner.codexAppServer(CodexAppServerIdentity(connection: nil, environmentScope: .native))
+        var sampler = TaskResourceSampler()
+        _ = sampler.sample([
+            TaskResourceRoot(owner: .task(taskA), location: .yardlet, processID: 600),
+            TaskResourceRoot(owner: .task(taskB), location: .claudeApp, processID: 700),
+            TaskResourceRoot(owner: server, location: .yardlet, processID: 800),
+            TaskResourceRoot(owner: .task(taskA), location: .yardlet, processID: 900)
+        ], table: table, at: Self.time(0))
+
+        var finder = TaskServerFinder()
+        let servers = finder.servers(
+            descendants: sampler.yardletDescendants, entries: sampler.lastEntries, claimed: sampler.claimedProcessIDs,
+            table: table, claudeSessions: ["session-a": taskA, "session-b": taskB], codexThreads: ["thread-c": taskC])
+        XCTAssertEqual(servers, [
+            taskA: [TaskServerPort(port: 3_000, processID: 601, processName: "node"),
+                    TaskServerPort(port: 6_006, processID: 901, processName: "storybook"),
+                    TaskServerPort(port: 55_433, processID: 1_000, processName: "postgres")],
+            taskC: [TaskServerPort(port: 5_173, processID: 802, processName: "vite"),
+                    TaskServerPort(port: 8_080, processID: 1_003, processName: "python3")]
+        ])
+    }
+
+    /// On the real process table, through the kernel's socket and environment readings: a Codex App
+    /// Server's command that listens on a loopback port is its thread's task's, and so is one whose shell
+    /// ended and left it to launchd; a listener on no thread is no task's; nothing is read when the request
+    /// does not ask.
+    func testRealListenersOfACodexThreadAreFoundForItsTask() async throws {
+        let root = try temporaryFolder("codex-servers")
+        let listener = try Self.listener(in: root)
+        let executable = root.appending(path: "stand-in")
+        try Data("""
+            #!/bin/sh
+            CODEX_THREAD_ID=Thread-1 /usr/bin/python3 '\(listener.path)' '\(root.path)/child' &
+            /bin/sh -c "CODEX_THREAD_ID=Thread-1 /usr/bin/python3 '\(listener.path)' '\(root.path)/left' &"
+            /usr/bin/python3 '\(listener.path)' '\(root.path)/unowned' &
+            exec /bin/cat >/dev/null
+
+            """.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let registry = TaskProcessRegistry()
+        let server = TaskResourceOwner.codexAppServer(CodexAppServerIdentity(connection: nil, environmentScope: .native))
+        let transport = CodexProcessTransport(executableURL: executable, resourceOwner: server, processRegistry: registry)
+        try await transport.start()
+        addTeardownBlock { await transport.stop() }
+
+        let child = try await Self.listening(root.appending(path: "child"))
+        let left = try await Self.listening(root.appending(path: "left"))
+        let unowned = try await Self.listening(root.appending(path: "unowned"))
+        // The one the ended shell left to launchd is out of the server's tree; the test ends it itself.
+        addTeardownBlock { _ = Darwin.kill(left.processID, SIGKILL) }
+        XCTAssertEqual(LiveProcessTable().entries().first { $0.processID == left.processID }?.parentID, 1)
+
+        let task = UUID()
+        let request = TaskResourceRequest(findsServers: true, codexThreads: ["thread-1": task])
+        let engine = TaskResourceEngine(table: LiveProcessTable(), registry: registry)
+        let sample = await engine.takeSample(request)
+        XCTAssertEqual(Set(sample.servers.keys), [task])
+        XCTAssertEqual(sample.servers[task]?.map(\.port), [child.port, left.port].sorted())
+        XCTAssertEqual(Set(sample.servers[task]?.map(\.processID) ?? []), [child.processID, left.processID])
+        XCTAssertFalse(sample.servers[task]?.contains { $0.port == unowned.port } ?? true)
+        XCTAssertEqual(sample.servers[task]?.first?.processName.isEmpty, false)
+        let notAsked = await engine.takeSample(TaskResourceRequest(codexThreads: ["thread-1": task]))
+        XCTAssertEqual(notAsked.servers, [:])
     }
 
     // MARK: - Busy indicator
@@ -581,6 +684,34 @@ final class TaskResourceSamplingTests: XCTestCase {
         return executable
     }
 
+    /// A Python script that listens on a free loopback port and writes "<port> <pid>" to the file its
+    /// argument names, then waits a minute.
+    static func listener(in folder: URL) throws -> URL {
+        let script = folder.appending(path: "listen.py")
+        try Data("""
+            import os, socket, sys, time
+            s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen()
+            open(sys.argv[1] + ".part", "w").write("%d %d" % (s.getsockname()[1], os.getpid()))
+            os.rename(sys.argv[1] + ".part", sys.argv[1])
+            time.sleep(60)
+
+            """.utf8).write(to: script)
+        return script
+    }
+
+    /// The port and process a `listener` wrote to `file`, once it has.
+    static func listening(_ file: URL) async throws -> (port: Int, processID: Int32) {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            if let text = try? String(contentsOf: file, encoding: .utf8) {
+                let parts = text.split(separator: " ").compactMap { Int($0) }
+                if parts.count == 2 { return (parts[0], Int32(parts[1])) }
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: file.path])
+    }
+
     static func waitForTree(of owner: TaskResourceOwner, processes: Int, engine: TaskResourceEngine) async throws
         -> TaskResourceUsage {
         let deadline = ContinuousClock.now + .seconds(5)
@@ -617,6 +748,9 @@ final class FakeProcessTable: ProcessTableReading, @unchecked Sendable {
         var parent: Int32
         var start: Int64
         var usage: ProcessUsageReading?
+        var ports: [Int] = []
+        var environment: [String: String] = [:]
+        var name: String?
     }
 
     private let lock = NSLock()
@@ -626,11 +760,25 @@ final class FakeProcessTable: ProcessTableReading, @unchecked Sendable {
     var usageReads: [Int32] { lock.withLock { reads } }
 
     func set(_ pid: Int32, parent: Int32, start: Int64 = TaskResourceSamplingTests.wall(-1_000),
-             cpu: Double = 0, memory: UInt64 = 0) {
+             cpu: Double = 0, memory: UInt64 = 0, ports: [Int] = [], environment: [String: String] = [:],
+             name: String? = nil) {
         lock.withLock {
             processes[pid] = Process(parent: parent, start: start, usage: ProcessUsageReading(
-                cpuNanoseconds: UInt64(cpu * 1_000_000_000), memoryBytes: memory))
+                cpuNanoseconds: UInt64(cpu * 1_000_000_000), memoryBytes: memory),
+                ports: ports, environment: environment, name: name)
         }
+    }
+
+    func listeningPorts(of processID: Int32) -> [Int] {
+        lock.withLock { processes[processID]?.ports ?? [] }
+    }
+
+    func environment(_ names: Set<String>, of processID: Int32) -> [String: String] {
+        lock.withLock { processes[processID]?.environment.filter { names.contains($0.key) } ?? [:] }
+    }
+
+    func name(of processID: Int32) -> String? {
+        lock.withLock { processes[processID]?.name }
     }
 
     func setUsage(_ pid: Int32, _ usage: ProcessUsageReading?) {

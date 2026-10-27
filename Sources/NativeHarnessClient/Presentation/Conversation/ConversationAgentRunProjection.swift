@@ -63,8 +63,13 @@ enum ConversationAgentRunProjection {
             || name.hasSuffix(": \(SessionToolCatalog.runAgent)")
     }
 
+    /// The JSON object a transcript keeps as a call's input. An ACP agent's input may follow a line
+    /// of its own; the object is then read from its first brace. Any call's input is read, a command
+    /// with a lone `}` before its first `{` among them, so the braces must be in order.
     static func arguments(in input: String?) -> JSONValue? {
-        guard let input, let start = input.firstIndex(of: "{"), let end = input.lastIndex(of: "}") else { return nil }
+        guard let input, let start = input.firstIndex(of: "{"), let end = input.lastIndex(of: "}"), start < end else {
+            return nil
+        }
         let value = try? JSONDecoder().decode(JSONValue.self, from: Data(input[start...end].utf8))
         guard case .object = value else { return nil }
         return value

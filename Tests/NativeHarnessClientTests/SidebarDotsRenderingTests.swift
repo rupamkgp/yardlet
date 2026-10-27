@@ -233,6 +233,16 @@ final class SidebarDotsRenderingTests: XCTestCase {
         let pullRequest = URL(string: "https://github.com/example/yardlet/pull/131")!
         pullRequests.setPullRequest(.init(number: 131, url: pullRequest, repository: nil, state: .open, checks: .failing),
                                     for: withPR.id)
+        // A child an agent started, on the account automatic assignment picked.
+        let limit = AccountUsageMetric(id: "claude:session:", label: L10n.format("%.0f hour limit", 5.0), usedFraction: 0.12,
+                                       detail: "", resetsAt: Date().addingTimeInterval(3 * 3600), evidence: .exactQuota,
+                                       windowMinutes: 300)
+        let assignment = AccountAssignment(
+            choice: AccountChoice(harness: .claudeCode, connection: nil, snapshot: HarnessAccountSnapshot(
+                id: "claude-code", harness: .claudeCode, providerID: nil, state: .signedIn,
+                accountLabel: "developer@example.test", detail: "", credentialOwner: "", checkedAt: Date(), usage: [limit],
+                canLogin: false, canLogout: false)),
+            origin: .automatic, headroom: AccountRouting.headroom(of: [limit], model: nil, now: Date()))
         let cards = [
             SidebarHoverCardContent(session: withPR, projectName: "Yardlet", status: nil, isScheduledRun: false,
                                     cpuPercent: nil, pullRequest: pullRequests.pullRequest(for: withPR.id)
@@ -241,7 +251,7 @@ final class SidebarDotsRenderingTests: XCTestCase {
                                     status: SidebarTaskIndicatorProjection.status(of: failed, detail: error),
                                     isScheduledRun: false, cpuPercent: nil, pullRequest: nil),
             SidebarHoverCardContent(session: plain, projectName: "Yardlet", status: nil, isScheduledRun: false,
-                                    cpuPercent: nil, pullRequest: nil)
+                                    cpuPercent: nil, pullRequest: nil, accountAssignment: assignment)
         ]
         var opened: [URL] = []
         // Where the pointer is, which the card reads to tell a resting pointer from a moving one.

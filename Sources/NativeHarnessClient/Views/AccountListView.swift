@@ -206,10 +206,12 @@ struct AccountListSection: View {
             showsHarness: showsHarness,
             freshness: style == .account ? freshness : nil,
             usage: style == .account ? group : nil,
+            automaticAssignment: mode == .manage ? store.isInAutomaticAssignment(choice) : nil,
             onSelect: { if canChoose { onChoose(choice) } },
             onConnect: onConnect.flatMap { connect in
                 AccountListProjection.offersConnect(choice, mode: mode) ? { connect(choice) } : nil
-            })
+            },
+            onSetAutomaticAssignment: mode == .manage ? { store.setInAutomaticAssignment($0, for: choice) } : nil)
     }
 }
 
@@ -230,8 +232,12 @@ struct AccountRow: View {
     var freshness: AccountFreshness? = nil
     /// The account the limits are drawn from; nil for a member row, whose account shows them.
     var usage: AccountGroup? = nil
+    /// Whether tasks an agent starts may run on it; nil where the list does not say.
+    var automaticAssignment: Bool? = nil
     let onSelect: () -> Void
     var onConnect: (() -> Void)? = nil
+    /// The row's menu item that includes it in automatic assignment or leaves it out (Settings only).
+    var onSetAutomaticAssignment: ((Bool) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -245,10 +251,20 @@ struct AccountRow: View {
         .padding(.horizontal, 12).padding(.vertical, 12)
         .frame(minHeight: 68)
         .background(selected ? ParityTheme.selectedFill : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+        .contextMenu {
+            if let onSetAutomaticAssignment, let automaticAssignment {
+                Toggle(L10n.string("Include in Automatic Assignment"), isOn: Binding(
+                    get: { automaticAssignment }, set: { onSetAutomaticAssignment($0) }))
+            }
+        }
     }
 
     private var title: String { style == .member ? memberTitle ?? choice.connectionTitle : choice.title }
     private var subtitle: String { style == .member ? choice.subtitle : AccountListProjection.accountLine(choice) }
+    /// Said only of an account that could otherwise be used: signed in, and left out.
+    private var isExcludedFromAutomaticAssignment: Bool {
+        automaticAssignment == false && choice.snapshot?.state == .signedIn
+    }
 
     private var identityButton: some View {
         Button(action: onSelect) {
@@ -263,6 +279,10 @@ struct AccountRow: View {
                     Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
                     Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                     if let freshness { AccountFreshnessLine(freshness: freshness) }
+                    if isExcludedFromAutomaticAssignment {
+                        Text(L10n.string("Excluded from automatic assignment"))
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.contentShape(Rectangle())
         }
@@ -270,7 +290,8 @@ struct AccountRow: View {
         // The row a task already runs under stays readable; it simply has nothing to do.
         .disabled(!canChoose && !selected)
         .allowsHitTesting(canChoose)
-        .accessibilityLabel(title + ", " + subtitle)
+        .accessibilityLabel(title + ", " + subtitle
+            + (isExcludedFromAutomaticAssignment ? ", " + L10n.string("Excluded from automatic assignment") : ""))
         .accessibilityValue(selected ? selectedValue : choice.status)
         .help(choice.snapshot?.detail ?? choice.status)
     }

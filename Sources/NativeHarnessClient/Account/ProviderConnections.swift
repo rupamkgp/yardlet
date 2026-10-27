@@ -151,6 +151,17 @@ enum TaskAccountSwitch {
     }
 }
 
+extension TaskAccountSwitch {
+    /// Whether two accounts of `harness` keep their conversations in one place, so a task started
+    /// under one could go on under the other: the same account, or Claude config folders whose
+    /// `projects` resolve to one folder (`allows`).
+    static func sharesConversations(_ first: ProviderConnection?, _ second: ProviderConnection?, harness: HarnessKind,
+                                    environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        if first?.id == second?.id { return true }
+        return supports(harness) && ClaudeConversationStorage.isShared(first, second, environment: environment)
+    }
+}
+
 enum ProviderConnectionError: LocalizedError {
     case invalidBinding, unreadableStore, signedOut
     var errorDescription: String? {
@@ -211,6 +222,9 @@ final class ProviderConnectionStore {
             return label
         }
     }
+    /// The person's own answers to which accounts automatic assignment may use,
+    /// by `AccountChoice.id`. An account without one follows `isInAutomaticAssignmentByDefault`.
+    private(set) var automaticAssignment: [String: Bool] = [:]
     var selection: [HarnessKind: String] = [:] {
         didSet { if selection != oldValue { onSelectionChange?(selection) } }
     }
@@ -221,6 +235,10 @@ final class ProviderConnectionStore {
     @ObservationIgnored var defaultLoader: AccountSnapshotLoader?
     @ObservationIgnored var connectionLoader: ConnectionSnapshotLoader?
     @ObservationIgnored private let fileURL: URL?
+    /// Where `automaticAssignment` is kept; nil keeps it in memory.
+    @ObservationIgnored private let assignmentDefaults: UserDefaults?
+    /// The environment default logins are found in (`CLAUDE_CONFIG_DIR`); tests give their own.
+    @ObservationIgnored var defaultLoginEnvironment = ProcessInfo.processInfo.environment
     @ObservationIgnored private var readFailed = false
     @ObservationIgnored private var cache: AccountSnapshotCache
     /// The check running for each key; another request for the key waits for it.
@@ -246,9 +264,11 @@ final class ProviderConnectionStore {
 
     /// `snapshotCacheURL` remembers each account's last completed reading between launches, so
     /// the list shows it at once while the next check runs. Nil keeps readings in memory only.
-    init(fileURL: URL? = nil, snapshotCacheURL: URL? = nil,
+    init(fileURL: URL? = nil, snapshotCacheURL: URL? = nil, assignmentDefaults: UserDefaults? = nil,
          defaultLoader: AccountSnapshotLoader? = nil, connectionLoader: ConnectionSnapshotLoader? = nil) {
         self.fileURL = fileURL
+        self.assignmentDefaults = assignmentDefaults
+        automaticAssignment = assignmentDefaults?.dictionary(forKey: Self.automaticAssignmentKey) as? [String: Bool] ?? [:]
         self.defaultLoader = defaultLoader
         self.connectionLoader = connectionLoader
         cache = AccountSnapshotCache(fileURL: snapshotCacheURL)
@@ -274,8 +294,10 @@ final class ProviderConnectionStore {
     static func live() -> ProviderConnectionStore {
         let root = CodexEnvironmentPaths.live().yardletRootURL
         return Self(fileURL: root.appending(path: "provider-connections.json"),
-            snapshotCacheURL: root.appending(path: snapshotCacheFileName))
+            snapshotCacheURL: root.appending(path: snapshotCacheFileName), assignmentDefaults: .yardlet)
     }
+
+    static let automaticAssignmentKey = "Yardlet.automaticAccountAssignment"
 
     static let snapshotCacheFileName = "account-snapshots.json"
 
@@ -413,6 +435,34 @@ final class ProviderConnectionStore {
             guard usage != snapshot.usage else { return }
             defaultSnapshots[.claudeCode] = snapshot.replacingUsage(usage)
             cache.remember(snapshot.replacingUsage(usage), key: AccountSnapshotCache.defaultKey(for: .claudeCode))
+        }
+    }
+
+    // MARK: - Automatic assignment
+
+    /// Whether Yardlet may start an agent's task on this account by itself.
+    func isInAutomaticAssignment(_ choice: AccountChoice) -> Bool {
+        automaticAssignment[choice.id] ?? isInAutomaticAssignmentByDefault(choice)
+    }
+
+    /// Unless the person said otherwise, automatic assignment uses the harness's default login and
+    /// the accounts that keep their conversations with it (`TaskAccountSwitch.sharesConversations`):
+    /// a task started there is in the same history as the person's own, and can move to another of
+    /// them at a limit. Session Switch's Claude folders share `~/.claude/projects`; a Codex login in
+    /// another `CODEX_HOME` keeps its own history, so it stays out until the person includes it.
+    func isInAutomaticAssignmentByDefault(_ choice: AccountChoice) -> Bool {
+        TaskAccountSwitch.sharesConversations(choice.connection, nil, harness: choice.harness,
+                                              environment: defaultLoginEnvironment)
+    }
+
+    /// The person includes an account in automatic assignment or leaves it out. An answer the same as
+    /// the default is forgotten, so the default applies again.
+    func setInAutomaticAssignment(_ included: Bool, for choice: AccountChoice) {
+        automaticAssignment[choice.id] = included == isInAutomaticAssignmentByDefault(choice) ? nil : included
+        if automaticAssignment.isEmpty {
+            assignmentDefaults?.removeObject(forKey: Self.automaticAssignmentKey)
+        } else {
+            assignmentDefaults?.set(automaticAssignment, forKey: Self.automaticAssignmentKey)
         }
     }
 

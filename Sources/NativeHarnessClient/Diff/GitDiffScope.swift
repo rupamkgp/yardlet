@@ -40,6 +40,9 @@ struct DiffReviewPreferences: Codable, Equatable {
     var commit: String?
     /// The repository picked when the task's folders hold more than one. Nil is the first of them.
     var repositoryPath: String?
+    /// A Markdown file's change is drawn rendered rather than line by line (`MarkdownReviewDiff`).
+    /// Nil is the line diff, which reviews saved before the rendered view read as.
+    var rendersMarkdown: Bool?
 
     var selectedPath: String? {
         get { selectedPaths[scope] }

@@ -26,7 +26,7 @@ package enum VaultToolCatalog {
                 ]),
                 "item": .object([
                     "type": .string("string"),
-                    "description": .string("The saved item's name. Omit when one item is saved for this site.")
+                    "description": .string("The saved item's name or username. Omit when one item is saved for this site.")
                 ]),
                 "kind": .object([
                     "type": .string("string"),

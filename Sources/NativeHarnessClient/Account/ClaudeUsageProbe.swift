@@ -122,7 +122,7 @@ enum ClaudeUsageProbe {
         let used = min(100, max(0, percent.isFinite ? percent : 0))
         return AccountUsageMetric(id: id, label: AccountLimitWindow.accountName(minutes: minutes, model: model),
             usedFraction: used / 100, detail: L10n.format("%.0f%% remaining", 100 - used),
-            resetsAt: resetsAt, evidence: .exactQuota)
+            resetsAt: resetsAt, evidence: .exactQuota, windowMinutes: minutes, model: model)
     }
 
     /// An account's limits after a session reported its plan limits on the stream. Each window

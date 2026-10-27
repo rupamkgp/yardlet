@@ -4,7 +4,7 @@ enum DiffLineKind: String, Codable, Equatable, Sendable {
     case fileHeader, hunkHeader, addition, deletion, context, metadata
 }
 
-struct DiffLine: Codable, Equatable, Identifiable, Sendable {
+struct DiffLine: Codable, Hashable, Identifiable, Sendable {
     let id: Int
     let kind: DiffLineKind
     let text: String
@@ -12,7 +12,7 @@ struct DiffLine: Codable, Equatable, Identifiable, Sendable {
     var newLine: Int? = nil
 }
 
-struct DiffFile: Codable, Equatable, Identifiable, Sendable {
+struct DiffFile: Codable, Hashable, Identifiable, Sendable {
     let id: Int
     let oldPath: String?
     let newPath: String?

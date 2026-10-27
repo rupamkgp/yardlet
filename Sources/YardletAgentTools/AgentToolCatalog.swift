@@ -51,6 +51,8 @@ package enum AgentToolCatalog {
     package static let evaluate = "browser_evaluate"
     package static let handleDialog = "browser_handle_dialog"
     package static let fileUpload = "browser_file_upload"
+    package static let resize = "browser_resize"
+    package static let handoff = "browser_handoff"
     package static let batch = "browser_batch"
     package static let tabList = "browser_tab_list"
     package static let tabNew = "browser_tab_new"
@@ -59,9 +61,9 @@ package enum AgentToolCatalog {
     /// The tools that manage the task's tabs rather than act on a page.
     package static let tabToolNames: Set<String> = [tabList, tabNew, tabSelect, tabClose]
 
-    /// Tools a batch may contain: every tool except the batch itself.
+    /// Tools a batch may contain: every tool except the batch itself and the handoff, which waits for the person.
     package static var batchableNames: [String] {
-        browserTools.map(\.name).filter { $0 != batch }
+        browserTools.map(\.name).filter { $0 != batch && $0 != handoff }
     }
 
     package static func definition(named name: String) -> AgentToolDefinition? {
@@ -288,6 +290,40 @@ package enum AgentToolCatalog {
             readOnly: false
         ),
         AgentToolDefinition(
+            name: resize,
+            title: "Resize viewport",
+            description: "Emulate a screen size in this task's browser tab: preset mobile (375x812, a touch phone with "
+                + "Android Chrome's user agent), tablet (768x1024), or desktop, which clears the emulation and returns the "
+                + "tab to its own size; or a custom width and height (1 to 9999; narrower than 768 is a phone). The size "
+                + "holds for the tab across reloads and navigations, the panel shows a larger one scaled down to fit, and "
+                + "Yardlet clears a size you set when your turn ends. A size the person picked in the panel's Viewport menu "
+                + "stays until they or you change it. colorScheme emulates prefers-color-scheme (light or dark) on the tab "
+                + "until it is set again or your turn ends; preset desktop leaves it. Pages read the device as they load, "
+                + "so load the page again after switching. Clicks still arrive as mouse clicks.",
+            inputSchema: pageInput([
+                "preset": enumeration(["mobile", "tablet", "desktop"], "A device size, or desktop to clear the emulation."),
+                "width": property("number", "Custom width in CSS pixels, with height."),
+                "height": property("number", "Custom height in CSS pixels, with width."),
+                "colorScheme": enumeration(["light", "dark"], "The prefers-color-scheme the page sees.")
+            ]),
+            readOnly: false
+        ),
+        AgentToolDefinition(
+            name: handoff,
+            title: "Hand tab to person",
+            description: "Hand this task's browser tab to the person for a step only they can take, such as a CAPTCHA, a "
+                + "QR code sign-in or a payment approval, and wait for them. The task's panel shows the tab with the reason "
+                + "and Done and Decline buttons, and Yardlet notifies the person. Returns when they answer, when text appears "
+                + "on the page if given, or after timeout seconds (default 600); until they answer or your turn ends the tab "
+                + "stays handed to them, and calling again waits again. Cannot run in a batch.",
+            inputSchema: pageInput([
+                "reason": property("string", "What the person is to do in the tab, shown to them."),
+                "text": property("string", "Text whose appearance on the page also ends the wait, such as what it shows once signed in."),
+                "timeout": property("number", "Seconds to wait. Defaults to 600; a harness's own limit on one call may be shorter.")
+            ], required: ["reason"]),
+            readOnly: false
+        ),
+        AgentToolDefinition(
             name: batch,
             title: "Batch",
             description: "Run several browser tools in order and stop at the first failure. Each action names "
@@ -303,7 +339,7 @@ package enum AgentToolCatalog {
                                 "type": .string("string"),
                                 "enum": .array([
                                     navigate, snapshot, click, type, pressKey, scroll, selectOption, waitFor,
-                                    screenshot, consoleMessages, evaluate, handleDialog, fileUpload,
+                                    screenshot, consoleMessages, evaluate, handleDialog, fileUpload, resize,
                                     tabList, tabNew, tabSelect, tabClose
                                 ].map { .string($0) })
                             ]),

@@ -161,6 +161,37 @@ extension TaskWorkspaceState {
         return key
     }
 
+    /// A web address in a new browser tab of the task, shown, with the panel open: a link from the
+    /// conversation. False when the task has `BrowserHostClient.maxTabsPerSession` browser tabs already.
+    @discardableResult
+    func openBrowserPage(_ url: URL) -> Bool {
+        guard let key = openBrowserTab(address: url.absoluteString) else { return false }
+        // Without the engine the tab is a WebKit preview, which loads its address when told to.
+        if browserClient == nil { browserTabs.preview(for: key).navigate() }
+        return true
+    }
+
+    /// One of the task's servers (`localhost:<port>`) in its browser, with the panel open: the tab
+    /// already on that server shows, else a new tab opens at it. False when a new tab has no room.
+    @discardableResult
+    func showServer(_ server: TaskServerPort) -> Bool {
+        let shown = Navigation.browserKeys(in: panels).first {
+            Self.address(browserTabAddress($0), isLocalhostPort: server.port)
+        }
+        guard let shown else { return openBrowserPage(server.url) }
+        setPanels(Navigation.showing(Navigation.browserTabID(shown), in: panels))
+        return true
+    }
+
+    /// Whether a page's address is on this Mac's `port` (localhost, 127.0.0.1, [::1]).
+    static func address(_ address: String?, isLocalhostPort port: Int) -> Bool {
+        guard let address, let components = URLComponents(string: address),
+              let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = components.host?.lowercased(),
+              ["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"].contains(host) else { return false }
+        return (components.port ?? (scheme == "https" ? 443 : 80)) == port
+    }
+
     /// The page the panel's browser tab `key` needs: the engine's tab, opened now if the engine has none
     /// for it. Tabs lost with the host or saved before Yardlet restarted open again together first,
     /// so the agent sees the tabs the panel shows; a new tab opens at its address, or blank, after the

@@ -34,7 +34,7 @@ struct GoogleSetupPage: View {
         _clientID = State(initialValue: clientID)
         _clientSecret = State(initialValue: clientSecret)
         _showsSteps = State(initialValue: showsSteps)
-        _newAccountServices = State(initialValue: Set(LocalConnectorService.allCases).union(service.map { [$0] } ?? []))
+        _newAccountServices = State(initialValue: Set(LocalConnectorService.google).union(service.map { [$0] } ?? []))
     }
 
     /// The person saved a Google OAuth app of their own.
@@ -257,7 +257,7 @@ struct GoogleSetupPage: View {
                 .background(ParityTheme.subtleFill.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack(spacing: 10) {
-                ForEach(LocalConnectorService.allCases) { service in
+                ForEach(LocalConnectorService.google) { service in
                     Toggle(service.shortName, isOn: Binding(
                         get: { newAccountServices.contains(service) },
                         set: { on in
@@ -337,7 +337,7 @@ struct GoogleSetupPage: View {
                 .accessibilityLabel(L10n.format("More for %@", account.address ?? L10n.string("Google account")))
             }
             HStack(spacing: 6) {
-                ForEach(LocalConnectorService.allCases) { service in
+                ForEach(LocalConnectorService.google) { service in
                     serviceChip(service, account: account)
                 }
             }
@@ -427,6 +427,7 @@ extension LocalConnectorService {
         case .gmail: "Gmail"
         case .googleCalendar: "Calendar"
         case .googleDrive: "Drive"
+        default: name
         }
     }
 }

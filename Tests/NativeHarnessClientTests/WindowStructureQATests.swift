@@ -221,6 +221,20 @@ final class WindowStructureQATests: XCTestCase {
                                       to: directory.appending(path: "\(name)-\(appearance.suffix).png"))
     }
 
+    private func git(_ arguments: [String], in folder: URL) throws {
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/git")
+        process.arguments = ["-c", "user.name=QA", "-c", "user.email=qa@example.test", "-c", "init.defaultBranch=main"]
+            + arguments
+        process.currentDirectoryURL = folder
+        process.environment = ["GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "PATH": "/usr/bin:/bin"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "git \(arguments.joined(separator: " "))")
+    }
+
     private func panels(_ model: AppModel, _ id: UUID) -> TaskSurfaceNavigationProjection.PanelState {
         model.taskWorkspaces.state(for: id).panels
     }
@@ -509,8 +523,47 @@ final class WindowStructureQATests: XCTestCase {
             control.map { $0.frame.midY < ParityTheme.titleBarHeight } ?? false
         }
 
+        // A change for the Review tab to count: one file, two lines added and one removed.
+        let folder = fixture.running.workspaceURL
+        try "a\nb\nc\n".write(to: folder.appending(path: "page.tsx"), atomically: true, encoding: .utf8)
+        try git(["init", "-q"], in: folder)
+        try git(["add", "."], in: folder)
+        try git(["commit", "-qm", "first"], in: folder)
+        try "a\nB\nc\nd\n".write(to: folder.appending(path: "page.tsx"), atomically: true, encoding: .utf8)
+        let status = L10n.format("%d file · +%d −%d", 1, 2, 1)
+
         for appearance in WindowlessRender.Appearance.allCases {
             let light = appearance == .light
+            // The Review tab alone beside the conversation, at a laptop window's widths: its title and its status
+            // stay whole, as the strip's empty part, which moves the window, takes only the room they leave.
+            // While that part was a flexible view it shared the room with the tabs: at 1360 the title read "…"
+            // and the status was gone (2026-10-27, the public site's captures).
+            for existing in splits.splits { splits.dissolve(existing.id) }
+            splits.activate(.session(fixture.running.id))
+            splits.closeOtherTabs(than: .session(fixture.running.id))
+            model.taskWorkspaces.state(for: fixture.running.id).setPanels(
+                .init(trailingSurfaceID: "diff", trailingTabs: ["diff"], recentTrailingTabs: ["diff"]))
+            for size in [NSSize(width: 1280, height: 760), NSSize(width: 1360, height: 840), NSSize(width: 1440, height: 900)] {
+                let host = WindowlessRender.Host(window(model, appearance, size: size), size: size, appearance: appearance)
+                // The Review tab reads Git in the background before it says what changed.
+                host.settle(passes: 40, interval: 0.05)
+                try draw(host, "header-review-\(Int(size.width))", appearance)
+                let row = elements(in: host, buttonsOnly: false).filter { $0.frame.midY < ParityTheme.titleBarHeight }
+                for (text, style) in [(L10n.string("Review"), NSFont.TextStyle.callout), (status, .caption1)] {
+                    // The status is a text with no label: its words are its value, read as `WindowlessRender` reads one.
+                    let shown = try XCTUnwrap(row.first { control in
+                        let value = (control.object as? NSObject)?.perform(NSSelectorFromString("accessibilityValue"))?
+                            .takeUnretainedValue() as? String
+                        return control.label == text || value == text
+                    }, "\(text) in the title bar at \(Int(size.width))")
+                    let natural = NSAttributedString(string: text, attributes: [.font: NSFont.preferredFont(forTextStyle: style)])
+                        .size().width
+                    XCTAssertGreaterThanOrEqual(shown.frame.width, natural - 1,
+                                                "\(text) whole at \(Int(size.width)), \(appearance.suffix)")
+                }
+                host.close()
+            }
+
             // Three tabs, a task shown with its side panel on a browser tab.
             for existing in splits.splits { splits.dissolve(existing.id) }
             splits.activate(.session(fixture.running.id))

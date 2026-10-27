@@ -50,9 +50,13 @@ struct SidebarHoverCardContent: Equatable {
     let isScheduledRun: Bool
     let cpuPercent: Int?
     let pullRequest: TaskPullRequestRowMark?
+    /// The account an agent's start put the task on, and why; nil for a task the
+    /// person started.
+    let accountName: String?
+    let accountReason: String?
 
     init(session: SessionRecord, projectName: String?, status: SidebarTaskStatus?, isScheduledRun: Bool,
-         cpuPercent: Int?, pullRequest: TaskPullRequestRowMark?) {
+         cpuPercent: Int?, pullRequest: TaskPullRequestRowMark?, accountAssignment: AccountAssignment? = nil) {
         taskID = session.id
         title = session.title
         harness = session.harness
@@ -63,6 +67,8 @@ struct SidebarHoverCardContent: Equatable {
         self.isScheduledRun = isScheduledRun
         self.cpuPercent = cpuPercent
         self.pullRequest = pullRequest
+        accountName = accountAssignment?.accountName
+        accountReason = accountAssignment?.reasonLine()
     }
 }
 
@@ -297,7 +303,20 @@ struct SidebarHoverCardView: View {
                 }
             }
             line(HarnessIdentityIcon(harness: content.harness, size: 12 * interfaceScale)) {
-                Text(content.harness.displayName)
+                if let accountName = content.accountName {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(verbatim: "\(content.harness.displayName) · \(accountName)")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let reason = content.accountReason {
+                            Text(reason)
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } else {
+                    Text(content.harness.displayName)
+                }
             }
             if let status = content.status {
                 line(SidebarTaskStatusView(status: status.status)) {

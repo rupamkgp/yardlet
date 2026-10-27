@@ -5,12 +5,31 @@ import Foundation
 @MainActor
 protocol BrowserAgentCDP: AnyObject {
     func send(_ method: String, _ params: [String: JSONValue], timeout: Duration) async throws -> JSONValue
-    /// Every CDP event received so far, oldest first.
+    /// A command for a frame from another site, on its own session (`frameSessions`); nil is the tab's own.
+    func send(_ method: String, _ params: [String: JSONValue], session: String?, timeout: Duration) async throws -> JSONValue
+    /// Every CDP event of the tab's own session received so far, oldest first.
     var eventLog: [(method: String, params: JSONValue)] { get }
+    /// The page's frames from other sites, each on a session of its own, once `attachFrames()` asked for them.
+    var frameSessions: [BrowserFrameSession] { get }
+    func attachFrames() async throws
+}
+
+extension BrowserAgentCDP {
+    /// A connection without frame sessions (tests) answers only for the tab's own.
+    func send(_ method: String, _ params: [String: JSONValue], session: String?, timeout: Duration) async throws -> JSONValue {
+        guard session == nil else { throw BrowserDevToolsError.closed }
+        return try await send(method, params, timeout: timeout)
+    }
+    var frameSessions: [BrowserFrameSession] { [] }
+    func attachFrames() async throws {}
 }
 
 extension BrowserDevToolsClient: BrowserAgentCDP {
     var eventLog: [(method: String, params: JSONValue)] { events }
+
+    func send(_ method: String, _ params: [String: JSONValue], timeout: Duration) async throws -> JSONValue {
+        try await send(method, params, session: nil, timeout: timeout)
+    }
 }
 
 /// One task's page as the tools see it: its CDP connection, the references of its latest
@@ -28,8 +47,28 @@ final class BrowserAgentPage {
     var unresponsive: () -> BrowserTabUnresponsiveness? = { nil }
     /// How the tab's renderer ended, until the page loads again (`BrowserTab.crash`).
     var crash: () -> BrowserTabCrash? = { nil }
+    /// Why the host could not open the tab, which then has no page (`BrowserTab.openFailure`).
+    var openFailure: () -> BrowserTabOpenFailure? = { nil }
     /// The size the host draws the tab at (`BrowserTab.viewport`); nil in tests.
     var viewport: () -> BrowserViewport? = { nil }
+    /// The screen size the tab's page is shown at, and who chose it (`BrowserTab.emulation`).
+    var emulation: () -> BrowserViewportEmulation? = { nil }
+    /// Shows the page at a screen size, or its own again (`BrowserTab.emulate`).
+    var emulate: (BrowserViewportEmulation?) async throws -> Void = { _ in
+        throw BrowserAgentToolError("This browser cannot emulate a screen size.")
+    }
+    /// The side-panel tab this is (`BrowserTab.key`), for the panel to show it; nil in tests.
+    var tabKey: UUID?
+    /// Whether the tab closed.
+    var isClosed: () -> Bool = { false }
+    /// Hands the tab to the person (`BrowserTab.handOff`), reads the handoff, and ends it.
+    var handOff: (String) -> (handoff: BrowserHandoff, isNew: Bool)? = { _ in nil }
+    var handoff: () -> BrowserHandoff? = { nil }
+    var endHandoff: () -> Void = {}
+    /// Emulates a color scheme, or follows the Mac again (`BrowserTab.emulateColorScheme`).
+    var emulateColorScheme: (String?) async throws -> Void = { _ in
+        throw BrowserAgentToolError("This browser cannot emulate a color scheme.")
+    }
     /// What the vault last filled into this page, until the field is gone or the page navigates.
     var vaultFill: BrowserAgentVaultFill?
     /// The vault's passkey waiting in this tab's authenticator for the page's next request.
@@ -39,8 +78,11 @@ final class BrowserAgentPage {
     /// The tools keep the pages that hold a passkey, to take them all back when the vault is turned off.
     var onArmedPasskeyChange: ((BrowserAgentPage) -> Void)?
 
-    /// `@e3` → backend DOM node, from the latest snapshot.
-    private(set) var refs: [String: Int] = [:]
+    /// `@e3` → its element (a backend DOM node, and the session of its frame), from the latest snapshot.
+    private(set) var refs: [String: BrowserAgentSnapshot.Ref] = [:]
+    /// Where each frame from another site sits, from the latest snapshot: its iframe, in the session of the frame
+    /// that holds it.
+    private(set) var frameOwners: [String: BrowserAgentSnapshot.Ref] = [:]
     private(set) var snapshotCount = 0
     /// Where the event log stood at the latest snapshot. A main-frame navigation after it ends the
     /// references even when the old document is kept alive (the back/forward cache), where its
@@ -67,8 +109,10 @@ final class BrowserAgentPage {
 
     // MARK: References
 
-    func replaceRefs(_ refs: [String: Int], eventMark: Int) {
+    func replaceRefs(_ refs: [String: BrowserAgentSnapshot.Ref], frameOwners: [String: BrowserAgentSnapshot.Ref] = [:],
+                     eventMark: Int) {
         self.refs = refs
+        self.frameOwners = frameOwners
         snapshotEventMark = eventMark
         snapshotCount += 1
     }

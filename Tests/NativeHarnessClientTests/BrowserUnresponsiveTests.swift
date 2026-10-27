@@ -150,4 +150,54 @@ final class BrowserUnresponsiveTests: XCTestCase {
         XCTAssertTrue(crashList.contains("Crashed: tab \(replacement.id) (SIGTRAP)"), crashList)
         XCTAssertFalse(crashList.contains("Not responding"))
     }
+
+    /// A tab the host could not open (2026-10-27: the host held 16 browsers, and the tabs past them stayed open blank
+    /// tabs that answered "The browser tab is gone."): the tab knows why, calls fail at once with the reason, the tab
+    /// list says so, the panel's card says it plainly, and browser_navigate opens the tab again in its place.
+    func testATabTheHostCouldNotOpenSaysWhyAndOpensAgainInItsPlace() async throws {
+        let client = makeClient()
+        let task = UUID()
+        let tools = BrowserAgentTools(usesMacEditingCommands: true, tabs: BrowserAgentTabs { client })
+        tools.commandTimeout = .milliseconds(200)
+        tools.loadTimeout = .milliseconds(120)
+        func text(_ result: AgentToolResult) -> String {
+            result.content.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: "\n")
+        }
+        let reason = "The browser already has 256 tabs open across tasks, its most; closing a tab in this or another task "
+            + "makes room for this one"
+        let tab = try client.openTab(forSession: task, url: "about:blank", viewport: .offscreenDefault)
+        let other = try client.newTab(forSession: UUID(), url: "about:blank", viewport: .offscreenDefault, select: false)
+        connection.eventHandler?(.failed(message: reason, tab: tab.id, limit: 256))
+        connection.eventHandler?(.failed(message: "The browser host could not start"))
+        XCTAssertEqual(tab.openFailure, BrowserTabOpenFailure(message: reason, limit: 256))
+        XCTAssertNil(other.openFailure, "a failure of the whole host opened no tab less")
+        XCTAssertEqual(BrowserHostPaneController.message(for: tab.openFailure!),
+                       L10n.string("The browser has too many tabs open. Close a tab in this or another task, then try again."))
+
+        // Nothing waits on a tab without a page: the call fails at once and never reaches the host.
+        connection.sent = []
+        let started = ContinuousClock.now
+        let refused = await tools.run(tool: AgentToolCatalog.evaluate, arguments: .object(["function": .string("() => 1")]),
+                                      sessionID: task)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        XCTAssertTrue(refused.isError)
+        XCTAssertTrue(text(refused).hasPrefix("This tab could not open: \(reason). It has no page."), text(refused))
+        XCTAssertFalse(text(refused).contains("not running"), "the browser runs; only this tab has no page")
+        XCTAssertFalse(connection.sent.contains { if case .devTools = $0 { true } else { false } })
+        let listing = text(await tools.run(tool: AgentToolCatalog.tabList, arguments: .object([:]), sessionID: task))
+        XCTAssertTrue(listing.contains(#""responding":false"#), listing)
+        XCTAssertTrue(listing.contains("Could not open: tab \(tab.id) (\(reason))"), listing)
+        XCTAssertFalse(listing.contains("Not responding"), listing)
+
+        // browser_navigate opens it again under the same side-panel tab.
+        connection.answers = true
+        let moved = await tools.run(tool: AgentToolCatalog.navigate, arguments: .object(["url": .string("https://app.test/")]),
+                                    sessionID: task)
+        let replacement = try XCTUnwrap(client.tab(forSession: task))
+        XCTAssertFalse(replacement === tab)
+        XCTAssertEqual(replacement.key, tab.key)
+        XCTAssertNil(replacement.openFailure)
+        XCTAssertTrue(text(moved).hasPrefix(#"Tab \#(tab.id) could not open (\#(reason)); the tab was opened again in its place as tabId "\#(replacement.id)"."#),
+                      text(moved))
+    }
 }

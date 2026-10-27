@@ -221,10 +221,149 @@ final class TaskPullRequestRenderingTests: XCTestCase {
     }
 }
 
+extension TaskPullRequestRenderingTests {
+    /// The servers a task's processes listen on, after its pull request, in the title bar and in a split
+    /// pane's header, light and dark, into `.build/task-servers-qa/`. A click on the address, in a window
+    /// that is transparent and far off every screen with the app never activated, opens it in a browser
+    /// tab of the task; a second click shows that tab again rather than opening another. With Settings ›
+    /// General's switch off, nothing shows.
+    func testTheTitleBarShowsTheTasksServersAndAClickOpensOneInTheTasksBrowser() throws {
+        let directory = try WindowlessRender.directory("task-servers-qa")
+        let width: CGFloat = 1_000
+        let session = Self.session(title: "Fix the dashboard chart")
+        let one = [TaskServerPort(port: 3_000, processID: 4_123, processName: "node")]
+        let two = one + [TaskServerPort(port: 6_006, processID: 4_200, processName: "storybook")]
+        let rows: [(TaskPullRequest?, [TaskServerPort])] = [(nil, one), (Self.states[2].pullRequest, two), (nil, [])]
+        let size = NSSize(width: width, height: ParityTheme.titleBarHeight * CGFloat(rows.count + 3)
+                              + SplitPaneHeader<EmptyView, EmptyView>.height)
+        for appearance in WindowlessRender.Appearance.allCases {
+            let sheet = VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    TitleBarShowcase(session: session, pullRequest: row.0, servers: row.1).frame(width: width)
+                }
+                // A narrower window: the list goes before the title is pushed.
+                TitleBarShowcase(session: session, pullRequest: Self.states[2].pullRequest, servers: two).frame(width: 880)
+                TitleBarShowcase(session: session, pullRequest: Self.states[2].pullRequest, servers: two).frame(width: 780)
+                // A long title shortens only once the servers are gone; the harness and pull request stay.
+                TitleBarShowcase(session: Self.session(title: "Investigate why paid bookings were left pending after the refund webhook"),
+                                 pullRequest: Self.states[2].pullRequest, servers: two).frame(width: width)
+                SplitPaneHeader(isFocused: true, onFocus: {}, onClose: {}, identity: {
+                    TaskHeaderIdentity(session: session, actions: TaskHeaderActions(servers: { _ in two }), compact: true)
+                }, controls: { _ in EmptyView() })
+                .frame(width: 460)
+            }
+            .frame(width: width, height: size.height, alignment: .top)
+            .background(ParityTheme.canvas)
+            .environment(\.colorScheme, appearance.colorScheme)
+            let capture = try WindowlessRender.hosted(sheet, size: size, appearance: appearance, passes: 4)
+            try WindowlessRender.writePNG(capture.bitmap, to: directory.appending(path: "title-bar-\(appearance.suffix).png"))
+        }
+
+        // The address the test's own socket listens on, so the tab's page reaches no one else's server.
+        let listener = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        defer { Darwin.close(listener) }
+        var address = sockaddr_in(sin_len: UInt8(MemoryLayout<sockaddr_in>.size), sin_family: sa_family_t(AF_INET),
+                                  sin_port: 0, sin_addr: in_addr(s_addr: UInt32(0x7f00_0001).bigEndian),
+                                  sin_zero: (0, 0, 0, 0, 0, 0, 0, 0))
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, length) == 0 && Darwin.listen(listener, 1) == 0
+                && Darwin.getsockname(listener, $0, &length) == 0 }
+        }
+        XCTAssertTrue(bound)
+        let server = TaskServerPort(port: Int(UInt16(bigEndian: address.sin_port)), processID: 4_123, processName: "node")
+
+        let workspace = TaskWorkspaceState()
+        var opened: [Int] = []
+        let host = WindowlessRender.Host(
+            TitleBarShowcase(session: session, pullRequest: nil, servers: [server]) { _, server in
+                opened.append(server.port)
+                _ = workspace.showServer(server)
+            }
+            .frame(width: width),
+            size: NSSize(width: width, height: ParityTheme.titleBarHeight), appearance: .light)
+        defer { host.close() }
+        host.window.alphaValue = 0
+        host.window.setFrameOrigin(NSPoint(x: -30_000, y: -30_000))
+        host.window.orderFrontRegardless()
+        XCTAssertFalse(NSApplication.shared.isActive)
+        host.settle(passes: 6)
+        let link = try XCTUnwrap(frame(of: L10n.format("Open %@ in this task's browser", server.address), in: host),
+                                 "\(host.accessibilityElements())")
+        try click(link, in: host)
+        XCTAssertEqual(opened, [server.port])
+        let keys = TaskSurfaceNavigationProjection.browserKeys(in: workspace.panels)
+        XCTAssertEqual(keys.count, 1)
+        XCTAssertEqual(workspace.panels.trailingSurfaceID, keys.first.map(TaskSurfaceNavigationProjection.browserTabID))
+        XCTAssertTrue(TaskWorkspaceState.address(workspace.browserTabAddress(keys[0]), isLocalhostPort: server.port))
+
+        workspace.setPanels(TaskSurfaceNavigationProjection.hidingTrailing(workspace.panels))
+        try click(link, in: host)
+        XCTAssertEqual(opened, [server.port, server.port])
+        XCTAssertEqual(TaskSurfaceNavigationProjection.browserKeys(in: workspace.panels), keys)
+        XCTAssertEqual(workspace.panels.trailingSurfaceID, keys.first.map(TaskSurfaceNavigationProjection.browserTabID))
+
+        // Settings › General's switch off: no address.
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("TaskServersOff")))
+        defaults.set(false, forKey: TaskServersPreference.key)
+        let off = WindowlessRender.Host(
+            TitleBarShowcase(session: session, pullRequest: nil, servers: one).frame(width: width)
+                .defaultAppStorage(defaults),
+            size: NSSize(width: width, height: ParityTheme.titleBarHeight), appearance: .light)
+        defer { off.close() }
+        off.settle(passes: 4)
+        XCTAssertFalse(off.accessibilityElements().contains { $0.label.contains("localhost") })
+        XCTAssertFalse(TaskServersPreference.isOn(in: defaults))
+    }
+
+    /// The frame of the element labelled `label`, in the window from its top-left, as assistive technologies
+    /// find it (with the app's enhanced interface on, as a screen reader turns it on).
+    private func frame(of label: String, in host: WindowlessRender.Host<some View>) -> NSRect? {
+        host.hosting.layoutSubtreeIfNeeded()
+        let attribute = "AXEnhancedUserInterface" as NSString
+        let app = NSApplication.shared
+        _ = app.perform(NSSelectorFromString("accessibilitySetValue:forAttribute:"), with: NSNumber(value: true),
+                        with: attribute)
+        defer {
+            _ = app.perform(NSSelectorFromString("accessibilitySetValue:forAttribute:"), with: NSNumber(value: false),
+                            with: attribute)
+        }
+        let window = host.window.frame
+        func visit(_ node: AnyObject) -> NSRect? {
+            for case let child as AnyObject in (node.accessibilityChildren?() ?? nil) ?? [] {
+                if (child.accessibilityLabel?() ?? nil) == label, let screen = child.accessibilityFrame?() {
+                    return NSRect(x: screen.minX - window.minX, y: window.maxY - screen.maxY,
+                                  width: screen.width, height: screen.height)
+                }
+                if let found = visit(child) { return found }
+            }
+            return nil
+        }
+        return visit(host.hosting)
+    }
+
+    /// A click at the middle of `frame` (in the window, from its top-left), sent to the window.
+    private func click(_ frame: NSRect, in host: WindowlessRender.Host<some View>) throws {
+        let point = NSPoint(x: frame.midX, y: host.window.frame.height - frame.midY)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: host.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: type == .leftMouseUp ? 0 : 1))
+            host.window.sendEvent(event)
+            host.settle(passes: 3, interval: 0.02)
+        }
+        host.settle(passes: 4)
+    }
+}
+
 /// The title bar as the window puts it, without an app model.
 private struct TitleBarShowcase: View {
     let session: SessionRecord
     let pullRequest: TaskPullRequest?
+    var servers: [TaskServerPort] = []
+    var onOpenServer: (SessionRecord, TaskServerPort) -> Void = { _, _ in }
     @State private var panels = TaskSurfaceNavigationProjection.PanelState()
     @FocusState private var focusedSurface: TaskSurface?
 
@@ -238,7 +377,8 @@ private struct TitleBarShowcase: View {
                 onToggleSessionRail: {}, panelState: $panels, focusedSurface: $focusedSurface,
                 onToggleSidebar: {}, onNewTask: {}, onResume: { _ in }, onRename: { _ in },
                 onTogglePinned: { _ in }, onArchive: { _ in }, onBackToConversation: { _ in },
-                pullRequest: pullRequest, onOpenPullRequest: { _ in }
+                pullRequest: pullRequest, onOpenPullRequest: { _ in },
+                servers: { [servers] _ in servers }, onOpenServer: onOpenServer
             )
         }
     }

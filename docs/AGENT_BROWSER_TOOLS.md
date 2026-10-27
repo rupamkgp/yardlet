@@ -25,7 +25,7 @@
 | 도구 | 인자 | 동작 |
 |---|---|---|
 | `browser_navigate` | `url` | 패널 주소 칸과 같은 규칙(`BrowserURLPolicy`: http·https·file·data·about, 호스트 이름만 쓰면 https)으로 풀어 `Page.navigate`, `Page.loadEventFired`까지 기다린다(30초). 호스트가 막으면(`navigationBlocked`) 오류 |
-| `browser_snapshot` | 없음 | `Accessibility.getFullAXTree`를 들여쓴 텍스트로. 이름 없는 묶음 요소는 건너뛰고, 동작할 수 있는 요소에 `@e3` 같은 참조. 6만 자에서 자른다 |
+| `browser_snapshot` | 없음 | `Accessibility.getFullAXTree`를 들여쓴 텍스트로. 이름 없는 묶음 요소는 건너뛰고, 동작할 수 있는 요소(대화형 역할, 포커스를 받는 요소, 편집 칸, 제목)에만 `@e3` 같은 참조. 2026-10-26부터 iframe 안도 읽는다: 같은 프로세스의 프레임은 `frameId`로, 다른 사이트의 프레임은 그 프레임의 DevTools 세션(`Target.setAutoAttach`, flatten)에서 읽어 각 트리를 그 iframe 줄 아래에 놓고, 다른 출처 iframe 줄에 `[origin=…]`를 붙인다. 같은 사이트 링크는 경로만, 구분 기호뿐인 글과 자기 글로 지은 컨테이너 이름은 빼고 나란한 글은 한 줄로(아래 6절). 6만 자에서 자른다 |
 | `browser_click` | `ref` 또는 `x`·`y`, `button`, `doubleClick`, `modifiers` | 참조면 `DOM.scrollIntoViewIfNeeded` → `DOM.getContentQuads` 중심점 |
 | `browser_type` | `ref`, `text`, `submit` | `DOM.focus`, 기존 내용 선택, `Input.insertText`, 필요하면 Enter. 편집할 수 없는 요소는 오류 |
 | `browser_press_key` | `key` | `Enter`, `Shift+Tab`, `Meta+a` 같은 이름(US 배열). macOS Chromium은 편집 키를 명령으로만 처리하므로 `commands`(`selectAll`, `deleteBackward` 등)를 함께 보낸다 |
@@ -35,24 +35,34 @@
 | `browser_screenshot` | `ref`, `fullPage`, `format` | 이미지 콘텐츠(png 또는 jpeg). 화면 배율과 관계없이 CSS 픽셀 하나에 이미지 픽셀 하나. `fullPage`는 페이지 전체를 한 번씩 찍되 한 변이 장치 픽셀 16,384를 넘지 않게 잘라 위쪽을 찍고, 그때는 결과 글에 페이지의 높이를 적는다([BROWSER_HOST](BROWSER_HOST.md) 3절 "전체 페이지 스크린숏") |
 | `browser_console_messages` | `onlyErrors` | `Runtime.consoleAPICalled`·`exceptionThrown`, `Log.entryAdded`. 최근 200개 |
 | `browser_evaluate` | `function`, `ref` | 함수 하나를 실행해 JSON으로. 참조를 주면 요소가 인자. 함수가 아닌 식은 값을 그대로. 5만 자에서 자른다 |
-| `browser_handle_dialog` | `accept`, `promptText` | 열린 JS 대화상자(alert·confirm·prompt·떠나기 확인)에 답한다. JS 대화상자가 없고 Chromium의 패스키 대화상자가 열려 있으면 accept false로 닫는다(페이지는 `NotAllowedError`를 받아 다른 로그인 방법으로 갈 수 있다). accept true는 오류다(패스키는 사람만 끝낼 수 있다) |
+| `browser_handle_dialog` | `accept`, `promptText` | 열린 JS 대화상자(alert·confirm·prompt·떠나기 확인)에 답한다. JS 대화상자가 없고 이 작업 탭 위에 Chromium의 패스키 대화상자나 로그인 창이 열려 있으면 accept false로 그 창만 닫는다(패스키 요청은 `NotAllowedError`를 받아 다른 로그인 방법으로 갈 수 있다). accept true는 오류다(패스키는 사람만 끝낼 수 있다). 다른 작업 탭의 창과 탭을 모르는 창(인쇄)은 닫지 않는다 |
 | `browser_file_upload` | `paths` | 열린 파일 선택 창에 작업 폴더 안의 파일을 준다. 비우면 취소 |
-| `browser_batch` | `actions: [{name, input}]` | 위 도구와 탭 도구를 차례로(최대 50개). 동작마다 자기 `input`의 `tabId`로 탭을 고른다. 첫 실패에서 멈추고 남은 개수를 알린다. 묶음 안에 묶음은 안 된다 |
-| `browser_tab_list` | 없음 | `{"panelOpen", "tabs": [{"tabId", "origin", "isActive", "responding"}]}`(응답 없는 탭이 있으면 "Not responding: tab …", 렌더러가 끝난 탭이 있으면 "Crashed: tab … (‹오류 코드›)" 한 줄)와 패널이 열려 있는지 한 줄(닫혀 있으면 "배경 페이지라 시간·애니메이션이 다를 수 있으니 snapshot을 쓰라"). 제목과 경로는 페이지가 쓴 말이라 origin(scheme·host·port)만 준다(Claude 앱 `tabs_context`와 같음). 탭이 없으면 빈 목록과 "browser_navigate나 browser_tab_new가 연다" |
+| `browser_resize` | `preset`(mobile·tablet·desktop), `width`·`height`(1~9999), `colorScheme`(light·dark) | 2026-10-26, Claude 앱 Browser 창의 `resize_window`와 같은 인자·규칙. 탭의 페이지를 그 크기로 흉내 낸다(`Emulation.setDeviceMetricsOverride`, 폭 768 미만은 휴대폰: deviceScaleFactor 2, 터치 5점, Android 14 Pixel 8 Chrome 사용자 에이전트와 client hints). desktop은 흉내를 풀고, `colorScheme`은 `Emulation.setEmulatedMedia`의 `prefers-color-scheme`. 탭마다, 새로 고침·이동 뒤에도 유지되고, 탭은 그 크기로 그려져 패널이 크면 줄여 보인다. 에이전트가 정한 크기와 색 구성은 그 턴이 끝날 때 지운다(사람이 패널 메뉴에서 고른 크기는 남고, 그것을 바꾸면 결과가 그렇다고 말한다) |
+| `browser_handoff` | `reason`(필수), `text`, `timeout`(초, 기본 600) | 2026-10-26. 탭을 사람에게 넘기고 기다린다: 작업의 오른쪽 패널을 그 탭으로 열고 막대("에이전트가 이 탭을 넘겼습니다", 이유, "거절"·"다 했어요")와 macOS 알림을 낸다. 사람의 답, `text`가 페이지에 나타남, 턴의 끝, 탭 닫힘, 제한 시간(하네스 한도 `SessionToolPolicy.waitCeiling` 안)에 답한다. 제한 시간 뒤에도 탭은 넘긴 채 남아 다음 호출이 그사이의 답을 받는다. 묶음에 넣을 수 없다 |
+| `browser_batch` | `actions: [{name, input}]` | 위 도구와 탭 도구를 차례로(최대 50개, `browser_handoff`는 빼고). 동작마다 자기 `input`의 `tabId`로 탭을 고른다. 첫 실패에서 멈추고 남은 개수를 알린다. 묶음 안에 묶음은 안 된다 |
+| `browser_tab_list` | 없음 | `{"panelOpen", "tabs": [{"tabId", "origin", "isActive", "responding"}]}`(응답 없는 탭이 있으면 "Not responding: tab …", 렌더러가 끝난 탭이 있으면 "Crashed: tab … (‹오류 코드›)" 한 줄, 호스트가 열지 못한 탭이 있으면 "Could not open: tab … (‹이유›)" 한 줄)와 패널이 열려 있는지 한 줄(닫혀 있으면 "배경 페이지라 시간·애니메이션이 다를 수 있으니 snapshot을 쓰라"). 제목과 경로는 페이지가 쓴 말이라 origin(scheme·host·port)만 준다(Claude 앱 `tabs_context`와 같음). 탭이 없으면 빈 목록과 "browser_navigate나 browser_tab_new가 연다" |
 | `browser_tab_new` | `foreground` | 빈 탭을 맨 뒤에 열고 id를 돌려준다. 기본은 앞 탭 뒤(Claude 앱 `tabs_create`), `foreground`면 앞 탭으로. 9개면 오류. 호스트가 죽어 잃은 탭이나 Yardlet을 다시 켜기 전에 패널에 저장된 탭이 있으면 그것들을 먼저 다시 연다. 연 탭은 패널이 무엇을 보이든 바로 패널 탭으로 들어온다 |
 | `browser_tab_select` | `tabId` | 앞 탭으로. 패널이 브라우저 탭을 보이고 있으면 그 탭을 보이고, 다른 탭(검토 등)을 보이거나 숨겨져 있으면 화면은 그대로 두고 ⌘4가 돌아갈 탭이 된다 |
 | `browser_tab_close` | `tabId` | 닫고 새 앞 탭을 알린다. 그 패널 탭도 빠지고, 보이던 탭이면 패널은 새 앞 탭을 보인다. 패널 탭이 하나도 남지 않으면 패널이 닫힌다(2026-10-23 전에는 마지막 브라우저 탭이면 다른 패널 탭이 있어도 닫혔다, Claude 앱 `tabs_close`) |
 
 - **참조:** 마지막 snapshot 기준이다. 새 snapshot, `browser_navigate`, 그리고 페이지 안 링크 등으로 main frame이 이동한
-  것(`Page.frameNavigated`)이 참조를 끝낸다. 뒤로/앞으로 캐시에 남은 옛 문서의 노드가 옛 좌표로 답하는 것을 실제
+  것(`Page.frameNavigated`)이 참조를 끝낸다. 다른 사이트 프레임의 참조(2026-10-26)는 그 프레임의 세션과 백엔드 노드를 함께 기억한다(다른
+  렌더러의 노드 번호는 겹칠 수 있다). DOM 호출은 그 세션으로, 좌표에는 그것을 담은 iframe들의 내용 상자(`DOM.getBoxModel`) 왼쪽 위를 더하고,
+  입력은 탭 세션으로 보낸다. 그 프레임이 이동하거나 사라지면(노드나 세션이 없다는 오류) 다시 snapshot하라는 오류다. 뒤로/앞으로 캐시에 남은 옛 문서의 노드가 옛 좌표로 답하는 것을 실제
   CEF에서 확인해 이동 사건으로 막았다. 없는 참조, 오래된 참조는 각각 다시 snapshot하라는 오류다.
 - **대화상자:** 패널이 닫혀 있으면 아무도 JS 대화상자에 답하지 않아 페이지 스크립트가 멈춘다. 도구는 호스트 이벤트를
   `addEventObserver`로 받는다. 도구가 기다리는 중에 대화상자가 열리면 그 기다림을 바로 끝내고 "열렸다"는 결과를 돌려주며
   (시간 초과를 기다리지 않음), 열려 있는 동안 다른 도구는 오류로 `browser_handle_dialog`를 안내한다(콘솔 읽기와 파일
   업로드는 된다). 묶음은 대화상자가 열리면 오류 없이 멈춘다. 호스트가 대화상자를 거두면(`javaScriptDialogReset`) 잊는다.
-- **패스키 대화상자(2026-10-23):** 페이지의 WebAuthn 요청에 Chromium이 띄운 대화상자(호스트의 창, 예: "패스키 없음")가 열려 있으면 페이지 도구의
-  결과 끝(실패한 결과에도)에 제목과 함께 알리고 `browser_handle_dialog`(accept false)를 안내한다. 사람이 Yardlet을 앞에 두면 대화상자가 그 위로
-  오고 키 입력을 받는다([BROWSER_HOST](BROWSER_HOST.md) 3절 "패스키").
+- **패스키 대화상자(2026-10-23, 탭별로 2026-10-27):** 페이지의 WebAuthn 요청에 Chromium이 띄운 대화상자(호스트의 창, 예: "패스키 없음")와
+  HTTP 인증 로그인 창은 그 탭의 것이다. 이 작업 탭 위에 열려 있으면 페이지 도구의 결과 끝(실패한 결과에도)에 제목, 탭 번호("over tab 32"),
+  Chromium이 그 탭의 입력을 버린다는 것, 사람은 이 작업의 패널이 그 탭을 보일 때만 본다는 것, `browser_handoff`가 그 탭을 사람에게 보인다는
+  것을 사실로 붙이고 `browser_handle_dialog`(accept false)를 안내한다. 다른 작업 탭의 창은 어느 결과에도 붙지 않는다. 탭을 모르는 창(시스템
+  인쇄 창)은 도구가 실패했을 때만 "which tab opened it is not known, so it may be another task's"로 붙인다. 그 탭을 보이는 패널이 있으면
+  대화상자가 그 패널 위에 오고, Yardlet을 앞에 두면 키 입력을 받는다([BROWSER_HOST](BROWSER_HOST.md) 3절 "Chromium의 창과 탭").
+  Chromium은 그 창이 떠 있는 동안 그 탭의 입력을 버리므로, 그 탭에 보내는 `browser_click`·`browser_type`·`browser_press_key`·`browser_scroll`은
+  아무것도 보내지 않고 실패로 답한다("The click was not sent to tab 3." 뒤에 창의 이름과 종류, `browser_handle_dialog`와 `browser_handoff`).
+  읽기 도구와 `browser_navigate`는 그대로다.
 - **파일 선택:** 열려 있으면 모든 결과 끝에 알린다. 경로는 절대 경로 또는 작업의 주 폴더 기준 상대 경로이고, `..`와
   심볼릭 링크를 푼 뒤 작업 폴더(주 폴더와 프로젝트의 다른 루트) 안이어야 한다. 모드별로 파일·폴더·저장 위치를 확인한다.
 - **호스트가 막은 이동:** `browser_navigate`면 오류, 다른 도구 중에 페이지가 시도했으면 결과 끝에 알린다.
@@ -66,6 +76,7 @@
 - **렌더러가 끝난 페이지(2026-10-24):** 그 탭을 쓴 도구 결과 끝에 "This tab's page crashed: its renderer ended (error code SIGTRAP). The
   browser host and the tab are open. browser_navigate opens a page again in its place; browser_tab_close closes the tab."처럼 사실과 도구
   이름만 붙인다. 다음 로딩이 시작되면 풀린다([BROWSER_HOST](BROWSER_HOST.md) 3절 "렌더러 종료").
+- **열지 못한 탭(2026-10-27):** 호스트가 탭의 브라우저를 만들지 못하면(브라우저 칸이 다 참, Chromium 실패, 20초 안에 읽히지 않은 프로필) 그 탭을 쓰는 도구는 기다리지 않고 "This tab could not open: ‹이유›. It has no page. browser_navigate opens it again in its place; browser_tab_close closes the tab." 하나로 실패한다. 그 탭에 막힌 호출의 오류("The browser is not running"처럼 호스트 전체가 멈춘 것으로 읽히는 말)는 붙이지 않는다. 그 탭으로 가는 `browser_navigate`는 탭을 같은 패널 탭으로 새로 열고 결과 첫 줄에 새 tabId를 알린다. 2026-10-27 전에는 그런 탭이 열린 빈 탭으로 남아 모든 호출이 "The browser tab is gone."으로 끝났다([BROWSER_HOST](BROWSER_HOST.md) 3절 "탭 수").
 - **다시 켠 뒤:** Yardlet을 다시 켜면 작업의 패널 탭은 남지만 페이지는 아직 열리지 않는다. 에이전트가 그 작업에서 브라우저 도구를 처음
   부르면 패널에 저장된 탭들이 같은 패널 탭(키)으로 함께 다시 열리고, 그 가운데 마지막으로 쓴 탭이 앞 탭이다(빈 탭은 패널이 보일 때 연다).
   `browser_tab_list`도 먼저 그 탭들을 다시 열어 목록의 id가 다른 도구에 그대로 쓰인다.
@@ -113,9 +124,9 @@ Claude 앱(2.37337.1)의 `ccd_session` 서버 도구를 같은 이름·같은 �
 
 ### 세션 도구 — 2026-10-16
 
-다른 작업 읽기·메시지·기다리기, 하위 작업, 다른 하네스 하위 에이전트, 작업 보관, 프로젝트 목록·숨기기·보이기(`SessionToolCatalog`, 보관은
-2026-10-22, 프로젝트 셋은 2026-10-26). 이름은 Codex 앱 `codex_app` 도구(`list_threads`·`read_thread`·`wait_threads`·`send_message_to_thread`·`create_thread`·`set_thread_archived`)를 Yardlet
-말로 옮긴 한 벌이다. 모두 `openWorldHint: false`, 읽는 넷(`list_projects` 포함)은 `readOnlyHint: true`. `_meta` `anthropic/alwaysLoad`는 없다(Claude Code는 도구
+다른 작업 읽기·메시지·기다리기, 하위 작업, 다른 하네스 하위 에이전트, 작업 보관, 프로젝트 목록·숨기기·보이기, 계정 목록(`SessionToolCatalog`, 보관은
+2026-10-22, 프로젝트 셋은 2026-10-26, 계정 목록과 `account` 인자는 2026-10-27). 이름은 Codex 앱 `codex_app` 도구(`list_threads`·`read_thread`·`wait_threads`·`send_message_to_thread`·`create_thread`·`set_thread_archived`)를 Yardlet
+말로 옮긴 한 벌이다. 모두 `openWorldHint: false`, 읽는 다섯(`list_projects`·`list_accounts` 포함)은 `readOnlyHint: true`. `_meta` `anthropic/alwaysLoad`는 없다(Claude Code는 도구
 검색 뒤에 둔다). 설명은 하는 일만 말하고 언제 부르라고 하지 않는다. 입력은 `additionalProperties: false`.
 
 | 도구 | 인자 | 동작 |
@@ -124,12 +135,15 @@ Claude 앱(2.37337.1)의 `ccd_session` 서버 도구를 같은 이름·같은 �
 | `read_task` | `task_id`(필수, `self` 가능), `turns`(기본 4, 최대 10), `cursor` | 작업 정보 JSON + 최근 턴을 휴대폰 원격의 줄인 대화(`RemoteConversationProjection`)로: 사람·다른 작업의 메시지, 답, 호출마다 한 줄(출력·파일 내용·diff 없음), 요청. 16,000자 상한(오래된 턴부터 빠지고 한 턴이 넘으면 자름), `before:<턴>` 커서 |
 | `wait_tasks` | `ids`(필수, 작업·에이전트 ID 최대 8), `timeout_seconds`(기본 120, 0은 즉시) | 하나가 턴을 끝내거나 사람을 기다리면 돌아와 각 상태와 마지막 답(8,000자)을 준다. 자리를 기다리는 것(상태 `queued`, 아래 "한도")은 시작해서 끝나거나 사람을 기다릴 때까지 기다린다. 호출 기한(아래)을 넘지 않는다 |
 | `send_message_to_task` | `task_id`, `message`(필수, 32,000자) | 받는 작업의 모델·권한·계정으로 입력창과 같은 길: 쉬는 작업은 새 턴, 실행 중이면 그 턴에 Steer로(턴을 멈추지 않음). 받는 작업이 이 작업에서 시작된 작업이면(`parentTaskID`) 맡긴 일의 후속 지시로, 그 밖은 다른 작업의 메시지로 읽는다(아래 "보낸 메시지의 모양", 2026-10-23). 슬래시 명령·자기 자신 거절. 다른 프로젝트 작업(분할 이웃 제외)과, 묻지 않고 실행하는 작업으로 보내는 것은 호출한 작업의 승인 카드 |
-| `create_task` | `prompt`(필수), `harness`, `model`, `effort`, `project`(이름 또는 폴더), `chat`(2026-10-23, 프로젝트 없는 채팅으로 — 새 채팅 폴더, 승인 카드 없음, `project`와 함께 못 씀), `wait`, `notify` | 사이드바 작업을 호출한 작업 아래 중첩(`parentTaskID`)으로 만들고 첫 메시지를 호출한 작업의 메시지로 보낸다(아래 "보낸 메시지의 모양", 2026-10-23 밤). 창은 옮기지 않는다. 다른 프로젝트는 승인 카드. `wait`면 첫 턴 끝까지, `notify`면 끝날 때 호출한 작업에 메시지. 자리가 없으면 작업은 바로 사이드바에 생기고 첫 메시지를 들고 줄을 선다(`Queued task …`, 아래 "한도") |
-| `run_agent` | `harness`, `prompt`(필수), `model`, `effort`, `folder`, `background`, `notify` | 하네스 세션 하나를 headless로 띄워 프롬프트를 보내고 최종 답을 도구 결과로(첫 줄 `agent_id: …`). 사이드바 행 없음. 호출한 작업 폴더, 그 하네스의 기본 계정·기본 권한(호출한 작업이 읽기 전용이면 읽기 전용, 못 하면 거절). `background`면 ID를 바로 돌려주고 `wait_tasks`나 `notify`로 받는다. 자리가 없으면 상태 `queued`로 줄을 서고(`Queued agent …`, 아래 "한도"), 전경 호출은 호출 기한 안에서 자리와 끝을 기다린다. 하네스 자신의 기록은 남기지 않는다(Claude `--no-session-persistence`, Codex ephemeral 스레드, Pi `--no-session`; 방법이 없는 하네스는 남음) |
+| `create_task` | `prompt`(필수), `harness`, `model`, `effort`, `account`(2026-10-27, `list_accounts`의 ID나 이름, 없으면 자동 배정), `project`(이름 또는 폴더), `chat`(2026-10-23, 프로젝트 없는 채팅으로 — 새 채팅 폴더, 승인 카드 없음, `project`와 함께 못 씀), `topLevel`·`parent_task_id`(2026-10-27, 아래 표 뒤), `wait`, `notify` | 사이드바 작업을 호출한 작업 아래 중첩(`parentTaskID`)으로 만들고 첫 메시지를 호출한 작업의 메시지로 보낸다(아래 "보낸 메시지의 모양", 2026-10-23 밤). 창은 옮기지 않는다. 다른 프로젝트는 승인 카드. `wait`면 첫 턴 끝까지, `notify`면 끝날 때 호출한 작업에 메시지. 자리가 없으면 작업은 바로 사이드바에 생기고 첫 메시지를 들고 줄을 선다(`Queued task …`, 아래 "한도") |
+| `run_agent` | `harness`, `prompt`(필수), `model`, `effort`, `account`(2026-10-27, `create_task`와 같음), `folder`, `background`, `notify` | 하네스 세션 하나를 headless로 띄워 프롬프트를 보내고 최종 답을 도구 결과로(첫 줄 `agent_id: …`). 사이드바 행 없음. 호출한 작업 폴더, 자동 배정 계정·기본 권한(호출한 작업이 읽기 전용이면 읽기 전용, 못 하면 거절). `background`면 ID를 바로 돌려주고 `wait_tasks`나 `notify`로 받는다. 자리가 없으면 상태 `queued`로 줄을 서고(`Queued agent …`, 아래 "한도"), 전경 호출은 호출 기한 안에서 자리와 끝을 기다린다. 하네스 자신의 기록은 남기지 않는다(Claude `--no-session-persistence`, Codex ephemeral 스레드, Pi `--no-session`; 방법이 없는 하네스는 남음) |
 | `archive_task` | `task_ids`(필수, 작업 ID 최대 30, `self`·자기 ID 가능·중복은 한 번) | 사이드바의 보관(`AppModel.archive(_:)`)으로 보관: 붙은 provider 세션 보관(Codex `thread/archive`), 색인 보관, 쓰는 작업이 없는 Yardlet 작업 트리 정리. 호출한 작업이 묻는 수준이면 승인 카드 하나("작업 보관"/"작업 %d개 보관", 자기 하나면 "이 작업 보관"; 작업마다 "• 제목 · 프로젝트", 자기는 "(이 작업)", 함께 가는 하위 작업은 "(이 작업이 시작한 작업)", 자기가 들면 끝에 "이 호출 뒤에 이 작업의 턴이 멈추고 대화가 끝납니다."), 권한 우회·전체 접근으로 도는 작업이면 카드 없이(`sessionToolAsksPerson`, 2026-10-23). 다른 작업이 실행 중(턴·대기 메시지·셸 명령·하위 에이전트)·승인이나 답을 기다림·계정 전환이나 편집 중·보내지 않은 초안이면 카드 전에 거절하고, 카드가 기다리는 사이 실행을 시작해도 거절. 자기는 아래 "자기 보관". 결과 JSON `{archived, notArchived, tasks:[{taskId, title, archived, reason, worktree}], alsoArchived, keptChildTasks, note}`(뒤의 둘은 자기 보관 때만), 하나도 보관하지 못하면 `isError`. 인자 오류는 `Not archived: …` |
 | `list_projects` | 없음 | 사이드바 순서의 프로젝트, 그 뒤에 숨긴 프로젝트. JSON `{projects:[{projectId, name, folder, otherFolders, tasks, pinned, hidden, containsThisTask}], note}`(플래그는 참일 때만). 프로젝트가 없으면 "No projects in Yardlet; every task is a chat." |
 | `hide_project` | `project`(필수: 이름·폴더 경로·`projectId`) | 사이드바 "프로젝트 제거"와 같은 `ProjectStore.hide`. 폴더·작업·예약은 그대로, 그 작업들은 사이드바에서 함께 빠진다. 선택·새 작업 화면은 건드리지 않는다. 카드 없음(설명이 사람이 요청했을 때만 부르라고 말함). 같은 이름이면 보이는 것 먼저, 그래도 여럿이면 `projectId`를 달라는 오류. 이미 숨겼으면 오류 아닌 "already hidden". 인자 오류는 `Nothing was hidden: …` |
 | `show_project` | `project`(필수: 이름·폴더 경로·`projectId`) | `ProjectStore.reveal`. 같은 이름이면 숨긴 것 먼저. 이미 보이면 "already in the sidebar". 인자 오류는 `Nothing was shown: …` |
+| `list_accounts` | `harness`(기본 호출한 작업의 것), `model`(모델 하나의 한도용, 기본 호출한 작업의 것) | 그 하네스의 계정(새 작업 화면 계정 목록과 같은 것)을 계정 목록의 확인(`.ifStale`, 최대 8초)을 거쳐 JSON `{harness, model, accounts:[{account, name, signedIn, automaticAssignment, newTaskAccount, runningTasks, checkedAt, limits:[{name, usedPercent, resetsAt, model}]}], automaticChoice, automaticReason}`로. 시각은 이 Mac 시간대의 ISO 8601. 모델 턴 없음 |
+
+`create_task`의 자리(2026-10-27): 비우면 호출한 작업 아래 중첩이다. `topLevel: true`는 새 작업 창에서 만든 것처럼 부모 없는 맨 위 작업으로, `parent_task_id`는 그 열린 작업 아래로 만든다(하위 작업이 자기 부모를 주면 자기 옆). 둘을 함께 주거나 없는·보관한 작업을 주면 거절한다. 다른 프로젝트 승인 카드, 깊이(호출한 작업 + 1), 첫 메시지 봉투는 그대로다. 나중 메시지의 부모 문장은 계보(`parentTaskID`)를 따르므로 맨 위 작업에는 다른 작업의 메시지로 간다. 예약 도구의 `topLevel`(2026-10-26)과 같은 이름, `spawn_task`의 `parent_task_id`와 같은 이름이다. Codex 앱의 `create_thread`가 평평한 목록에 스레드를 더하는 것에 맞춘다.
 
 - **자기 보관(`archive_task` `self`, 2026-10-23):** Claude 앱 `archive_session` `session_id: "self"`("the conversation ends after this
   tool result")와 같은 일이다. 결과를 먼저 돌려주고(자기 항목 `archived: true`, note "its turn stops here and the conversation ends"),
@@ -289,8 +303,10 @@ call it…"는 옮기지 않음). 입력은 `additionalProperties: false`. 결�
   잘못된 작업 연결을 막는 것이지 같은 사용자 안의 경계는 아니다.
 - 도구 승인은 하네스 몫이다(Claude는 `can_use_tool` 카드, Codex는 자체 정책). Yardlet은 따로 묻지 않는다.
 - `browser_evaluate`는 페이지 안에서 임의 JS를 실행한다(제품 결정). 두지 않기로 한 것은 Codex식 상주 REPL이다.
-- snapshot은 main frame의 접근성 트리만 읽는다(iframe 안은 없음). 이름 없는 `generic` 요소(클릭 처리만 붙은 `div`)는
-  참조가 없어 좌표나 `browser_evaluate`로 다뤄야 한다.
+- snapshot은 2026-10-26부터 iframe(다른 사이트 것과 그 안에 든 것 포함)과 shadow DOM(열린·닫힌 것 모두, 전부터)을 읽는다. 한 프레임이
+  5초 안에 답하지 않으면 그 프레임만 빠진다. 이름 없는 `generic` 요소(클릭 처리만 붙은 `div`)는 참조가 없어 좌표나 `browser_evaluate`로
+  다뤄야 한다. `browser_evaluate`(참조 없이)는 본 프레임에서만 돈다. 비밀번호 관리자는 본 페이지의 칸에만 채운다(다른 사이트 프레임 참조는
+  거절).
 - 에이전트와 사용자가 같은 탭을 쓰므로 동시에 입력하면 섞인다.
 - **패널 없는 탭의 지연(고침, 2026-09-28):** 휠 뒤의 `Runtime.evaluate` 5.9초, 스크린샷 1~6초 같은 지연의 원인은 프레임
   전달이었다. 호스트는 새 IOSurface마다 Mach 메시지를 보내는데, Yardlet은 패널이 프레임을 그릴 때만 그 메시지를 꺼냈다. 패널
@@ -330,6 +346,11 @@ QA 앱은 별도 번들 ID, 임시 홈, `--ui-fixture=conversation`, `open -g`�
   `mcpServer/tool/call`로 이동·snapshot·스크린샷(이미지). Claude(빈 임시 `CLAUDE_CONFIG_DIR`): `--mcp-config` → `mcp_status`
   connected, `mcp_call`로 이동. OpenCode ACP(임시 HOME): `session/new`의 `mcpServers`로 서버가 떠서 환경 변수 세 개를 받고
   `initialize`(`2025-11-25`)·`tools/list`를 보냄.
+
+2026-10-26 브라우저 사용(`run-check.sh … --ui-fixture-browser-check-only=browser-use`, DEBUG, 고정 CEF 154.0.28, 모델 턴 없음):
+QA 서버의 `/viewport`(페이지가 보는 크기·기기·색 구성과 누를 자리), `/frames`(열린·닫힌 shadow root, 같은 사이트 iframe, 다른 사이트 iframe과
+그 안의 같은 사이트 iframe), `/handoff`(사람만 통과하는 확인)에서 확인한다. 고치기 전에는 26개 중 화면 크기 11개 중 9개, iframe 안
+읽기·클릭·입력 8개, 넘기기 1개가 실패했고(shadow DOM 6개는 이미 통과) 고친 뒤 사람 쪽 확인 12개를 더한 38개가 모두 통과했다.
 
 2026-10-16 작업 제안 도구(실제 Claude 턴 2회, `yardlet-sandbox`, 개발 계정, `--model haiku --effort low`, 출력은 프레임
 종류와 도구 이름만): 이 갈래의 `yardlet-mcp`를 Yardlet 없이(`--mcp-config`, 환경 변수 없음) Yardlet과 같은 `--allowedTools`로 넣었다.
