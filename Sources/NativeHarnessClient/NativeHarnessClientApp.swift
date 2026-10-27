@@ -201,8 +201,8 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
         // same task, since every Yardlet window shows the one selection.
         NSWindow.allowsAutomaticWindowTabbing = false
         // A button's name (`.help`) shows once the pointer rests on it for as long as the Codex app waits for its
-        // tooltips, 200 ms, not AppKit's 1.5 s, which read as no name at all (2026-10-27). Registered, so a delay
-        // the person set for their Mac still wins and nothing is saved.
+        // tooltips, 200 ms, not AppKit's 1.5 s. Registered, so a delay the person set for their Mac still wins and
+        // nothing is saved.
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 200])
     }
 
@@ -212,6 +212,7 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
             sparkle.updateCycleEnded = { [weak self] in self?.sparkleUpdateEnded() }
             sparkle.start()
         }
+        WindowTooltipRelease.start()
         // QA runs launched with `open -g` must not take focus from the person using the Mac, nor show them
         // a window to click.
         if QABackground.isOn { return QABackground.start() }

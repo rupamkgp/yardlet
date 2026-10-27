@@ -1265,10 +1265,13 @@ private final class BrowserHostQARunner {
     /// (`TooltipBridge.DynamicTooltipManager`, `dynamicToolTipStringAtPoint:trackingRect:`), which this check asks at
     /// the middle of each button of the panel's header and toolbar: beside the conversation (the header in the title
     /// bar's row), expanded, and for Review. The window's hit test there must reach the button, not the title bar or
-    /// the page. AppKit then shows the name once the pointer has rested for its delay; macOS's own 1.5 s read as no
-    /// name at all (2026-10-27), and Yardlet registers the Codex app's 200 ms (`NSInitialToolTipDelay`). The display
-    /// itself needs the real pointer over an active app, which a QA app never has. First, a page element's `title`:
-    /// Chromium's tooltip reaches the panel's view (`BrowserHostView.toolTip`), which AppKit shows the same way.
+    /// the page. Then AppKit's own path to the shown name runs with the pointer resting at each button's middle
+    /// (`TooltipDisplayProbe`), in the panel and elsewhere in the window (the title bar's sidebar button). A name that
+    /// was found but never shown (2026-10-27) came from the window, not the button: a scroll AppKit never saw end
+    /// holds every name in it back, and the first move of the pointer once the hold has outlasted any scroll gives
+    /// them back (`WindowTooltipRelease`). Last, the delay: the Codex app's 200 ms (`NSInitialToolTipDelay`). First, a
+    /// page element's `title`: Chromium's tooltip reaches the panel's view (`BrowserHostView.toolTip`), which AppKit
+    /// shows the same way.
     private func exerciseTooltips(_ controller: BrowserHostPaneController, _ view: BrowserHostView) async {
         guard let window = view.window, let frameView = window.contentView?.superview else { return }
         var windowFrame = window.frame
@@ -1297,20 +1300,27 @@ private final class BrowserHostQARunner {
         typealias Lookup = @convention(c) (AnyObject, Selector, NSPoint, UnsafeMutablePointer<NSRect>) -> Unmanaged<NSString>?
         let lookupSelector = NSSelectorFromString("dynamicToolTipStringAtPoint:trackingRect:")
         func allViews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViews) }
-        // Each name SwiftUI gives along the rows above the page, with the middle of the area it holds and what the
-        // window hit-tests there.
-        func names(above page: NSRect, from minX: CGFloat, to maxX: CGFloat) -> [String: String] {
+        // Each name SwiftUI gives along the rows above the page, with what the window hit-tests at the middle of the
+        // area it holds; `places` keeps that middle and the name's tooltip owner.
+        var places: [String: (point: NSPoint, owner: NSObject)] = [:]
+        func names(above page: NSRect, from minX: CGFloat, to maxX: CGFloat, step: CGFloat = 2) -> [String: String] {
+            // Where hosting views nest, the innermost answers for its own views.
             let owners = allViews(frameView).flatMap { candidate in
                 candidate.trackingAreas.compactMap { area in
-                    (area.owner as? NSObject).flatMap { $0.responds(to: lookupSelector) ? (view: candidate, manager: $0) : nil }
+                    (area.owner as? NSObject).flatMap { manager in
+                        manager.responds(to: lookupSelector)
+                            ? (view: candidate, manager: manager, frame: candidate.convert(candidate.bounds, to: nil),
+                               size: allViews(candidate).count)
+                            : nil
+                    }
                 }
             }
+            places = [:]
             var found: [String: String] = [:]
-            for row in stride(from: page.maxY + 1, through: frameView.bounds.height - 1, by: 2) {
-                for column in stride(from: minX, through: maxX, by: 2) {
+            for row in stride(from: page.maxY + 1, through: frameView.bounds.height - 1, by: step) {
+                for column in stride(from: minX, through: maxX, by: step) {
                     let point = NSPoint(x: column, y: row)
-                    guard let owner = owners.filter({ $0.view.convert($0.view.bounds, to: nil).contains(point) })
-                        .max(by: { allViews($0.view).count > allViews($1.view).count }) else { continue }
+                    guard let owner = owners.filter({ $0.frame.contains(point) }).min(by: { $0.size < $1.size }) else { continue }
                     var rect = NSRect.zero
                     let lookup = unsafeBitCast(owner.manager.method(for: lookupSelector), to: Lookup.self)
                     guard let name = lookup(owner.manager, lookupSelector, owner.view.convert(point, from: nil), &rect)?
@@ -1319,6 +1329,7 @@ private final class BrowserHostQARunner {
                     let hit = frameView.hitTest(middle)
                     let reaches = hit.map { $0 === owner.view || $0.isDescendant(of: owner.view) } ?? false
                     found[name] = reaches ? "" : "hit \(hit.map { String(describing: type(of: $0)) } ?? "nil")"
+                    places[name] = (middle, owner.manager)
                 }
             }
             return found
@@ -1330,16 +1341,70 @@ private final class BrowserHostQARunner {
                   missing.isEmpty && blocked.isEmpty,
                   "missing \(missing), hit elsewhere \(blocked); found \(found.keys.sorted())")
         }
+        // AppKit's path to each shown name, with the pointer resting at the name's middle: the names that never showed.
+        var probeLog = ""
+        func display(_ layout: String, _ wanted: [String], wait: Duration = .seconds(4)) async -> [String] {
+            var missing: [String] = []
+            for name in wanted {
+                guard let place = places[name] else {
+                    missing.append(name)
+                    continue
+                }
+                let rest = await TooltipDisplayProbe.rest(at: place.point, in: window, owner: place.owner, wait: wait)
+                if !rest.shown { missing.append(name) }
+                probeLog += "== \(layout): \(name) at \(place.point) shown \(rest.shown)\n"
+                var last = ""
+                for step in rest.steps where step.name != last || !step.stack.isEmpty {
+                    probeLog += String(format: "%6.3f  ", step.time) + step.name + "\n"
+                    for frame in step.stack { probeLog += "          " + frame + "\n" }
+                    last = step.name
+                }
+            }
+            try? probeLog.write(to: output.appending(path: "tooltip-probe.txt"), atomically: true, encoding: .utf8)
+            return missing
+        }
+        func shows(_ layout: String, _ wanted: [String]) async {
+            let missing = await display(layout, wanted)
+            check("tooltips (\(layout)): AppKit shows each name once the pointer rests", missing.isEmpty,
+                  "not shown \(missing) (tooltip-probe.txt)")
+        }
         let toolbar = ["Back", "Forward", "Reload", "Open", "Select an element to attach to your message"].map(L10n.string)
         let header = ["Close tab", "Open externally", "Close panel"].map(L10n.string)
         var page = view.convert(view.bounds, to: nil)
         expect("beside the conversation", toolbar + header + [L10n.string("Expand panel")],
                in: names(above: page, from: page.minX, to: page.maxX))
+        await shows("beside the conversation", toolbar + header + [L10n.string("Expand panel")])
+
+        // A scroll AppKit never saw end (an animated scroll the person's own scrolling interrupted, or one whose view
+        // left the window) holds the window's names back, as it does while a scroll runs: none shows, however long
+        // the pointer rests. The pointer moving over the window once the hold has outlasted any scroll ends it.
+        let closePanel = L10n.string("Close panel")
+        _ = window.perform(NSSelectorFromString("_disableToolTipCreationAndDisplay"))
+        let whileHeld = await display("held by a scroll that never ended", [closePanel], wait: .seconds(2))
+        let moved = ContinuousClock.now
+        if let event = NSEvent.mouseEvent(with: .mouseMoved, location: places[closePanel]?.point ?? .zero, modifierFlags: [],
+                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                          context: nil, eventNumber: 0, clickCount: 0, pressure: 0) {
+            NSApp.postEvent(event, atStart: false)
+        }
+        let released = await waitUntil(.seconds(4)) { WindowTooltipRelease.namesShow(in: window) }
+        let releasedAfter = moved.duration(to: .now)
+        if !released { _ = window.perform(NSSelectorFromString("_enableToolTipCreationAndDisplay")) }
+        let afterRelease = await display("after the hold ended", [closePanel])
+        check("tooltips: a scroll that never ended holds no name back for good", !whileHeld.isEmpty && released && afterRelease.isEmpty,
+              "while held \(whileHeld.isEmpty ? "shown" : "not shown"); given back \(released ? "\(releasedAfter) after the pointer moved" : "never"); "
+                + "then \(afterRelease.isEmpty ? "shown" : "not shown")")
+
+        // Names elsewhere in the window: the title bar's sidebar button and what the sidebar and conversation show.
+        let elsewhere = names(above: NSRect(x: 0, y: -1, width: 0, height: 0), from: 0, to: page.minX - 8, step: 4)
+        let sidebar = L10n.string("Hide sidebar")
+        await shows("outside the panel", [sidebar] + elsewhere.keys.filter { $0 != sidebar }.sorted().prefix(4))
         controller.workspace.layout.isExpanded = true
         try? await Task.sleep(for: .seconds(1))
         page = view.convert(view.bounds, to: nil)
         expect("expanded", toolbar + header + [L10n.string("Browser settings")],
                in: names(above: page, from: page.minX, to: page.maxX))
+        await shows("expanded", toolbar + header + [L10n.string("Browser settings")])
         controller.workspace.layout.isExpanded = false
         try? await Task.sleep(for: .seconds(1))
         page = view.convert(view.bounds, to: nil)

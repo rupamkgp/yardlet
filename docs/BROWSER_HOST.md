@@ -778,12 +778,25 @@ answers `.help` with AppKit's dynamic tooltips. The window's hosting view has on
 (`TooltipBridge.DynamicTooltipManager`), which returns the name at the point where the pointer rests through
 `dynamicToolTipStringAtPoint:trackingRect:`. The check calls that method every 2 pt along the rows above the page and
 checks, in the panel beside the conversation, the expanded panel and the review panel, that every button name comes back
-and that a hit-test at that point reaches the button (that neither the title bar nor the page takes it). It then checks
-that the display delay AppKit uses (`NSToolTipManager`'s `_getDisplayDelay:inQuickMode:forView:`) is 0.2 seconds.
-Actually showing a tooltip needs a real pointer over an active app, so the QA app, which runs off-screen and is never
-activated, cannot show one (setting the app's activation, the key window and the pointer position inside the process
-did not make AppKit start tracking). A build from before the delay was registered had every name and hit-test right and
-only the delay at 1.5 seconds. The same step first checks a page element's `title` too: whether resting the pointer on
+and that a hit-test at that point reaches the button (that neither the title bar nor the page takes it). It then runs
+AppKit's own path from a resting pointer to a shown name for each button (`TooltipDisplayProbe`): the pointer's readings
+are set to the button's middle and the window is taken as one of an active app, which a QA app never has; everything else
+is AppKit's own reading, and the tooltip window is never ordered in. The same runs for names outside the panel: the
+title bar's sidebar button and others in the sidebar and conversation. Last it checks that the display delay AppKit uses
+(`NSToolTipManager`'s `_getDisplayDelay:inQuickMode:forView:`) is 0.2 seconds.
+
+Names that came back here and still never showed under a real pointer, however long it rested, were held by the window
+(2026-10-27). AppKit counts each scroll that starts in a window and each that ends
+(`_disableToolTipCreationAndDisplay`, `_enableToolTipCreationAndDisplay`) and shows names only while the count is zero.
+An animated scroll (SwiftUI's `withAnimation` scrolls, a mouse wheel's smooth scroll) counts its end only when it reaches
+its target, so one that the person's own scrolling interrupts, or whose scroll view leaves the window, never does; nor
+does a list scrolled just before it leaves the window. Every name in that window then stays hidden until it closes, while
+a freshly launched app shows them all. `WindowTooltipRelease` brings the count back to zero when the pointer moves over a
+window whose names have been held for 1.5 seconds with no scrolling in the last second, and AppKit then shows the name
+where the pointer rests. The check holds the window's names as such a scroll does, checks that a header button's name
+does not show, posts one pointer move, and checks that the names come back (after about 1.5 seconds) and show. An
+earlier version of the check stopped at the names and the delay, and read the hidden names as late ones.
+The same step first checks a page element's `title` too: whether resting the pointer on
 `#tip` of the QA page turns CEF `on_tooltip` → the host's `tooltip` event → the panel view's `toolTip` into "Tooltip
 text". The full check's "tooltip" item passed in the 10-25 run and failed in the 10-27 run; the cause was the check, not
 the product. At the 10-27 panel width `#tip` (a `span` inside a paragraph) wrapped onto two lines, so the center of
