@@ -292,6 +292,7 @@ final class MacBrowserHost: NativeSurfaceResource {
         client.onTabsMoved = { [unowned self] in self.profiles.tabsMoved(from: $0, to: $1) }
         client.onHostEnded = { [unowned self] in self.removeUnusedProfiles() }
         client.externalApps = LaunchServicesApps()
+        client.addressHistory = addressHistory
         client.onChromiumWindowsChange = { [unowned self] in self.chromiumWindows.present() }
         followMemorySaver(client)
         return client
@@ -344,6 +345,11 @@ final class MacBrowserHost: NativeSurfaceResource {
         follow.start()
         return follow
     }()
+    /// Every task's visits, for the address field's suggestions (docs/BROWSER_HOST.md, "Address suggestions").
+    private(set) lazy var addressHistory = BrowserAddressHistory(file: paths.root.appending(path: "AddressHistory.json"))
+    /// The address field's requests for suggested searches, spaced for all panels as for a Chrome profile (a QA run
+    /// puts a fake Google's in its place).
+    var searchSuggest = BrowserSearchSuggestService()
     /// The tasks whose profiles stay, once the app knows them (nil before the saved tasks are loaded).
     var keptTasks: (@MainActor () -> Set<UUID>?)?
 
@@ -450,5 +456,6 @@ final class MacBrowserHost: NativeSurfaceResource {
 
     func terminateForApplicationShutdown() {
         client.terminateHost()
+        addressHistory.saveBeforeQuitting()
     }
 }

@@ -3057,3 +3057,8 @@
 "Needs a Zoom app of your own. Yardlet asks only to read meetings, their summaries, and recordings." = "직접 만든 Zoom 앱이 필요합니다. Yardlet은 회의, 회의 요약, 녹화를 읽는 권한만 요청합니다.";
 "Needs a Zoom app of your own. Yardlet asks only to read chats and channels." = "직접 만든 Zoom 앱이 필요합니다. Yardlet은 채팅과 채널을 읽는 권한만 요청합니다.";
 "Needs a Zoom app of your own. Yardlet asks only to read and search docs." = "직접 만든 Zoom 앱이 필요합니다. Yardlet은 문서를 읽고 검색하는 권한만 요청합니다.";
+"Suggestions" = "추천";
+"Google Search" = "Google 검색";
+"Remove suggestion" = "추천 삭제";
+"Autocomplete searches and URLs" = "검색어 및 URL 자동 완성";
+"Sends what you type in the address field to Google to suggest searches. Pages from your browsing history are suggested either way." = "주소창에 입력한 글자를 Google로 보내 검색어를 추천받습니다. 꺼도 방문 기록에 있는 페이지는 추천합니다.";

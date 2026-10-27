@@ -74,9 +74,30 @@ enum BrowserURLPolicy {
         return searchURL + "?q=" + encoded
     }
 
+    /// The search of a results page `search` made, or nil for any other address.
+    static func searchTerms(in url: String) -> String? {
+        guard url.hasPrefix(searchURL + "?"), let components = URLComponents(string: url),
+              let terms = components.queryItems?.first(where: { $0.name == "q" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !terms.isEmpty else { return nil }
+        return terms
+    }
+
+    /// Two addresses of the same page, apart from a fragment and trailing slashes: the one a load error names
+    /// and the one the page commits at.
+    static func sameAddress(_ first: String?, _ second: String?) -> Bool {
+        func normalized(_ address: String?) -> String? {
+            guard var address, !address.isEmpty else { return nil }
+            if let hash = address.firstIndex(of: "#") { address = String(address[..<hash]) }
+            while address.hasSuffix("/") { address.removeLast() }
+            return address
+        }
+        guard let first = normalized(first), let second = normalized(second) else { return false }
+        return first == second
+    }
+
     /// A path, a URL with "://", a loopback host, a host with a port, or a dotted host name whose last
     /// label could be a top-level domain. Text with spaces and other single words are search terms.
-    private static func looksLikeAddress(_ value: String) -> Bool {
+    static func looksLikeAddress(_ value: String) -> Bool {
         if value.hasPrefix("/") || value.hasPrefix("~/") || value.contains("://") { return true }
         if value.contains(where: \.isWhitespace) { return false }
         if scheme(of: value) != nil { return true }

@@ -79,3 +79,125 @@ final class BrowserKeyCodeTests: XCTestCase {
         XCTAssertTrue(press.modifiers.contains(.isRight))
     }
 }
+
+/// The address field's suggestions rank as Chrome's omnibox does (docs/BROWSER_HOST.md, "Address suggestions").
+@MainActor
+final class BrowserAddressSuggestionTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func history() -> BrowserAddressHistory {
+        var clock = now.addingTimeInterval(-86_400)
+        let history = BrowserAddressHistory(file: nil) { clock }
+        for typed in [true, true, true, false, false, false] { history.noteVisit("https://github.com/", typed: typed) }
+        history.noteTitle("GitHub", of: "https://github.com/")
+        for _ in 0..<5 { history.noteVisit("https://github.com/zzunkie/yardlet", typed: false) }
+        history.noteTitle("zzunkie/yardlet: Yardlet", of: "https://github.com/zzunkie/yardlet")
+        history.noteVisit("https://www.google.com/search?q=github%20copilot", typed: false)
+        clock = now.addingTimeInterval(-10 * 86_400)
+        history.noteVisit("https://user:secret@gist.github.com/x", typed: false)
+        return history
+    }
+
+    private func rank(_ input: String, inline: Bool = true, remote: BrowserSearchSuggestions? = nil) -> [BrowserAddressSuggestion] {
+        let history = history()
+        return BrowserAddressRanking.suggestions(for: input, pages: Array(history.pages.values), searches: Array(history.searches.values),
+                                                 remote: remote, allowsInline: inline, now: now)
+    }
+
+    func testTheFirstRowCompletesATypedHostThenSearchesThenPages() throws {
+        let remote = try XCTUnwrap(BrowserSearchSuggestions.parse(Data("""
+            )]}'
+            ["gi",["gi","github","gitlab","https://github.com/"],["","","","GitHub"],[],{"google:suggesttype":["QUERY","QUERY","QUERY","NAVIGATION"],"google:suggestrelevance":[1300,600,560,800]}]
+            """.utf8)))
+        let rows = rank("gi", remote: remote)
+        XCTAssertEqual(rows.map(\.fill), ["github.com", "gi", "github copilot", "github", "gitlab", "github.com/zzunkie/yardlet"])
+        XCTAssertEqual(rows[0].destination, "https://github.com/")
+        XCTAssertEqual(rows[0].inlineCompletion, "thub.com", "a host typed before completes inline")
+        XCTAssertEqual(rows[0].title, "GitHub")
+        XCTAssertTrue(rows[1].isVerbatim)
+        XCTAssertTrue(rows[2].isFromHistory, "a past search")
+        XCTAssertFalse(rows[3].isFromHistory)
+        XCTAssertEqual(rows.dropFirst().map(\.inlineCompletion), Array(repeating: "", count: 5))
+        XCTAssertFalse(rows.contains { $0.destination.contains("gist") }, "a page seen once 10 days ago is not suggested")
+
+        let deleted = rank("gi", inline: false, remote: remote)
+        XCTAssertEqual(deleted.map(\.fill), ["gi", "github copilot", "github", "gitlab", "github.com", "github.com/zzunkie/yardlet"],
+                       "right after deleting, what was typed comes first")
+
+        let path = rank("github.com/z")
+        XCTAssertEqual(path.map(\.destination), ["https://github.com/z", "https://github.com/zzunkie/yardlet"],
+                       "a page never typed does not complete an address")
+        XCTAssertTrue(path[0].isVerbatim)
+    }
+
+    func testHistoryScoresAsChromium() {
+        XCTAssertEqual([0, 4, 5, 14, 31, 90, 91, 365, 400].map { BrowserAddressRanking.recencyScore(daysAgo: $0) },
+                       [1, 1, 0.97, 0.7, 0.5, 0.3, 0.19, 0.1, 0.1])
+        XCTAssertEqual([0, 1, 5, 9, 50, 90, 200].map(BrowserAddressRanking.relevance), [0, 625, 962, 1300, 1350, 1399, 1399])
+        XCTAssertEqual(BrowserAddressRanking.urlTermScore("hub", url: "https://github.com/"), 2, "inside a word of the host")
+        XCTAssertEqual(BrowserAddressRanking.urlTermScore("com", url: "https://github.com/"), 0, "the top-level domain")
+        XCTAssertEqual(BrowserAddressRanking.urlTermScore("yard", url: "https://github.com/zzunkie/yardlet?tab=yard"), 13)
+        XCTAssertEqual(BrowserAddressRanking.titleTermScore("날씨", title: "서울 날씨 - Google 검색"), 8)
+        XCTAssertEqual(BrowserAddressRanking.titleTermScore("씨", title: "서울 날씨"), 0, "inside a word of the title")
+    }
+
+    func testSearchSuggestionsAskGoogleOnlyWhenOnAndNotForPrivateAddresses() async throws {
+        for (text, asks) in [("gi", true), ("two words", true), ("?example.com/path", true), ("example.com", true),
+                             ("http://example.com/x", true), ("https://example.com/private", false), ("localhost:3000", false),
+                             ("/Users/me/a.html", false), ("user@example.com", false), ("example.com/?q=1", false),
+                             ("file:///tmp/a", false)] {
+            XCTAssertEqual(BrowserSearchSuggestService.mayAsk(about: text), asks, text)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FakeSuggestServer.self]
+        FakeSuggestServer.requests = []
+        var isOn = false
+        let history = history()
+        let autocomplete = BrowserAddressAutocomplete(history: { history }, service: BrowserSearchSuggestService(session: URLSession(configuration: configuration)),
+                                                      suggestsSearches: { isOn }, korean: true, now: { self.now })
+        autocomplete.update(typed: "gi", allowsInline: true)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(FakeSuggestServer.requests.isEmpty, "turned off, nothing is sent")
+        XCTAssertFalse(autocomplete.rows.contains { $0.fill == "gitlab" })
+
+        isOn = true
+        autocomplete.update(typed: "gi", allowsInline: true)
+        for _ in 0..<40 where !autocomplete.rows.contains(where: { $0.fill == "gitlab" }) { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(autocomplete.rows.contains { $0.fill == "gitlab" })
+        let request = try XCTUnwrap(FakeSuggestServer.requests.first)
+        let items = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.map(\.name), ["client", "ie", "oe", "hl", "q"])
+        XCTAssertEqual(items.last?.value, "gi")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+
+        autocomplete.move(by: -1)
+        XCTAssertEqual(autocomplete.selection, autocomplete.rows.count - 1, "moving up from the first row wraps to the last")
+        autocomplete.select(autocomplete.rows.firstIndex { $0.fill == "github copilot" } ?? 0)
+        XCTAssertTrue(autocomplete.removeSelected())
+        XCTAssertTrue(history.searches.isEmpty, "Shift-Delete removes a past search from the history")
+        XCTAssertFalse(autocomplete.rows.contains { $0.fill == "github copilot" })
+    }
+}
+
+/// Google's suggest service, as the tests need it.
+final class FakeSuggestServer: URLProtocol {
+    nonisolated(unsafe) static var requests: [URLRequest] = []
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "www.google.com" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requests.append(request)
+        let body = Data("""
+            )]}'
+            ["gi",["github","gitlab"],["",""],[],{"google:suggesttype":["QUERY","QUERY"],"google:suggestrelevance":[600,560]}]
+            """.utf8)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "text/javascript; charset=UTF-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}

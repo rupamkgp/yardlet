@@ -3057,3 +3057,8 @@
 "Needs a Zoom app of your own. Yardlet asks only to read meetings, their summaries, and recordings." = "Needs a Zoom app of your own. Yardlet asks only to read meetings, their summaries, and recordings.";
 "Needs a Zoom app of your own. Yardlet asks only to read chats and channels." = "Needs a Zoom app of your own. Yardlet asks only to read chats and channels.";
 "Needs a Zoom app of your own. Yardlet asks only to read and search docs." = "Needs a Zoom app of your own. Yardlet asks only to read and search docs.";
+"Suggestions" = "Suggestions";
+"Google Search" = "Google Search";
+"Remove suggestion" = "Remove suggestion";
+"Autocomplete searches and URLs" = "Autocomplete searches and URLs";
+"Sends what you type in the address field to Google to suggest searches. Pages from your browsing history are suggested either way." = "Sends what you type in the address field to Google to suggest searches. Pages from your browsing history are suggested either way.";

@@ -158,6 +158,8 @@ struct SettingsCenterView: View {
     @AppStorage(TaskServersPreference.key) private var showsTaskServers = true
     /// Read when a tab opens: its task's own profile, or the default profile every task shares.
     @AppStorage(BrowserTaskProfiles.storageKey) private var cookieStorage = BrowserTaskProfiles.Storage.perTask.rawValue
+    /// Read as the person types in a browser panel's address field.
+    @AppStorage(SearchSuggestionPreference.key) private var suggestsSearches = true
     /// What Return does while a Codex turn runs; read at each send.
     @AppStorage(CodexFollowUpMode.preferenceKey) private var codexFollowUpMode = CodexFollowUpMode.steer.rawValue
     /// Yardlet's menu bar item (`MenuBarStatusItem`), on unless turned off as in the Codex app.
@@ -443,6 +445,23 @@ struct SettingsCenterView: View {
                     .controlSize(.small)
                     .help(L10n.string("Each task keeps its own sign-ins and site data; sign-ins saved in the password manager work in every task"))
                     .accessibilityHint(L10n.string("Each task keeps its own sign-ins and site data; sign-ins saved in the password manager work in every task"))
+                }
+                .padding(.vertical, 14)
+                Divider().padding(.leading, Self.dividerLeading)
+                HStack(spacing: 12) {
+                    settingsControlIcon("magnifyingglass")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(L10n.string("Autocomplete searches and URLs")).font(.callout.weight(.medium))
+                        Text(L10n.string("Sends what you type in the address field to Google to suggest searches. Pages from your browsing history are suggested either way."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle(L10n.string("Autocomplete searches and URLs"), isOn: $suggestsSearches)
+                        .labelsHidden()
+                        .toggleStyle(.paritySwitch)
+                        .controlSize(.small)
                 }
                 .padding(.vertical, 14)
                 Divider().padding(.leading, Self.dividerLeading)

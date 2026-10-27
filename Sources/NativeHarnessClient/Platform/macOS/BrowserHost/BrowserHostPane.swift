@@ -20,6 +20,13 @@ final class BrowserHostPaneController {
     /// What the pane last put in the address field; while the field still holds it, the person has
     /// not typed there.
     @ObservationIgnored private var placedAddress = ""
+    /// The address field's suggestions while the person types (`BrowserAddressAutocomplete`).
+    @ObservationIgnored private(set) lazy var autocomplete = BrowserAddressAutocomplete(
+        history: { MacBrowserHost.shared.addressHistory }, service: MacBrowserHost.shared.searchSuggest)
+    /// The text the pane itself last put in the address field for a suggestion, which is no typing.
+    @ObservationIgnored private var placedFieldText: String?
+    /// The address field's selection before its last edit, which tells a deletion from typing.
+    @ObservationIgnored private var selectionBeforeEdit: NSRange?
     private(set) var title = ""
     private(set) var isLoading = false
     private(set) var canGoBack = false
@@ -203,6 +210,7 @@ final class BrowserHostPaneController {
         if let tab { release(tab) }
         errorMessage = nil
         isEditingAddress = false
+        autocomplete.close()
         placeAddress(workspace.browserTabs.tab(key)?.address ?? "")
         open()
     }
@@ -465,14 +473,18 @@ final class BrowserHostPaneController {
     // MARK: Navigation
 
     func submitAddress() {
+        // Return opens the selected suggestion, as in Chrome; the first row only when it can be first.
+        let chosen = autocomplete.selected.flatMap { autocomplete.selection > 0 || $0.canBeDefault ? $0 : nil }
+        autocomplete.close()
         isEditingAddress = false
         do {
-            let url = try BrowserURLPolicy.addressFieldURL(addressInput)
+            let url = try chosen?.destination ?? BrowserURLPolicy.addressFieldURL(addressInput)
             errorMessage = nil
             if let tab, tab.openFailure != nil {
                 reopen(tab, at: url)
             } else if let tab {
                 tab.notePersonInput()
+                tab.noteTypedNavigation()
                 tab.send(.navigate(tab: tab.id, url: url))
             } else {
                 // The host could not open the tab before; it opens at the address.
@@ -485,6 +497,123 @@ final class BrowserHostPaneController {
         } catch {
             showNotice(Self.message(for: error))
         }
+    }
+
+    // MARK: Address suggestions (docs/BROWSER_HOST.md, "Address suggestions")
+
+    /// The address field's text changed. What the person types updates the suggestions, and while they type at the
+    /// end, not right after deleting and not while an input method composes, the first row's completion follows the
+    /// caret, selected (Chrome's inline autocompletion). Deleting is Chrome's `just_deleted_text`: the text got
+    /// shorter and the caret is not past where the selection before the edit began.
+    func addressTextChanged(from old: String, to text: String) {
+        if text == placedFieldText { return }
+        placedFieldText = nil
+        guard isEditingAddress, text != placedAddress else { return autocomplete.close() }
+        let editor = addressEditor
+        let length = (text as NSString).length
+        let caret = editor.map { $0.string == text ? $0.selectedRange() : NSRange(location: length, length: 0) }
+            ?? NSRange(location: length, length: 0)
+        let deleted = (old as NSString).length > length && selectionBeforeEdit.map { caret.location <= $0.location } == true
+        let atEnd = caret == NSRange(location: length, length: 0)
+        autocomplete.update(typed: text, allowsInline: atEnd && !deleted && editor?.hasMarkedText() != true)
+        if autocomplete.rows.first?.inlineCompletion.isEmpty == false { showSelectedSuggestion() }
+        selectionBeforeEdit = editor?.selectedRange()
+    }
+
+    /// A text view's selection changed: the address field's, while it still holds the text the pane knows (not in the
+    /// middle of an edit), is the selection the next edit starts from.
+    func addressSelectionChanged(in textView: Any?) {
+        guard let editor = addressEditor, (textView as AnyObject?) === editor, editor.string == addressInput else { return }
+        selectionBeforeEdit = editor.selectedRange()
+    }
+
+    /// The address field gained or lost the keyboard; the suggestions close with it.
+    func addressFocusChanged(_ focused: Bool) {
+        isEditingAddress = focused
+        selectionBeforeEdit = nil
+        if !focused { autocomplete.close() }
+    }
+
+    /// ↑ ↓ Tab ⇧Tab while the suggestions are open: the next or previous row, wrapping around.
+    func moveSuggestion(by offset: Int) -> Bool {
+        guard autocomplete.isOpen, addressEditor?.hasMarkedText() != true else { return false }
+        autocomplete.move(by: offset)
+        showSelectedSuggestion()
+        return true
+    }
+
+    /// Escape, as Chrome's `OnEscapeKeyPressed`: a row the person moved to goes back to the first, open
+    /// suggestions close, then the field shows the page's address again all selected, and once it does the page
+    /// takes the keyboard.
+    func escapeAddress() {
+        if autocomplete.isOpen, autocomplete.selection != 0 {
+            autocomplete.select(0)
+            showSelectedSuggestion()
+        } else if autocomplete.isOpen {
+            autocomplete.close()
+        } else if addressInput != placedAddress {
+            let shown = Self.shownAddress(tab?.currentURL ?? workspace.browserTabs.tab(key)?.address ?? "")
+            placedAddress = shown
+            setFieldText(shown, selecting: NSRange(location: 0, length: (shown as NSString).length))
+        } else if let view, hasTab {
+            view.window?.makeFirstResponder(view)
+        }
+    }
+
+    /// Shift-Delete (⇧fn⌫) on a row from the history, or its remove button: Chrome deletes the page or search.
+    @discardableResult
+    func removeSuggestion(at index: Int? = nil) -> Bool {
+        guard autocomplete.isOpen else { return false }
+        if let index { autocomplete.select(index) }
+        guard autocomplete.removeSelected() else { return false }
+        if autocomplete.isOpen { showSelectedSuggestion() } else { setFieldText(autocomplete.typed, selecting: nil) }
+        return true
+    }
+
+    /// A click on a row opens it.
+    func openSuggestion(at index: Int) {
+        autocomplete.select(index)
+        submitAddress()
+    }
+
+    /// The field shows the selected row: what was typed and the first row's completion selected after the caret,
+    /// or another row's text with the caret at its end (Chrome's temporary text).
+    private func showSelectedSuggestion() {
+        guard let row = autocomplete.selected else { return }
+        if autocomplete.selection == 0 {
+            let typed = autocomplete.typed
+            setFieldText(typed + row.inlineCompletion, selecting: NSRange(
+                location: (typed as NSString).length, length: (row.inlineCompletion as NSString).length))
+        } else {
+            setFieldText(row.fill, selecting: nil)
+        }
+    }
+
+    /// Puts `text` in the address field through its field editor, changing only what differs, so the caret and
+    /// selection land where `range` says (the end when nil).
+    private func setFieldText(_ text: String, selecting range: NSRange?) {
+        placedFieldText = text
+        if let editor = addressEditor {
+            let old = editor.string as NSString, new = text as NSString
+            var start = 0
+            while start < old.length, start < new.length, old.character(at: start) == new.character(at: start) { start += 1 }
+            if start > 0, start < old.length, CFStringIsSurrogateLowCharacter(old.character(at: start)) { start -= 1 }
+            let changed = NSRange(location: start, length: old.length - start)
+            let replacement = new.substring(from: start)
+            if changed.length > 0 || !replacement.isEmpty, editor.shouldChangeText(in: changed, replacementString: replacement) {
+                editor.replaceCharacters(in: changed, with: replacement)
+                editor.didChangeText()
+            }
+            editor.setSelectedRange(range ?? NSRange(location: new.length, length: 0))
+        }
+        addressInput = text
+        selectionBeforeEdit = range ?? NSRange(location: (text as NSString).length, length: 0)
+    }
+
+    /// The address field's field editor while the field has the keyboard.
+    private var addressEditor: NSTextView? {
+        guard isEditingAddress, let editor = view?.window?.firstResponder as? NSTextView, editor.isFieldEditor else { return nil }
+        return editor
     }
 
     func navigate(_ action: BrowserNavigationAction) {
@@ -643,10 +772,10 @@ final class BrowserHostPaneController {
         case .address(_, let url):
             showAddress(url)
             vaultPageMoved(to: url)
-            if let pending = pendingError, Self.sameAddress(url, pending.address) {
+            if let pending = pendingError, BrowserURLPolicy.sameAddress(url, pending.address) {
                 pendingError = nil
                 showError(pending.message, at: url)
-            } else if let errorAddress, !Self.sameAddress(url, errorAddress), !url.hasPrefix("chrome-error:") {
+            } else if let errorAddress, !BrowserURLPolicy.sameAddress(url, errorAddress), !url.hasPrefix("chrome-error:") {
                 // A page committed (a move, history.pushState): the failure was another page's.
                 clearError()
             }
@@ -670,19 +799,19 @@ final class BrowserHostPaneController {
             // A certificate error is left to Chromium's own warning page, as in Chrome: it says what is
             // wrong and, where the error allows, lets the person go on (Advanced, then Proceed).
             let text = "\(message) (\(code))\n\(url)"
-            if Self.sameAddress(tab?.currentURL, url) {
+            if BrowserURLPolicy.sameAddress(tab?.currentURL, url) {
                 showError(text, at: url)
             } else if isLoading {
                 pendingError = (url, text)
             }
             // A failure reported once nothing loads belongs to a move already replaced: it is dropped.
         case .loadEnd(_, let url, let status):
-            if status == 0, let pending = pendingError, Self.sameAddress(url, pending.address) {
+            if status == 0, let pending = pendingError, BrowserURLPolicy.sameAddress(url, pending.address) {
                 // Chromium committed its error page for the failed address (it reports no address
                 // change for it, only this load end with no HTTP status).
                 pendingError = nil
                 showError(pending.message, at: url)
-            } else if status > 0 || (errorAddress.map { !Self.sameAddress(url, $0) } ?? false && !url.hasPrefix("chrome-error:")) {
+            } else if status > 0 || (errorAddress.map { !BrowserURLPolicy.sameAddress(url, $0) } ?? false && !url.hasPrefix("chrome-error:")) {
                 // A page answered (a reload that worked, another page): it is no longer unavailable.
                 clearError()
             }
@@ -772,18 +901,6 @@ final class BrowserHostPaneController {
         errorMessage = nil
         errorAddress = nil
         pendingError = nil
-    }
-
-    /// Two addresses of the same page: the one a load error names and the one the page commits at.
-    static func sameAddress(_ first: String?, _ second: String?) -> Bool {
-        func normalized(_ address: String?) -> String? {
-            guard var address, !address.isEmpty else { return nil }
-            if let hash = address.firstIndex(of: "#") { address = String(address[..<hash]) }
-            while address.hasSuffix("/") { address.removeLast() }
-            return address
-        }
-        guard let first = normalized(first), let second = normalized(second) else { return false }
-        return first == second
     }
 
     /// An address as a notice names it: a web page's host, else the whole address.
@@ -1097,7 +1214,21 @@ struct BrowserHostPane: View {
         .onChange(of: controller.isEditingAddress) { _, editing in
             if editing { isAddressFocused = true }
         }
-        .onChange(of: isAddressFocused) { _, focused in controller.isEditingAddress = focused }
+        .onChange(of: isAddressFocused) { _, focused in controller.addressFocusChanged(focused) }
+        .overlayPreferenceValue(BrowserAddressFieldBounds.self) { field in
+            // Chrome's dropdown, under the address field and over the page, from the field's start to the panel's
+            // edge so that a narrow panel still shows titles and addresses.
+            if let field, isAddressFocused, controller.autocomplete.isOpen {
+                GeometryReader { proxy in
+                    let bounds = proxy[field]
+                    BrowserAddressSuggestionList(autocomplete: controller.autocomplete,
+                                                 onOpen: { controller.openSuggestion(at: $0) },
+                                                 onRemove: { controller.removeSuggestion(at: $0) })
+                        .frame(width: max(bounds.width, proxy.size.width - bounds.minX - 10))
+                        .offset(x: bounds.minX, y: bounds.maxY + 4)
+                }
+            }
+        }
         .onChange(of: controller.isFindVisible) { _, visible in if visible { isFindFocused = true } }
         .sheet(item: $controller.vaultDraft) { draft in
             // "Add to Password Manager…" from the page's menu: a new item for this site.
@@ -1247,10 +1378,26 @@ struct BrowserHostPane: View {
                 // Submitting gives the page the keyboard (`submitAddress`); a focus change here would take
                 // it back to the window.
                 .onSubmit { controller.submitAddress() }
+                .onChange(of: controller.addressInput) { old, text in controller.addressTextChanged(from: old, to: text) }
+                .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { note in
+                    controller.addressSelectionChanged(in: note.object)
+                }
+                // Chrome's keys for its dropdown; each passes on to the field while the suggestions are closed.
+                .onKeyPress(.downArrow) { controller.moveSuggestion(by: 1) ? .handled : .ignored }
+                .onKeyPress(.upArrow) { controller.moveSuggestion(by: -1) ? .handled : .ignored }
+                .onKeyPress(keys: [.tab, KeyEquivalent("\u{19}")], phases: [.down, .repeat]) { press in
+                    let back = press.modifiers.contains(.shift) || press.key == KeyEquivalent("\u{19}")
+                    return controller.moveSuggestion(by: back ? -1 : 1) ? .handled : .ignored
+                }
+                .onKeyPress(.deleteForward, phases: .down) { press in
+                    press.modifiers.contains(.shift) && controller.removeSuggestion() ? .handled : .ignored
+                }
+                .onExitCommand { controller.escapeAddress() }
                 .padding(.horizontal, 10)
                 .frame(height: 30)
                 .background(ParityTheme.subtleFill, in: RoundedRectangle(cornerRadius: 7))
                 .overlay { RoundedRectangle(cornerRadius: 7).stroke(ParityTheme.separator) }
+                .anchorPreference(key: BrowserAddressFieldBounds.self, value: .bounds) { $0 }
             if !controller.blockedPopups.isEmpty { blockedPopupsMenu }
             ParityIconButton(systemName: "arrow.right", help: L10n.string("Open")) { controller.submitAddress() }
             .disabled(controller.addressInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

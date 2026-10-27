@@ -79,6 +79,8 @@ final class BrowserHostClient {
     var onAgentActivity: ((_ session: UUID, _ tab: BrowserTabID) -> Void)?
     /// Called when a tab goes away: closed, or lost with the host.
     var onTabClosed: ((BrowserTabID) -> Void)?
+    /// The address field's history, which every tab's pages and titles go to (`noteHistory`).
+    var addressHistory: BrowserAddressHistory?
     /// Called whenever what a tab waits on from the person changes (`personWait(of:)`), for the task's marks and
     /// notification.
     var onPersonWaitsChange: (() -> Void)?
@@ -366,7 +368,10 @@ final class BrowserHostClient {
         remembered[session] = nil
         var opened: [BrowserTab] = []
         for (index, address) in saved.addresses.prefix(Self.maxTabsPerSession).enumerated() {
-            opened.append(try open(url: address, viewport: viewport, session: session, key: saved.key(at: index), after: nil))
+            let tab = try open(url: address, viewport: viewport, session: session, key: saved.key(at: index), after: nil)
+            // A restored page is no new visit.
+            tab.visitedAddress = address
+            opened.append(tab)
         }
         if let fronted = opened.indices.contains(saved.fronted) ? opened[saved.fronted] : opened.first {
             frontedTabs[session] = fronted.id
@@ -395,6 +400,7 @@ final class BrowserHostClient {
         sessionOrder[session] = order
         let replacement = try open(url: url, viewport: tab.viewport ?? .offscreenDefault, session: session, key: tab.key,
                                    after: nil, at: min(index, order.count))
+        replacement.visitedAddress = tab.visitedAddress
         if wasFront || frontedTabs[session].flatMap({ tabs[$0] }) == nil { frontedTabs[session] = replacement.id }
         if agentFronts[session] == tab.id { agentFronts[session] = replacement.id }
         if agentUsedTabs[session] == tab.id { agentUsedTabs[session] = replacement.id }
@@ -1030,7 +1036,24 @@ final class BrowserHostClient {
         case .address(let id, _), .title(let id, _), .favicon(let id, _, _):
             guard let tab = tabs[id] else { return }
             tab.receive(event)
+            noteHistory(event, of: tab)
             if let session = tab.session { notifySession(session) }
+        case .loadError(let id, let url, let code, _):
+            guard let tab = tabs[id] else { return }
+            tab.receive(event)
+            // The failed address's error page is no visit; an aborted load (-3) is only replaced by another.
+            if code != -3 {
+                tab.failedAddress = url
+                tab.typedNavigation = false
+            }
+        case .loadEnd(let id, _, _):
+            // Chromium reports the error page's commit with this load end and no address change.
+            tabs[id]?.receive(event)
+            tabs[id]?.failedAddress = nil
+        case .newDocument(let id, _):
+            guard let tab = tabs[id] else { return }
+            tab.receive(event)
+            noteHistory(event, of: tab)
         case .discarded(let id):
             guard let tab = tabs[id] else { return }
             tab.receive(event)
@@ -1082,6 +1105,35 @@ final class BrowserHostClient {
             close(tab)
         default:
             if let id = event.tab { tabs[id]?.receive(event) }
+        }
+    }
+
+    /// Each page a tab commits is a visit in the address field's history, typed when the person opened it from
+    /// the address field: not the address it counted last (a reload, a move within the page, a restored or woken
+    /// tab) unless the person typed it again, nor a failed address's error page. Titles follow their pages.
+    private func noteHistory(_ event: BrowserHostEvent, of tab: BrowserTab) {
+        guard let addressHistory else { return }
+        switch event {
+        case .address(_, let url):
+            guard !BrowserURLPolicy.sameAddress(url, tab.visitedAddress) else { return }
+            tab.visitedAddress = url
+            let typed = tab.typedNavigation
+            tab.typedNavigation = false
+            if let failed = tab.failedAddress, BrowserURLPolicy.sameAddress(failed, url) {
+                tab.failedAddress = nil
+                return
+            }
+            addressHistory.noteVisit(url, typed: typed)
+        case .newDocument(_, let url):
+            // The person typed the address the tab shows: no address change reports that visit.
+            guard tab.typedNavigation, BrowserURLPolicy.sameAddress(url, tab.visitedAddress) else { return }
+            tab.typedNavigation = false
+            addressHistory.noteVisit(url, typed: true)
+        case .title(_, let title):
+            // Chromium names a page without a title by its address.
+            if let url = tab.currentURL, title != url { addressHistory.noteTitle(title, of: url) }
+        default:
+            break
         }
     }
 }
@@ -1158,6 +1210,12 @@ final class BrowserTab {
     /// The person's last use of the page in its panel: that input, or a scroll, a drag or typed text
     /// (`BrowserHostClient.personUse(of:)`).
     fileprivate(set) var lastPersonUse: ContinuousClock.Instant?
+    /// The address last counted as a visit in the address field's history, or the one a restored tab opened at.
+    fileprivate var visitedAddress: String?
+    /// The next page the tab commits came from the person's address field (Chrome's typed transition).
+    fileprivate var typedNavigation = false
+    /// The address whose load failed last, until its error page commits.
+    fileprivate var failedAddress: String?
     /// The panel's view has the keyboard on this page, in the key window (`BrowserHostClient.setPanelKeyboard`).
     fileprivate(set) var hasPanelKeyboard = false
     /// The page's JavaScript dialog (alert, confirm, prompt, "Leave site?") waiting for an answer, until the panel or
@@ -1336,6 +1394,11 @@ final class BrowserTab {
     func notePersonInput() {
         lastPersonInput = .now
         lastPersonUse = .now
+    }
+
+    /// The person opened an address from the address field: the page it commits counts as typed.
+    func noteTypedNavigation() {
+        typedNavigation = true
     }
 
     /// The agent's input came after the person's last (or the person has not used the page): what the page does

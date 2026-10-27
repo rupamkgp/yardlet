@@ -93,6 +93,8 @@ final class BrowserSessionTabsTests: XCTestCase {
 
     func testTabsLostWithTheHostOpenAgainInOrderWithTheSameFront() throws {
         let client = makeClient()
+        let history = BrowserAddressHistory(file: nil)
+        client.addressHistory = history
         let session = UUID()
         let first = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
         let blank = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
@@ -116,6 +118,31 @@ final class BrowserSessionTabsTests: XCTestCase {
                        "they are the same side-panel tabs")
         XCTAssertNil(client.rememberedTabs(forSession: session))
         XCTAssertNil(try client.restoreTabs(forSession: session, viewport: .offscreenDefault), "restored once")
+
+        // The address field's history: each page a tab commits once, typed only from the address field.
+        for (tab, url) in zip(client.tabs(forSession: session), ["https://a.test/", "https://c.test/"]) {
+            connection.eventHandler?(.address(tab: tab.id, url: url))
+        }
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://c.test/"))
+        XCTAssertEqual(history.pages.mapValues(\.visitCount), ["https://a.test/": 1, "https://c.test/": 1],
+                       "a restored page and a page shown again are no new visits")
+        fronted.noteTypedNavigation()
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://c.test/next"))
+        connection.eventHandler?(.title(tab: fronted.id, title: "Next"))
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://c.test/next#part"))
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://me:pw@c.test/private"))
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://www.google.com/search?q=two%20words"))
+        fronted.noteTypedNavigation()
+        connection.eventHandler?(.loadError(tab: fronted.id, url: "https://gone.test/", code: -105, message: "ERR_NAME_NOT_RESOLVED"))
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://gone.test/"))
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://c.test/after"))
+        let next = try XCTUnwrap(history.pages["https://c.test/next"])
+        XCTAssertEqual([next.visitCount, next.typedCount], [1, 1], "a move within the page is no visit")
+        XCTAssertEqual(next.title, "Next")
+        XCTAssertNotNil(history.pages["https://c.test/private"], "kept without the user name and password")
+        XCTAssertEqual(history.pages["https://c.test/after"]?.typedCount, 0, "a failed typed address types nothing after it")
+        XCTAssertNil(history.pages["https://gone.test/"], "an error page is no visit")
+        XCTAssertEqual(history.searches.values.map(\.terms), ["two words"], "a results page counts as its search")
     }
 
     func testObserversHearTabChangesButNotFrames() throws {

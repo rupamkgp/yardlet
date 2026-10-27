@@ -61,6 +61,12 @@ enum BrowserHostQAFixture {
             Task { @MainActor in await BrowserHostPersonFirstQA(output: output, panelSession: session).run() }
             return
         }
+        // `--ui-fixture-browser-check-only=address-suggest` runs the address field's suggestions alone
+        // (BrowserHostAddressSuggestQA).
+        if argument("ui-fixture-browser-check-only") == "address-suggest" {
+            Task { @MainActor in await BrowserHostAddressSuggestQA(output: output, base: base).run() }
+            return
+        }
         // `--ui-fixture-browser-check-only=memory-saver` runs the memory saver's discards alone (BrowserHostMemorySaverQA).
         if argument("ui-fixture-browser-check-only") == "memory-saver" {
             Task { @MainActor in await BrowserHostMemorySaverQA(output: output, base: base).run() }
