@@ -2,7 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import { fcmCredentials, parsePush, sendPush, type PushError } from "./fcm";
 import { toBase64Url, verifyHostAuth } from "./keys";
 
+/** Phones the Mac answered. */
 const MAX_PHONES = 8;
+/** Phones the Mac has not answered yet, in all and from one address; a new one past these closes the oldest. */
+const MAX_WAITING_PHONES = 8;
+const MAX_WAITING_PER_ADDRESS = 2;
+/** How long a phone may wait for the Mac's first frame. */
+const PHONE_ANSWER_MS = 15_000;
 const MAX_PHONE_FRAME = 65_535;
 const AUTH_TIMEOUT_MS = 10_000;
 const PHONE_IDLE_MS = 120_000;
@@ -28,6 +34,10 @@ interface PhoneState {
   c: number;
   lastFrame: number;
   closed: boolean;
+  /** The Mac sent this phone a frame. Absent on sockets from before it was kept, which count as answered. */
+  answered?: boolean;
+  openedAt?: number;
+  address?: string;
 }
 
 type SocketState = MacState | PhoneState;
@@ -46,7 +56,7 @@ export class Room extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     const [, , , room, role] = new URL(request.url).pathname.split("/");
-    return role === "host" ? this.acceptMac(room) : this.acceptPhone();
+    return role === "host" ? this.acceptMac(room) : this.acceptPhone(request.headers.get("CF-Connecting-IP") ?? "");
   }
 
   private async acceptMac(room: string): Promise<Response> {
@@ -70,16 +80,37 @@ export class Room extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private async acceptPhone(): Promise<Response> {
+  private async acceptPhone(address: string): Promise<Response> {
     const mac = this.readyMac();
     if (!mac) return new Response("no Mac holds this room", { status: 404 });
-    if (this.phones().length >= MAX_PHONES) return new Response("room is full", { status: 429 });
+    const phones = this.phones();
+    if (phones.filter((phone) => isAnswered(phone.state)).length >= MAX_PHONES) {
+      return new Response("room is full", { status: 429 });
+    }
+    // Sockets the Mac has not answered cannot keep a phone out: the oldest of them gives way.
+    const waiting = phones.filter((phone) => !isAnswered(phone.state)).sort((a, b) => (a.state.openedAt ?? 0) - (b.state.openedAt ?? 0));
+    const sameAddress = waiting.filter((phone) => phone.state.address === address);
+    if (sameAddress.length >= MAX_WAITING_PER_ADDRESS) {
+      const oldest = sameAddress[0];
+      this.dropPhone(oldest.ws, oldest.state, 4503, "too many waiting connections");
+      waiting.splice(waiting.indexOf(oldest), 1);
+    }
+    if (waiting.length >= MAX_WAITING_PHONES) this.dropPhone(waiting[0].ws, waiting[0].state, 4503, "too many waiting connections");
     const c = mac.state.next;
     mac.state.next += 1;
     mac.ws.serializeAttachment(mac.state);
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, ["phone", `c${c}`]);
-    server.serializeAttachment({ role: "phone", c, lastFrame: Date.now(), closed: false } satisfies PhoneState);
+    const now = Date.now();
+    server.serializeAttachment({
+      role: "phone",
+      c,
+      lastFrame: now,
+      closed: false,
+      answered: false,
+      openedAt: now,
+      address,
+    } satisfies PhoneState);
     trySend(mac.ws, JSON.stringify({ t: "open", c }));
     await this.scheduleAlarm();
     return new Response(null, { status: 101, webSocket: client });
@@ -110,6 +141,8 @@ export class Room extends DurableObject<Env> {
         closeSocket(ws, state, 4408, "no auth in time");
       } else if (state.role === "phone" && state.lastFrame + PHONE_IDLE_MS <= now) {
         this.dropPhone(ws, state, 4408, "idle");
+      } else if (state.role === "phone" && !isAnswered(state) && (state.openedAt ?? 0) + PHONE_ANSWER_MS <= now) {
+        this.dropPhone(ws, state, 4408, "no answer from the Mac");
       }
     }
     await this.scheduleAlarm();
@@ -157,7 +190,12 @@ export class Room extends DurableObject<Env> {
     if (typeof message !== "string") {
       if (message.byteLength < 4) return;
       const phone = this.phone(new DataView(message).getUint32(0));
-      if (phone) trySend(phone.ws, new Uint8Array(message, 4));
+      if (!phone) return;
+      if (!isAnswered(phone.state)) {
+        phone.state.answered = true;
+        phone.ws.serializeAttachment(phone.state);
+      }
+      trySend(phone.ws, new Uint8Array(message, 4));
       return;
     }
     const control = parseObject(message);
@@ -239,10 +277,15 @@ export class Room extends DurableObject<Env> {
       if (!state || state.closed) continue;
       if (state.role === "mac" && !state.ready) next = Math.min(next, state.deadline);
       if (state.role === "phone") next = Math.min(next, state.lastFrame + PHONE_IDLE_MS);
+      if (state.role === "phone" && !isAnswered(state)) next = Math.min(next, (state.openedAt ?? 0) + PHONE_ANSWER_MS);
     }
     if (Number.isFinite(next)) await this.ctx.storage.setAlarm(next);
     else await this.ctx.storage.deleteAlarm();
   }
+}
+
+function isAnswered(state: PhoneState): boolean {
+  return state.answered !== false;
 }
 
 function stateOf(ws: WebSocket): SocketState | null {

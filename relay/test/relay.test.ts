@@ -137,10 +137,41 @@ describe("a phone's socket", () => {
     expect((await upgrade(`/v1/rooms/${key.room}/connect`)).status).toBe(404);
   });
 
-  it("refuses a ninth phone with 429", async () => {
+  it("refuses a ninth phone the Mac answered with 429", async () => {
     const { mac, key } = await openMac();
-    for (let i = 0; i < 8; i += 1) await openPhone(key.room, mac);
+    for (let i = 0; i < 8; i += 1) {
+      const { phone, c } = await openPhone(key.room, mac);
+      mac.ws.send(macFrame(c, bytes(0)));
+      await phone.binary();
+    }
     expect((await upgrade(`/v1/rooms/${key.room}/connect`)).status).toBe(429);
+  });
+
+  it("lets a phone in past sockets the Mac never answered", async () => {
+    const { mac, key } = await openMac();
+    const first = await openPhone(key.room, mac);
+    await openPhone(key.room, mac);
+    // A third from the same address closes the oldest that is still unanswered.
+    const thirdPhone = await connect(`/v1/rooms/${key.room}/connect`);
+    expect(await mac.json()).toEqual({ t: "closed", c: first.c, code: 4503 });
+    const third = { phone: thirdPhone, c: (await mac.json()).c as number };
+    expect(await first.phone.closeCode()).toBe(4503);
+    mac.ws.send(macFrame(third.c, bytes(1)));
+    expect(await third.phone.binary()).toEqual(bytes(1));
+
+    // One the Mac does not answer in time is closed.
+    const silent = await openPhone(key.room, mac);
+    const stub = env.ROOM.get(env.ROOM.idFromName(key.room));
+    await runInDurableObject(stub, (_, state) => {
+      for (const ws of state.getWebSockets(`c${silent.c}`)) {
+        ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), openedAt: 0 });
+      }
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await silent.phone.closeCode()).toBe(4408);
+    // The answered one stays.
+    mac.ws.send(macFrame(third.c, bytes(2)));
+    expect(await third.phone.binary()).toEqual(bytes(2));
   });
 
   it("closes a phone that sends text (1003) or an oversized frame (1009)", async () => {

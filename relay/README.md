@@ -3,7 +3,8 @@
 The relay connects a Mac running Yardlet to its phones when they are not on the same network. It is one
 Cloudflare Worker with two Durable Object classes:
 
-- `Room`, one per Mac. It forwards binary frames between the Mac's socket and up to 8 phone sockets. The frames
+- `Room`, one per Mac. It forwards binary frames between the Mac's socket and up to 8 phone sockets the Mac
+  has answered, besides a few still waiting for its first frame (docs/REMOTE_PROTOCOL.md §14.3). The frames
   are Noise messages that only the Mac and the phone can read; the relay keeps a room only in memory while its
   Mac is connected and stores none of them. It also sends the Mac's encrypted push notifications through FCM.
 - `Account`, one per optional sign-in account (GitHub or Google). It keeps the account's Macs (name, room and
