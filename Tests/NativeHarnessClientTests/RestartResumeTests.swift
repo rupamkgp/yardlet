@@ -1050,10 +1050,9 @@ final class RestartResumeTests: XCTestCase {
                        .input)
         await after.respondCodex(to: card.id, response: .toolUserInput(answers: ["q1": ["release"]]), in: waitingTask)
         var starts: [CodexRPCRequest] = []
-        for _ in 0..<100 {
+        try await waitUntil {
             starts = await relaunched.requests.filter { $0.method == "turn/start" }
-            if !starts.isEmpty { break }
-            try await Task.sleep(for: .milliseconds(20))
+            return !starts.isEmpty
         }
         XCTAssertEqual(starts.count, 1)
         XCTAssertNotEqual(starts.first?.params["turnTrigger"], .string("app_update_resume"))
@@ -1102,10 +1101,9 @@ final class RestartResumeTests: XCTestCase {
         after.followUps.load(for: [session.id])
         await after.continueWorkInterruptedByRestart()
         var starts: [CodexRPCRequest] = []
-        for _ in 0..<100 {
+        try await waitUntil {
             starts = await transport.requests.filter { $0.method == "turn/start" }
-            if !starts.isEmpty { break }
-            try await Task.sleep(for: .milliseconds(20))
+            return !starts.isEmpty
         }
         XCTAssertEqual(starts.count, 1)
         XCTAssertNotEqual(starts.first?.params["turnTrigger"], .string("app_update_resume"),
@@ -1182,7 +1180,10 @@ final class RestartResumeTests: XCTestCase {
         model.networkPathChanged(isSatisfied: false)
         await cutCLI.emit(failure("API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"))
         await refusedCLI.emit(failure("API Error: 500 Internal server error", status: .number(500)))
-        try await waitUntil { task(cut)?.status == .failed && task(refused)?.status == .failed }
+        // Claude Code's error result reaches the task before the cut it reports with it.
+        try await waitUntil {
+            model.connectionResumes[cut.id] != nil && task(cut)?.status == .failed && task(refused)?.status == .failed
+        }
         XCTAssertEqual(model.connectionResumes[cut.id]?.isWaiting, true)
         XCTAssertNil(model.connectionResumes[refused.id], "The server's own error is no lost connection")
         let waiting = try XCTUnwrap(task(cut))
@@ -1262,10 +1263,9 @@ final class RestartResumeTests: XCTestCase {
         XCTAssertTrue(offline.isEmpty)
         model.networkPathChanged(isSatisfied: true)
         var starts: [CodexRPCRequest] = []
-        for _ in 0..<100 {
+        try await waitUntil {
             starts = await transport.requests.filter { $0.method == "turn/start" }
-            if !starts.isEmpty { break }
-            try await Task.sleep(for: .milliseconds(20))
+            return !starts.isEmpty
         }
         XCTAssertEqual(starts.count, 1)
         XCTAssertEqual(starts.first?.params["turnTrigger"], .string("resume_interrupted_task"))
@@ -1581,15 +1581,6 @@ final class RestartResumeTests: XCTestCase {
         }
     }
 
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 
     /// Claude tasks on Claude Code's production route (the YHP wrapper over `ClaudeAdapter`) with a
     /// fake CLI process, an account home of their own, and preferences of their own.

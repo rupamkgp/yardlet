@@ -112,7 +112,7 @@ final class DraftToolsTests: XCTestCase {
 
         shell.panelDisappeared()
         XCTAssertFalse(shell.hasEnded, "checked after the window's update")
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil { shell.hasEnded }
         XCTAssertTrue(shell.hasEnded, "no panel shows it: it ends, as a task's terminal ends when the task leaves")
         XCTAssertFalse(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell,
                        "the next panel opens a new shell")

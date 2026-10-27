@@ -412,7 +412,7 @@ final class ClaudeProviderStatusTests: XCTestCase {
     }
 
     private func waitForContextUsageCount(_ count: Int, in log: PayloadLog) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
+        let deadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < deadline {
             let readings = await log.payloads.filter { payload in
                 if case let .usageUpdated(usage) = payload { return usage.contextUsedTokens != nil }
@@ -429,7 +429,7 @@ final class ClaudeProviderStatusTests: XCTestCase {
         in log: PayloadLog,
         _ match: @escaping (HarnessEventPayload) -> Value?
     ) async throws -> Value {
-        let deadline = ContinuousClock.now + .seconds(3)
+        let deadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < deadline {
             if let value = await log.payloads.lazy.compactMap(match).first { return value }
             try await Task.sleep(for: .milliseconds(20))

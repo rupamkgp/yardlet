@@ -568,14 +568,4 @@ import XCTest
     private func json(_ text: String) throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
     }
-
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 }

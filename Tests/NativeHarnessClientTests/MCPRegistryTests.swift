@@ -253,14 +253,14 @@ final class MCPRegistryTests: XCTestCase {
         center.disconnect(record.id)
         await center.waitForPendingDeletions()
         XCTAssertEqual(try credentials.load(record.id)?.program, spec, "Disconnect keeps what it starts with")
-        for _ in 0..<50 where !server.channels.allSatisfy(\.terminated) { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { server.channels.allSatisfy(\.terminated) }
         XCTAssertTrue(server.channels.allSatisfy(\.terminated), "Disconnecting stops the program")
 
         center.remove(record.id)
         await center.waitForPendingDeletions()
         XCTAssertNil(try credentials.load(record.id))
         let folder = folders.appending(path: record.id.uuidString).path(percentEncoded: false)
-        for _ in 0..<50 where FileManager.default.fileExists(atPath: folder) { try await Task.sleep(for: .milliseconds(20)) }
+        try await waitUntil { !FileManager.default.fileExists(atPath: folder) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder))
     }
 

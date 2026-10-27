@@ -722,7 +722,7 @@ final class SessionToolTests: XCTestCase {
                                                                           detail: nil, command: "git push")),
                                    for: fixture.sibling.id)
         await fixture.adapter.emit(.sessionStatusChanged(.waitingForApproval), for: fixture.sibling.id)
-        try await eventually { model.railChildTasks(of: fixture.caller.id).first { $0.id == fixture.sibling.id }?.status == .waiting }
+        try await waitUntil { model.railChildTasks(of: fixture.caller.id).first { $0.id == fixture.sibling.id }?.status == .waiting }
         rows = model.railChildTasks(of: fixture.caller.id)
         let claudeRow = try XCTUnwrap(rows.first { $0.id == fixture.sibling.id })
         XCTAssertEqual(claudeRow.requests.map(\.id), ["perm-push"])
@@ -739,7 +739,7 @@ final class SessionToolTests: XCTestCase {
         let decisions = await fixture.adapter.decisions
         XCTAssertEqual(decisions["perm-push"], .allow)
         await fixture.adapter.emit(.sessionStatusChanged(.running), for: fixture.sibling.id)
-        try await eventually { model.railChildTasks(of: fixture.caller.id).first { $0.id == fixture.sibling.id }?.status == .running }
+        try await waitUntil { model.railChildTasks(of: fixture.caller.id).first { $0.id == fixture.sibling.id }?.status == .running }
         XCTAssertEqual(model.railChildTasks(of: fixture.caller.id).first { $0.id == fixture.sibling.id }?.requests, [])
 
         // The Codex child's answer goes as its next message, the Codex app's reply; then nothing waits.
@@ -807,7 +807,7 @@ final class SessionToolTests: XCTestCase {
         XCTAssertEqual(sent.last, TaskMessage(senderID: fixture.caller.id.uuidString, senderName: "Caller",
                                               body: "Write the migration guide", relation: .parent).text(in: .yardlet))
         await fixture.adapter.emit(.turnCompleted, for: child.id)
-        try await eventually { model.store.sessions.first { $0.id == child.id }?.titleOrigin == .automatic }
+        try await waitUntil { model.store.sessions.first { $0.id == child.id }?.titleOrigin == .automatic }
         XCTAssertEqual(model.store.sessions.first { $0.id == child.id }?.title,
                        SessionTitleProjection.fallbackTitle(firstUserMessage: "Write the migration guide",
                                                             workspaceURL: child.workspaceURL))
@@ -931,7 +931,7 @@ final class SessionToolTests: XCTestCase {
         XCTAssertEqual(run.workspaceURL, fixture.caller.workspaceURL)
         XCTAssertEqual(run.depth, 1)
         XCTAssertFalse(model.store.sessions.contains { $0.id == run.id }, "No sidebar row")
-        try await eventually { await fixture.adapter.prompts(for: run.id) == ["Summarize README.md"] }
+        try await waitUntil { await fixture.adapter.prompts(for: run.id) == ["Summarize README.md"] }
         let launch = await fixture.adapter.launchOptions[run.id]
         XCTAssertEqual(launch?[ClaudeLaunchOption.model], "haiku")
         XCTAssertNil(launch?[ClaudeLaunchOption.permissionMode], "The harness's default permissions")
@@ -941,7 +941,7 @@ final class SessionToolTests: XCTestCase {
 
         await fixture.adapter.emit(.sessionStatusChanged(.running), for: run.id)
         await fixture.adapter.emit(.activityStarted(HarnessActivity(id: "r1", kind: "Read", title: "Read README.md")), for: run.id)
-        try await eventually { run.progressLine != nil }
+        try await waitUntil { run.progressLine != nil }
         await fixture.adapter.emit(.assistantMessageCompleted("README explains the build."), for: run.id)
         await fixture.adapter.emit(.turnCompleted, for: run.id)
         let result = await pending.value
@@ -951,7 +951,7 @@ final class SessionToolTests: XCTestCase {
         XCTAssertTrue(result.text.contains("state: completed"), result.text)
         XCTAssertTrue(result.text.hasSuffix("README explains the build."), result.text)
         XCTAssertEqual(run.state, .completed)
-        try await eventually { await fixture.adapter.closed.contains(run.id) }
+        try await waitUntil { await fixture.adapter.closed.contains(run.id) }
 
         // Kept with the caller, readable only by the user.
         let file = fixture.runs.appending(path: fixture.caller.id.uuidString.lowercased())
@@ -992,7 +992,7 @@ final class SessionToolTests: XCTestCase {
         XCTAssertEqual(snapshot.first?.ended, false)
 
         let waiting = Task { await self.call(model, "wait_tasks", ["ids": [run.id.uuidString]], from: fixture.caller) }
-        try await eventually { await fixture.adapter.prompts(for: run.id).count == 1 }
+        try await waitUntil { await fixture.adapter.prompts(for: run.id).count == 1 }
         await fixture.adapter.emit(.sessionStatusChanged(.running), for: run.id)
         await fixture.adapter.emit(.assistantMessageCompleted("12 TODOs."), for: run.id)
         await fixture.adapter.emit(.turnCompleted, for: run.id)
@@ -1001,7 +1001,7 @@ final class SessionToolTests: XCTestCase {
         XCTAssertEqual(ended.first?.answer, "12 TODOs.")
 
         // The caller asked to be told: its message arrives as from the agent, starting a turn.
-        try await eventually { await fixture.adapter.prompts(for: fixture.caller.id).contains { TaskMessage.parse($0) != nil } }
+        try await waitUntil { await fixture.adapter.prompts(for: fixture.caller.id).contains { TaskMessage.parse($0) != nil } }
         let callerPrompts = await fixture.adapter.prompts(for: fixture.caller.id)
         let note = try XCTUnwrap(callerPrompts.compactMap(TaskMessage.parse).last)
         XCTAssertEqual(note.senderID, run.id.uuidString)
@@ -1024,11 +1024,11 @@ final class SessionToolTests: XCTestCase {
         let model = fixture.model
         _ = await call(model, "run_agent", ["harness": "claude-code", "prompt": "Long job", "background": true], from: fixture.caller)
         let run = try XCTUnwrap(model.sessionTools.runs(hostedBy: fixture.caller.id).first)
-        try await eventually { await fixture.adapter.prompts(for: run.id).count == 1 }
+        try await waitUntil { await fixture.adapter.prompts(for: run.id).count == 1 }
         // The subagent asks; its request is the caller's to answer, on the caller's conversation.
         await fixture.adapter.emit(.permissionRequested(PermissionRequest(id: "perm-1", title: "Run swift build",
                                                                          detail: nil, command: "swift build")), for: run.id)
-        try await eventually { run.state == .waitingForApproval }
+        try await waitUntil { run.state == .waitingForApproval }
         XCTAssertTrue(model.sessionToolRequests(in: fixture.caller.id).contains { $0.id == "perm-1" })
         XCTAssertEqual(model.taskAttentionDetails[fixture.caller.id]?.pendingRequest, .approval)
         await model.respond(to: "perm-1", decision: .allow, in: fixture.caller)
@@ -1096,11 +1096,11 @@ final class SessionToolTests: XCTestCase {
         // One ending frees its place: the first to wait starts, then the next.
         let first = try XCTUnwrap(model.sessionTools.runs(hostedBy: fixture.caller.id).first { $0.prompt == "Job 0" })
         await model.stopAgentRun(first)
-        try await eventually { await fixture.adapter.prompts(for: queuedRun.id).count == 1 }
+        try await waitUntil { await fixture.adapter.prompts(for: queuedRun.id).count == 1 }
         XCTAssertTrue(model.sessionTools.isQueued(child.id), "Request order: the agent asked first")
         let jobOne = try XCTUnwrap(model.sessionTools.runs(hostedBy: fixture.caller.id).first { $0.prompt == "Job 1" })
         await model.stopAgentRun(jobOne)
-        try await eventually { await fixture.adapter.prompts(for: child.id).count == 2 }
+        try await waitUntil { await fixture.adapter.prompts(for: child.id).count == 2 }
         let delivered = await fixture.adapter.prompts(for: child.id)
         XCTAssertEqual(delivered.compactMap(TaskMessage.parse).map(\.body), ["One more", "Also the docs"])
         XCTAssertFalse(model.sessionTools.isQueued(child.id))
@@ -1176,7 +1176,7 @@ final class SessionToolTests: XCTestCase {
                        from: fixture.caller)
         let run = try XCTUnwrap(model.sessionTools.runs(hostedBy: fixture.caller.id).first)
         XCTAssertEqual(run.permission, .readOnly)
-        try await eventually { await fixture.adapter.launchOptions[run.id] != nil }
+        try await waitUntil { await fixture.adapter.launchOptions[run.id] != nil }
         let options = await fixture.adapter.launchOptions[run.id]
         XCTAssertEqual(options?[ClaudeLaunchOption.permissionMode], ClaudePermissionMode.plan)
         let acp = await call(model, "run_agent", ["harness": "opencode", "prompt": "Look around"], from: fixture.caller)
@@ -1419,7 +1419,7 @@ final class SessionToolTests: XCTestCase {
         // Claude Code prints the tool_result it wrote: now the turn stops, as Stop stops it.
         await fixture.adapter.emit(.activityCompleted(Self.archiveCall("toolu_archive", output: result.text)),
                                    for: fixture.caller.id)
-        try await eventually { await fixture.adapter.interrupts.contains(fixture.caller.id) }
+        try await waitUntil { await fixture.adapter.interrupts.contains(fixture.caller.id) }
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(model.store.sessions.contains { $0.id == fixture.caller.id }, "Not before the stopped turn ends")
         var closed = await fixture.adapter.closed
@@ -1428,7 +1428,7 @@ final class SessionToolTests: XCTestCase {
         // The CLI ends the stopped turn with its result; then the sidebar's archive closes the session.
         await fixture.adapter.emit(.sessionStatusChanged(.ready), for: fixture.caller.id)
         await fixture.adapter.emit(.turnCompleted, for: fixture.caller.id)
-        try await eventually { !model.store.sessions.contains { $0.id == fixture.caller.id } }
+        try await waitUntil { !model.store.sessions.contains { $0.id == fixture.caller.id } }
         closed = await fixture.adapter.closed
         XCTAssertTrue(closed.contains(fixture.caller.id), "Its process ends with the archive")
         interrupts = await fixture.adapter.interrupts
@@ -1456,10 +1456,10 @@ final class SessionToolTests: XCTestCase {
         XCTAssertTrue(early.isEmpty)
         await fixture.adapter.emit(.activityCompleted(Self.archiveCall("toolu_archive", output: result.text)),
                                    for: fixture.caller.id)
-        try await eventually { await fixture.adapter.interrupts == [fixture.caller.id] }
+        try await waitUntil { await fixture.adapter.interrupts == [fixture.caller.id] }
         XCTAssertTrue(model.store.sessions.contains { $0.id == fixture.caller.id })
         await fixture.adapter.emit(.sessionStatusChanged(.ready), for: fixture.caller.id)
-        try await eventually { !model.store.sessions.contains { $0.id == fixture.caller.id } }
+        try await waitUntil { !model.store.sessions.contains { $0.id == fixture.caller.id } }
         await model.shutdown()
     }
 
@@ -1476,9 +1476,9 @@ final class SessionToolTests: XCTestCase {
                               ["task_id": fixture.codex.id.uuidString, "message": "Archive yourself when done."],
                               from: fixture.caller)
         XCTAssertFalse(sent.isError, sent.text)
-        try await eventually { model.store.sessions.first { $0.id == fixture.codex.id }.map(AppModel.isWorking) == true }
+        try await waitUntil { model.store.sessions.first { $0.id == fixture.codex.id }.map(AppModel.isWorking) == true }
         await codex.emitPresentation(Self.codexArchiveCall(status: "inProgress"), for: fixture.codex.id)
-        try await eventually {
+        try await waitUntil {
             model.sessionToolCallRecords(named: "archive_task", in: fixture.codex.id) == [.init(id: "call_archive", hasResult: false)]
         }
 
@@ -1490,14 +1490,14 @@ final class SessionToolTests: XCTestCase {
         XCTAssertTrue(interrupted.isEmpty, "Not before item/completed")
 
         await codex.emitPresentation(Self.codexArchiveCall(status: "completed"), for: fixture.codex.id)
-        try await eventually { await codex.interruptedSessionIDs.contains(fixture.codex.id) }
+        try await waitUntil { await codex.interruptedSessionIDs.contains(fixture.codex.id) }
         try await Task.sleep(for: .milliseconds(200))
         var archived = await codex.archivedSessionIDs
         XCTAssertTrue(archived.isEmpty, "Not before the interrupted turn ends")
 
         await codex.emit(.sessionStatusChanged(.ready), for: fixture.codex.id, sequence: 100)
-        try await eventually { await codex.archivedSessionIDs == [fixture.codex.id] }
-        try await eventually { !model.store.sessions.contains { $0.id == fixture.codex.id } }
+        try await waitUntil { await codex.archivedSessionIDs == [fixture.codex.id] }
+        try await waitUntil { !model.store.sessions.contains { $0.id == fixture.codex.id } }
         interrupted = await codex.interruptedSessionIDs
         XCTAssertEqual(interrupted, [fixture.codex.id])
         archived = await codex.archivedSessionIDs
@@ -1533,11 +1533,11 @@ final class SessionToolTests: XCTestCase {
         let shell = HarnessActivity(id: "bg-1", kind: "Bash", title: "npm run dev", isBackground: true,
                                     subtask: HarnessSubtaskReference(taskID: "task-1", taskType: "local_bash"))
         await fixture.adapter.emit(.activityStarted(shell), for: fixture.caller.id)
-        try await eventually { model.sessionToolHasBackgroundTasks(fixture.caller.id) }
+        try await waitUntil { model.sessionToolHasBackgroundTasks(fixture.caller.id) }
         let withCommand = try await refusal()
         XCTAssertEqual(withCommand, "a background command or agent it started is still running.")
         await fixture.adapter.emit(.activityCompleted(shell), for: fixture.caller.id)
-        try await eventually { !model.sessionToolHasBackgroundTasks(fixture.caller.id) }
+        try await waitUntil { !model.sessionToolHasBackgroundTasks(fixture.caller.id) }
 
         // The person's unsent draft.
         model.composerDrafts.tasks.draft(for: fixture.caller.id).text = "Wait, one more"
@@ -1564,7 +1564,7 @@ final class SessionToolTests: XCTestCase {
         model.composerDrafts.tasks.draft(for: fixture.caller.id).text = "Actually, keep going"
         await fixture.adapter.emit(.activityCompleted(Self.archiveCall("toolu_archive", output: result.text)),
                                    for: fixture.caller.id)
-        try await eventually { !model.sessionTools.isArchivingSelf(fixture.caller.id) }
+        try await waitUntil { !model.sessionTools.isArchivingSelf(fixture.caller.id) }
         let interrupts = await fixture.adapter.interrupts
         XCTAssertTrue(interrupts.isEmpty)
         XCTAssertTrue(model.store.sessions.contains { $0.id == fixture.caller.id })
@@ -1610,9 +1610,10 @@ final class SessionToolTests: XCTestCase {
         XCTAssertEqual(report.keptChildTasks?.first?.reason, "it is running.")
         await fixture.adapter.emit(.activityCompleted(Self.archiveCall("toolu_archive", output: result.text)),
                                    for: fixture.caller.id)
-        try await eventually { await fixture.adapter.interrupts.contains(fixture.caller.id) }
+        try await waitUntil { await fixture.adapter.interrupts.contains(fixture.caller.id) }
         await fixture.adapter.emit(.sessionStatusChanged(.ready), for: fixture.caller.id)
-        try await eventually { !model.store.sessions.contains { $0.id == fixture.caller.id } }
+        // The caller and the children going with it leave one after another.
+        try await waitUntil { !model.store.sessions.contains { [fixture.caller.id, here.id, finished.id].contains($0.id) } }
         let listed = Set(model.store.sessions.map(\.id))
         XCTAssertFalse(listed.contains(here.id))
         XCTAssertFalse(listed.contains(finished.id))
@@ -1625,9 +1626,9 @@ final class SessionToolTests: XCTestCase {
     private func startArchiveCall(in fixture: Fixture) async throws {
         let model = fixture.model
         await model.send(HarnessUserInput(text: "Archive yourself"), to: fixture.caller)
-        try await eventually { model.store.sessions.first { $0.id == fixture.caller.id }.map(AppModel.isWorking) == true }
+        try await waitUntil { model.store.sessions.first { $0.id == fixture.caller.id }.map(AppModel.isWorking) == true }
         await fixture.adapter.emit(.activityStarted(Self.archiveCall("toolu_archive")), for: fixture.caller.id)
-        try await eventually {
+        try await waitUntil {
             model.sessionToolCallRecords(named: "archive_task", in: fixture.caller.id) == [.init(id: "toolu_archive", hasResult: false)]
         }
     }
@@ -1882,29 +1883,17 @@ final class SessionToolTests: XCTestCase {
     }
 
     private func waitForApproval(in taskID: UUID, model: AppModel) async throws -> SessionToolApproval {
-        try await eventually { !model.sessionTools.approvals(for: taskID).isEmpty }
+        try await waitUntil { !model.sessionTools.approvals(for: taskID).isEmpty }
         return try XCTUnwrap(model.sessionTools.approvals(for: taskID).last)
     }
 
     private func waitForRun(hostedBy taskID: UUID, model: AppModel) async throws -> AgentRun {
-        try await eventually { !model.sessionTools.runs(hostedBy: taskID).isEmpty }
+        try await waitUntil { !model.sessionTools.runs(hostedBy: taskID).isEmpty }
         return try XCTUnwrap(model.sessionTools.runs(hostedBy: taskID).last)
     }
 
     private struct NeverHeld: Error {}
 
-    private func eventually(timeout: Duration = .seconds(5), file: StaticString = #filePath, line: UInt = #line,
-                            _ condition: () async -> Bool) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while !(await condition()) {
-            guard clock.now < deadline else {
-                XCTFail("The condition never held", file: file, line: line)
-                throw NeverHeld()
-            }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-    }
 
     /// Two projects, "app" and "site". In "app": the caller, an idle sibling it started, a busy task and a
     /// Codex task; in "site": another project's task, and the caller's split neighbour.

@@ -114,9 +114,7 @@ final class CodexSubagentNavigationTests: XCTestCase {
             "id": .string("child"), "parentThreadId": .string("parent"), "turns": .array([])
         ]), to: &state))
         let app = try model([wrongScope, wrongAccount, correct, child], presentation: [child.id: state])
-        for _ in 0..<100 where app.store.sessions.first(where: { $0.id == child.id })?.parentTaskID == nil {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { app.store.sessions.first(where: { $0.id == child.id })?.parentTaskID != nil }
         XCTAssertEqual(app.store.sessions.first { $0.id == child.id }?.parentTaskID, correct.id)
     }
 
@@ -175,10 +173,7 @@ final class CodexSubagentNavigationTests: XCTestCase {
         app.composerDrafts.tasks.draft(for: parent.id).text = "Parent draft"
         await adapter.suspendNextResumeSession()
         let opening = Task { await app.openCodexSubagent(threadID: "child", from: parent) }
-        for _ in 0..<100 {
-            if await adapter.isResumeBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isResumeBlocked }
         let blocked = await adapter.isResumeBlocked
         XCTAssertTrue(blocked)
         try await app.store.updateSession(id: parent.id, providerSessionID: "changed-parent", setProviderSessionID: true)

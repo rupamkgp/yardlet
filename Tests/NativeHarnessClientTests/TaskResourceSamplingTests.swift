@@ -714,7 +714,7 @@ final class TaskResourceSamplingTests: XCTestCase {
 
     static func waitForTree(of owner: TaskResourceOwner, processes: Int, engine: TaskResourceEngine) async throws
         -> TaskResourceUsage {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + testWaitLimit
         var last: TaskResourceUsage?
         while ContinuousClock.now < deadline {
             last = await engine.sample(TaskResourceRequest()).first { $0.owner == owner }

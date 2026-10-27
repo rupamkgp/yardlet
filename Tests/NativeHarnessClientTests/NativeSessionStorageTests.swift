@@ -39,9 +39,7 @@ final class NativeSessionStorageTests: XCTestCase {
         await reopened.resume(restored)
         XCTAssertNil(reopened.errorBySessionID[restored.id])
         XCTAssertTrue(reopened.isAttached(restored.id))
-        for _ in 0..<50 where reopened.codexPresentationBySessionID[restored.id]?.thread == nil {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { reopened.codexPresentationBySessionID[restored.id]?.thread != nil }
         XCTAssertEqual(reopened.codexPresentationBySessionID[restored.id]?.thread?.name, "Changed outside Yardlet")
         let side = await reopened.branch(restored, placement: .sidePanel)
         let child = try XCTUnwrap(side, reopened.sideChatErrors[restored.id] ?? "Fork missing")

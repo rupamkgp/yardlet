@@ -305,14 +305,6 @@ final class MenuBarMenuTests: XCTestCase {
         XCTAssertEqual(usageItems()[1].subtitle, "Claude Code · \(hours) \(left(25))")
     }
 
-    private func waitUntil(_ condition: @escaping () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await condition()), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let met = await condition()
-        XCTAssertTrue(met)
-    }
 
     func testItemsShowEachSectionThenUsageThenNewTaskOpenAndQuit() throws {
         let states: [SidebarTaskStatus?] = [.awaitingApproval, .needsInput, .running, nil, .unread]
@@ -519,11 +511,6 @@ final class MenuBarMenuTests: XCTestCase {
     private func taskItems(_ items: [NSMenuItem]) -> [NSMenuItem] {
         items.flatMap { item in [item] + (item.submenu.map { taskItems($0.items) } ?? []) }
             .filter { $0.representedObject is UUID }
-    }
-
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertTrue(condition())
     }
 
     /// One line per item: `—` a separator, `[Header]` a section header, `(…)` a line to read only,

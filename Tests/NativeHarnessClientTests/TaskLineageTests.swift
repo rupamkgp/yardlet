@@ -278,8 +278,8 @@ final class TaskLineageTests: XCTestCase {
                 parent.id: state("thread-parent", [:]),
             ],
             restoresIndexOnLaunch: false)
-        for _ in 0..<100 where model.store.sessions.contains(where: { $0.id != parent.id && $0.parentTaskID == nil }) {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            !model.store.sessions.contains(where: { $0.id != parent.id && $0.parentTaskID == nil })
         }
         XCTAssertEqual(model.store.sessions.first { $0.id == fork.id }?.parentTaskID, parent.id)
         XCTAssertEqual(model.store.sessions.first { $0.id == subagent.id }?.parentTaskID, parent.id)

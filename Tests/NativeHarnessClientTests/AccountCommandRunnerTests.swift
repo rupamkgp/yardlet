@@ -86,10 +86,7 @@ final class AccountCommandRunnerTests: XCTestCase {
     /// `kill(pid, 0)` still succeeds for an unreaped zombie, so `ESRCH` also proves the
     /// process was reaped.
     private func waitUntilGone(_ pid: pid_t) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while Darwin.kill(pid, 0) == 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { Darwin.kill(pid, 0) != 0 }
         errno = 0
         XCTAssertEqual(Darwin.kill(pid, 0), -1)
         XCTAssertEqual(errno, ESRCH)

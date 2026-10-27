@@ -264,7 +264,7 @@ final class ClaudePermissionModeAnnouncementTests: XCTestCase {
 
         await transport.emit(canUseTool(requestID: "edit-card", suggestions: [acceptEditsForSession]))
         var pending: PermissionRequest?
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         while pending == nil, ContinuousClock.now < deadline {
             pending = model.transcriptBySessionID[session.id]?.lazy.compactMap { entry in
                 guard case let .permission(request, .pending) = entry.content,
@@ -279,7 +279,7 @@ final class ClaudePermissionModeAnnouncementTests: XCTestCase {
         await transport.emit(announcement("acceptEdits"))
 
         // No turn completes here; the selector follows the CLI while the turn is still running.
-        let modeDeadline = ContinuousClock.now + .seconds(2)
+        let modeDeadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < modeDeadline,
               model.providerCapabilitiesBySessionID[session.id]
                 .flatMap(Self.permissionMode(in:)) != "acceptEdits" {
@@ -291,7 +291,7 @@ final class ClaudePermissionModeAnnouncementTests: XCTestCase {
         )
         // The mode the approval switched to is the task's mode now. It is kept with the task, as
         // the Claude app keeps a session's mode, so the task resumes in it after a restart.
-        let savedDeadline = ContinuousClock.now + .seconds(2)
+        let savedDeadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < savedDeadline,
               model.store.sessions.first(where: { $0.id == session.id })?.providerOptions["permissionMode"] == nil {
             try await Task.sleep(for: .milliseconds(20))
@@ -364,7 +364,7 @@ final class ClaudePermissionModeAnnouncementTests: XCTestCase {
     private func waitForPermission(
         in recorder: ModeAnnouncementRecorder,
         id: String,
-        timeout: Duration = .seconds(2)
+        timeout: Duration = testWaitLimit
     ) async throws -> PermissionRequest {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
@@ -379,7 +379,7 @@ final class ClaudePermissionModeAnnouncementTests: XCTestCase {
     private func waitForChangeCount(
         _ count: Int,
         in recorder: ModeAnnouncementRecorder,
-        timeout: Duration = .seconds(2)
+        timeout: Duration = testWaitLimit
     ) async throws {
         let deadline = ContinuousClock.now + timeout
         while await recorder.changeCount < count, ContinuousClock.now < deadline {

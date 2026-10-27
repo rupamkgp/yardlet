@@ -452,10 +452,7 @@ final class ScheduleToolTests: XCTestCase {
     }
 
     private func waitForApproval(in taskID: UUID, model: AppModel) async throws -> SessionToolApproval {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while model.sessionTools.approvals(for: taskID).isEmpty, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { !model.sessionTools.approvals(for: taskID).isEmpty }
         return try XCTUnwrap(model.sessionTools.approvals(for: taskID).last)
     }
 
@@ -640,7 +637,7 @@ final class ScheduleToolTests: XCTestCase {
         private var requests: [PermissionRequest] = []
         func append(_ request: PermissionRequest) { requests.append(request) }
         func waitFor(_ id: String) async throws -> PermissionRequest {
-            let deadline = ContinuousClock.now + .seconds(2)
+            let deadline = ContinuousClock.now + testWaitLimit
             while ContinuousClock.now < deadline {
                 if let request = requests.last(where: { $0.id == id }) { return request }
                 try await Task.sleep(for: .milliseconds(20))

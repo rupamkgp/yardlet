@@ -263,14 +263,4 @@ final class CodexApprovalParityTests: XCTestCase {
         XCTAssertFalse(methods.contains("turn/interrupt"))
         await adapter.close(handle)
     }
-
-    private func waitUntil(timeout: Duration = .seconds(2), _ condition: @escaping () async -> Bool) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Timed out waiting for the adapter")
-    }
 }

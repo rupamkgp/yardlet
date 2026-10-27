@@ -118,10 +118,7 @@ final class CodexStatusPanelTests: XCTestCase {
         await fixture.transport.suspendNextRequest("account/rateLimits/read")
         await fixture.transport.enqueue(method: "account/rateLimits/read", result: rateLimitResponse())
         let open = Task { await model.runCodexComposerCommand(.status, in: session) }
-        for _ in 0..<200 {
-            if await fixture.transport.isRequestSuspended { break }
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await waitUntil { await fixture.transport.isRequestSuspended }
         XCTAssertEqual(model.codexStatusBySessionID[session.id]?.isReading, true)
         XCTAssertEqual(projection(rateLimits: nil, isReading: true).rows.count, 2,
                        "Session and context only: no rate-limit row while the first reading is on its way")

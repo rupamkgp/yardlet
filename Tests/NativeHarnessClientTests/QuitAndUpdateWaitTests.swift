@@ -137,7 +137,7 @@ final class QuitAndUpdateWaitTests: XCTestCase {
         XCTAssertTrue(box.installs.isEmpty, "Nothing while a task runs")
 
         box.active = 0
-        try await eventually { box.installs.count == 2 }
+        try await waitUntil { box.installs.count == 2 }
         XCTAssertEqual(box.installs, [.staged(candidate(digest: "a")), .staged(candidate(digest: "a"))],
                        "A task that started at the last moment made it wait once more")
         XCTAssertTrue(wait.isWaiting, "Still shown as waiting while Yardlet quits")
@@ -160,7 +160,7 @@ final class QuitAndUpdateWaitTests: XCTestCase {
             box.installs.append(chosen)
             return .stop
         }, interval: .milliseconds(5), quietPeriod: 0)
-        try await eventually { !wait.isWaiting }
+        try await waitUntil { !wait.isWaiting }
         try await Task.sleep(for: .milliseconds(40))
         XCTAssertEqual(box.installs, [.staged(candidate(digest: "a"))])
     }
@@ -228,7 +228,8 @@ final class QuitAndUpdateWaitTests: XCTestCase {
         XCTAssertEqual(items.map(\.title), lines.map(\.title))
         XCTAssertEqual(items.map(\.isEnabled), [false, true])
         controller.choose(try XCTUnwrap(items.last))
-        for _ in 0..<50 where box.chosen.isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        let deadline = Date().addingTimeInterval(testWaitLimitSeconds)
+        while box.chosen.isEmpty, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
         XCTAssertEqual(box.chosen, [.cancelUpdateWait])
 
         let context = SidebarAccountMenuContext(identity: identity, settingsSections: sections, updateIsWaiting: { true })
@@ -293,12 +294,6 @@ final class QuitAndUpdateWaitTests: XCTestCase {
         var terminationRequests = 0
         var prompts = 0
         var chosen: [SidebarAccountMenu.Destination] = []
-    }
-
-    private func eventually(_ condition: @MainActor () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        XCTAssertTrue(condition(), "Timed out")
     }
 }
 

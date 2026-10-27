@@ -318,8 +318,7 @@ final class ScheduledTaskTests: XCTestCase {
         clock.now = date(16, 21)
         center.startLoop()
         defer { center.stop() }
-        let deadline = Date().addingTimeInterval(5)
-        while count == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        try await waitUntil { count != 0 }
         XCTAssertEqual(count, 1)
         XCTAssertTrue(center.isRunning)
         center.stop()

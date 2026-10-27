@@ -399,14 +399,6 @@ final class CodexMessagePredictionTests: XCTestCase {
     private func decode(_ line: String) throws -> CodexRPCIncomingMessage {
         try CodexRPCCodec().decodeLine(Data(line.utf8))
     }
-
-    func waitUntil(_ condition: @escaping () async -> Bool) async throws {
-        for _ in 0..<300 {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Condition was not met")
-    }
 }
 
 /// The prediction through the app model on the product route (YHP) to a scripted App Server 0.163:
@@ -512,16 +504,6 @@ final class CodexMessagePredictionTests: XCTestCase {
         let draft = model.composerDrafts.tasks.draft(for: task.id)
         try await waitUntil { draft.nextMessageSuggestion == Self.prediction }
         return (model, try XCTUnwrap(model.store.sessions.first { $0.id == task.id }), transport)
-    }
-
-    private func waitUntil(timeout: Duration = .seconds(5), _ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
     }
 }
 

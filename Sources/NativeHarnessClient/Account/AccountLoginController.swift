@@ -63,10 +63,16 @@ final class AccountLoginController: NSObject, @MainActor LocalProcessTerminalVie
         isRunning = true
     }
 
-    func attach(_ view: LocalProcessTerminalView) {
+    func attach(_ view: AccountLoginTerminalView) {
         guard terminalView !== view, let command = pendingCommand else { return }
         terminalView = view
         view.processDelegate = self
+        view.onOutput = { [weak self, weak view] in
+            // While the process runs, the terminal poll reads its output. The last lines can
+            // arrive after the exit is reported, once the poll has stopped.
+            guard let self, let view, view === self.terminalView, !self.isRunning else { return }
+            self.refreshTerminalOutput()
+        }
 
         if let startupMessage = command.startupMessage, !startupMessage.isEmpty {
             view.feed(text: startupMessage.replacingOccurrences(of: "\n", with: "\r\n"))

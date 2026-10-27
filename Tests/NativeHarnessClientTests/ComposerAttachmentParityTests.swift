@@ -515,18 +515,6 @@ final class ComposerAttachmentParityTests: XCTestCase {
         }
         XCTAssertEqual(mentioned.promptText, "ship it\n@/repo/README.md")
     }
-
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        _ predicate: @escaping @Sendable () async -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !(await predicate()), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let satisfied = await predicate()
-        XCTAssertTrue(satisfied)
-    }
 }
 
 /// An adapter that never overrode the neutral send, so it exercises the default projection.

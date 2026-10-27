@@ -48,9 +48,7 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let reply = delegate.applicationShouldTerminate(NSApplication.shared)
 
         XCTAssertEqual(reply, .terminateLater)
-        for _ in 0..<30 where !model.codexPresentationBySessionID.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.codexPresentationBySessionID.isEmpty }
         XCTAssertTrue(model.codexPresentationBySessionID.isEmpty)
     }
 
@@ -76,9 +74,7 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let reply = delegate.applicationShouldTerminate(NSApplication.shared)
 
         XCTAssertEqual(reply, .terminateLater)
-        for _ in 0..<30 where resource.stopCount == 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { resource.stopCount != 0 }
         XCTAssertEqual(resource.stopCount, 1)
         XCTAssertTrue(model.codexPresentationBySessionID.isEmpty)
     }
@@ -105,20 +101,14 @@ final class NativeHarnessClientAppTests: XCTestCase {
         )
         let terminal = attachLoginTerminal(to: controller)
         defer { _ = terminal }
-        let deadline = ContinuousClock.now + .seconds(2)
-        while !controller.isRunning, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { controller.isRunning }
         XCTAssertTrue(controller.isRunning)
 
         let processID = try XCTUnwrap(controller.processIdentifier)
         var descendants: [pid_t] = []
-        let childDeadline = ContinuousClock.now + .seconds(2)
-        while descendants.isEmpty, ContinuousClock.now < childDeadline {
+        try await waitUntil {
             descendants = NativeProcessTree.descendantProcessIDs(of: processID)
-            if descendants.isEmpty {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            return !descendants.isEmpty
         }
         XCTAssertFalse(descendants.isEmpty)
 
@@ -126,10 +116,7 @@ final class NativeHarnessClientAppTests: XCTestCase {
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
 
         XCTAssertFalse(controller.isRunning)
-        let drainDeadline = ContinuousClock.now + .seconds(2)
-        while descendants.contains(where: { Darwin.kill($0, 0) == 0 }), ContinuousClock.now < drainDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !descendants.contains(where: { Darwin.kill($0, 0) == 0 }) }
         XCTAssertTrue(descendants.allSatisfy { Darwin.kill($0, 0) == -1 })
     }
 
@@ -153,11 +140,7 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let terminal = attachLoginTerminal(to: controller)
         defer { _ = terminal }
 
-        let deadline = ContinuousClock.now + .seconds(4)
-        while !controller.output.contains("YARDLET_LOGIN_INPUT_OK"),
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { controller.output.contains("YARDLET_LOGIN_INPUT_OK") }
 
         XCTAssertTrue(controller.output.contains("YARDLET_LOGIN_PROMPT"), controller.output)
         XCTAssertTrue(controller.output.contains("YARDLET_LOGIN_INPUT_OK"), controller.output)
@@ -183,19 +166,11 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let terminal = attachLoginTerminal(to: controller)
         defer { _ = terminal }
 
-        let promptDeadline = ContinuousClock.now + .seconds(4)
-        while !controller.output.contains("YARDLET_AUTH_CODE_PROMPT"),
-              ContinuousClock.now < promptDeadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { controller.output.contains("YARDLET_AUTH_CODE_PROMPT") }
         XCTAssertTrue(controller.output.contains("YARDLET_AUTH_CODE_PROMPT"), controller.output)
         XCTAssertTrue(controller.submitInput("  yardlet-one-time-code\n"))
 
-        let resultDeadline = ContinuousClock.now + .seconds(4)
-        while !controller.output.contains("YARDLET_MANUAL_INPUT_OK"),
-              ContinuousClock.now < resultDeadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { controller.output.contains("YARDLET_MANUAL_INPUT_OK") }
         XCTAssertTrue(controller.output.contains("YARDLET_MANUAL_INPUT_OK"), controller.output)
         XCTAssertFalse(controller.submitInput("   \n"))
     }
@@ -217,11 +192,7 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let terminal = attachLoginTerminal(to: controller)
         defer { _ = terminal }
 
-        let deadline = ContinuousClock.now + .seconds(4)
-        while (controller.detectedURL == nil || controller.detectedCode == nil),
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { controller.detectedURL != nil && controller.detectedCode != nil }
 
         XCTAssertEqual(controller.phase, .browserHandoff)
         XCTAssertEqual(controller.detectedURL?.absoluteString, "https://auth.example.test/device")
@@ -259,10 +230,7 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let terminal = attachLoginTerminal(to: controller)
         defer { _ = terminal }
 
-        let deadline = ContinuousClock.now + .seconds(4)
-        while controller.phase == .preparing, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { controller.phase != .preparing }
 
         XCTAssertEqual(controller.phase, .inputRequired)
     }
@@ -284,35 +252,27 @@ final class NativeHarnessClientAppTests: XCTestCase {
         let terminal = attachLoginTerminal(to: controller)
         defer { _ = terminal }
 
-        let processDeadline = ContinuousClock.now + .seconds(2)
-        while !controller.isRunning, ContinuousClock.now < processDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { controller.isRunning }
         XCTAssertTrue(controller.isRunning)
         let processID = try XCTUnwrap(controller.processIdentifier)
 
         var descendants: [pid_t] = []
-        let descendantDeadline = ContinuousClock.now + .seconds(2)
-        while descendants.isEmpty, ContinuousClock.now < descendantDeadline {
+        try await waitUntil {
             descendants = NativeProcessTree.descendantProcessIDs(of: processID)
-            if descendants.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+            return !descendants.isEmpty
         }
         XCTAssertFalse(descendants.isEmpty)
 
         controller.cancel()
         XCTAssertFalse(controller.isRunning)
-        let drainDeadline = ContinuousClock.now + .seconds(2)
-        while ([processID] + descendants).contains(where: { Darwin.kill($0, 0) == 0 }),
-              ContinuousClock.now < drainDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !([processID] + descendants).contains(where: { Darwin.kill($0, 0) == 0 }) }
         XCTAssertTrue(([processID] + descendants).allSatisfy { Darwin.kill($0, 0) == -1 })
     }
 
     private func attachLoginTerminal(
         to controller: AccountLoginController
     ) -> LocalProcessTerminalView {
-        let view = LocalProcessTerminalView(
+        let view = AccountLoginTerminalView(
             frame: NSRect(x: 0, y: 0, width: 900, height: 500),
             font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
             options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 200)

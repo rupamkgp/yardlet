@@ -469,7 +469,8 @@ private actor PermissionRecorder {
     func append(_ request: PermissionRequest) { requests.append(request) }
 
     func wait(for id: String) async throws -> PermissionRequest {
-        for _ in 0..<100 {
+        let deadline = ContinuousClock.now + testWaitLimit
+        while ContinuousClock.now < deadline {
             if let request = requests.last(where: { $0.id == id }) { return request }
             try await Task.sleep(for: .milliseconds(20))
         }

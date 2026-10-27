@@ -355,19 +355,20 @@ final class TestChannel: RemoteChannel, @unchecked Sendable {
 
     var isClosed: Bool { lock.withLock { closeCode != nil } }
 
-    func response(_ id: String, timeout: TimeInterval = 5) async throws -> RemoteResponse {
+    func response(_ id: String, timeout: TimeInterval = testWaitLimitSeconds) async throws -> RemoteResponse {
         try await waitFor(timeout: timeout, "response \(id)") {
             self.decoded(RemoteResponse.self).first { $0.re == id }
         }
     }
 
-    func event(_ name: RemoteEvent.Name, after seq: Int = 0, timeout: TimeInterval = 5) async throws -> RemoteEvent {
+    func event(_ name: RemoteEvent.Name, after seq: Int = 0,
+               timeout: TimeInterval = testWaitLimitSeconds) async throws -> RemoteEvent {
         try await waitFor(timeout: timeout, "event \(name)") {
             self.decoded(RemoteEvent.self).first { $0.event == name && ($0.seq ?? 0) > seq }
         }
     }
 
-    func waitUntilClosed(_ code: RemoteCloseCode, timeout: TimeInterval = 5) async throws {
+    func waitUntilClosed(_ code: RemoteCloseCode, timeout: TimeInterval = testWaitLimitSeconds) async throws {
         let closed = try await waitFor(timeout: timeout, "close") { self.lock.withLock { self.closeCode } }
         XCTAssertEqual(closed, code)
     }

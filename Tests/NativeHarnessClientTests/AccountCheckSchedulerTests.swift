@@ -119,15 +119,6 @@ import XCTest
         return RuntimeSelectionStore(defaults: try XCTUnwrap(UserDefaults(suiteName: suite)),
             discoversRuntimes: false, loadsPersistedSelections: false)
     }
-
-    private func waitUntil(_ condition: @escaping () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await condition()), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let met = await condition()
-        XCTAssertTrue(met)
-    }
 }
 
 private func snapshot(_ harness: HarnessKind, _ state: AccountAuthState) -> HarnessAccountSnapshot {

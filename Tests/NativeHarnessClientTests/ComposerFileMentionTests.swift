@@ -241,13 +241,6 @@ final class ComposerFileMentionTests: XCTestCase {
         search.reset()
         XCTAssertNil(search.query)
     }
-
-    @MainActor
-    private func waitUntil(_ predicate: @MainActor () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertTrue(predicate())
-    }
 }
 
 private final class Counter: @unchecked Sendable {

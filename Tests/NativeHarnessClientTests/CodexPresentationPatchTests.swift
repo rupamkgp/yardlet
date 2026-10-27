@@ -477,7 +477,7 @@ final class CodexPresentationPatchRouteTests: XCTestCase {
                 "threadId": .string(Self.threadID), "turnId": .string("turn-1"),
                 "item": Self.command("c\(index)", status: "completed", output: "done \(index)\n")
             ]))
-            let deadline = ContinuousClock.now + .seconds(5)
+            let deadline = ContinuousClock.now + testWaitLimit
             while await route.recorder.states.last?.thread?.turns.first?.items.count != index + 1,
                   ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(1))
@@ -618,7 +618,7 @@ final class CodexPresentationPatchRouteTests: XCTestCase {
 
     private func waitUntil(
         _ phase: String,
-        timeout: Duration = .seconds(5),
+        timeout: Duration = testWaitLimit,
         _ predicate: @escaping @Sendable () async -> Bool
     ) async throws {
         let deadline = ContinuousClock.now + timeout

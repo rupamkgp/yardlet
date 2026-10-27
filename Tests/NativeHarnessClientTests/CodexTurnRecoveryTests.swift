@@ -94,9 +94,7 @@ final class CodexTurnRecoveryTests: XCTestCase {
                 transcriptRepository: UserDefaultsTranscriptRepository(defaults: defaults),
                 restoresIndexOnLaunch: false)
             await model.resume(session)
-            for _ in 0..<100 where model.codexPresentationBySessionID[session.id]?.thread?.turns.last == nil {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await waitUntil { model.codexPresentationBySessionID[session.id]?.thread?.turns.last != nil }
             let failed = try XCTUnwrap(model.codexPresentationBySessionID[session.id]?.thread?.turns.last)
             XCTAssertEqual(failed.status, .failed)
             let draft = model.composerDrafts.tasks.draft(for: session.id)
@@ -143,10 +141,7 @@ final class CodexTurnRecoveryTests: XCTestCase {
         let recovery = try XCTUnwrap(adapter as? any CodexTurnRecovering)
         await transport.suspendNextRequest("thread/read")
         let first = Task { try await recovery.retryFailedTurn("failed", in: handle) }
-        for _ in 0..<100 {
-            if await transport.isRequestSuspended { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await transport.isRequestSuspended }
         let suspended = await transport.isRequestSuspended; XCTAssertTrue(suspended)
         do { try await recovery.retryFailedTurn("failed", in: handle); XCTFail() } catch {}
         await transport.releaseSuspendedRequest()
@@ -163,10 +158,7 @@ final class CodexTurnRecoveryTests: XCTestCase {
         let recovery = try XCTUnwrap(adapter as? any CodexTurnRecovering)
         await transport.suspendNextRequest("thread/read")
         let pending = Task { try await recovery.retryFailedTurn("failed", in: handle) }
-        for _ in 0..<100 {
-            if await transport.isRequestSuspended { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await transport.isRequestSuspended }
         await adapter.close(handle)
         await transport.releaseSuspendedRequest()
         do { try await pending.value; XCTFail() } catch {}
@@ -184,17 +176,13 @@ final class CodexTurnRecoveryTests: XCTestCase {
             _ = try await presentation.presentationStates(for: handle)
             await transport.suspendNextRequest("turn/start")
             let pending = Task { try await recovery.retryFailedTurn("failed", in: handle) }
-            for _ in 0..<100 {
-                if await transport.isRequestSuspended { break }
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await waitUntil { await transport.isRequestSuspended }
             await transport.emit(method: "turn/started", params: .object(["threadId": .string("original"),
                 "turn": .object(["id": .string("continued"), "status": .string("inProgress"), "items": .array([])])]))
             await transport.emit(method: "turn/completed", params: .object(["threadId": .string("original"),
                 "turn": .object(["id": .string("continued"), "status": .string("completed"), "items": .array([])])]))
-            for _ in 0..<100 {
-                if try await presentation.presentationState(for: handle).thread?.turns.last?.status == .completed { break }
-                try await Task.sleep(for: .milliseconds(10))
+            try await waitUntil {
+                try await presentation.presentationState(for: handle).thread?.turns.last?.status == .completed
             }
             let completed = try await presentation.presentationState(for: handle)
             XCTAssertEqual(completed.thread?.turns.last?.id, "continued")

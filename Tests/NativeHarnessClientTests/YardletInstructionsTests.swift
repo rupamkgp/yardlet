@@ -442,7 +442,7 @@ final class YardletInstructionsTests: XCTestCase {
         let started = await model.callSessionTool(named: "run_agent", arguments: arguments, callerID: fixture.caller.id)
         XCTAssertFalse(started.isError, started.text)
         let clock = ContinuousClock()
-        let deadline = clock.now + .seconds(5)
+        let deadline = clock.now + testWaitLimit
         while model.sessionTools.runs(hostedBy: fixture.caller.id).isEmpty, clock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }

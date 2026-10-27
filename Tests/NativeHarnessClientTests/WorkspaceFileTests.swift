@@ -213,13 +213,13 @@ final class WorkspaceFileTests: XCTestCase {
         let state = WorkspaceFilesState()
         state.open(.init(relativePath: "first.txt"), in: root)
         state.open(.init(relativePath: "second.txt", line: 1), in: root)
-        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertFalse(state.isLoading)
         XCTAssertEqual(state.document?.text, "new")
         state.open(.init(relativePath: "second.txt"), in: root, refresh: true)
         XCTAssertNil(state.document) // Do not consume a new line link against the stale document.
         state.open(.init(relativePath: "second.txt", line: 1), in: root)
-        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertEqual(state.document?.text, "new")
         let id = state.navigationID
         state.didNavigate(UUID())
@@ -240,7 +240,7 @@ final class WorkspaceFileTests: XCTestCase {
         _ = try write("Source.swift", text: "let a = 1\n", in: root)
         let state = WorkspaceFilesState()
         state.open(.init(relativePath: "Source.swift"), in: root)
-        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         let opened = try XCTUnwrap(state.document)
         XCTAssertFalse(opened.tokens.isEmpty)
         XCTAssertTrue(state.canEdit)
@@ -250,7 +250,7 @@ final class WorkspaceFileTests: XCTestCase {
         let edited = try XCTUnwrap(state.document)
         XCTAssertEqual(edited.highlightID, opened.highlightID, "The reader keeps the colors it shows while the person types")
         XCTAssertTrue(edited.tokens.isEmpty)
-        for _ in 0..<200 where state.document?.highlightID == opened.highlightID { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { state.document?.highlightID != opened.highlightID }
         let colored = try XCTUnwrap(state.document)
         XCTAssertNotEqual(colored.highlightID, opened.highlightID)
         XCTAssertEqual(colored.revision, edited.revision)
@@ -259,7 +259,7 @@ final class WorkspaceFileTests: XCTestCase {
         // A newer edit wins over colors still being worked out for an older text.
         state.edit("let c = 3\n")
         state.edit("let d = 4\n")
-        for _ in 0..<200 where state.document?.tokens.isEmpty == true { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { state.document?.tokens.isEmpty != true }
         XCTAssertEqual(state.document?.tokens, TranscriptCodeSyntax.tokens(in: "let d = 4\n", language: "swift"))
     }
 
@@ -270,7 +270,7 @@ final class WorkspaceFileTests: XCTestCase {
         _ = try write("large.txt", text: text, in: root)
         let state = WorkspaceFilesState()
         state.open(.init(relativePath: "large.txt"), in: root)
-        for _ in 0..<300 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertEqual(state.document?.utf16Length, text.utf16.count)
         XCTAssertFalse(state.canEdit)
         state.edit("changed")
@@ -280,7 +280,7 @@ final class WorkspaceFileTests: XCTestCase {
         // A draft written while the file was small stays editable and says the file changed.
         state.preferences.drafts = ["large.txt": .init(text: "draft", originalText: "small", digest: "old", encoding: .utf8)]
         state.open(.init(relativePath: "large.txt"), in: root, refresh: true)
-        for _ in 0..<300 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertEqual(state.document?.text, "draft")
         XCTAssertTrue(state.document?.isEditable == true)
         XCTAssertEqual(state.saveError, WorkspaceFileError.changedOnDisk.localizedDescription)
@@ -296,7 +296,7 @@ final class WorkspaceFileTests: XCTestCase {
         XCTAssertEqual(state.matches, ["Sources/한글.swift"])
         try FileManager.default.removeItem(at: file)
         state.open(file, in: root)
-        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertNotNil(state.fileError)
         state.showPicker()
         await state.loadIndex(in: root, force: true)
@@ -304,7 +304,7 @@ final class WorkspaceFileTests: XCTestCase {
         XCTAssertTrue(state.matches.isEmpty)
         // A file outside the folder opens too; one that is not there says so.
         state.open(URL(filePath: "/outside-workspace.txt"), in: root)
-        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertNotNil(state.fileError)
         state.open(URL(string: "file://other-host/tmp/file.txt")!, in: root)
         XCTAssertNotNil(state.fileError)

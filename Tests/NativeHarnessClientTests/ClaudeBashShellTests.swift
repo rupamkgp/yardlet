@@ -332,14 +332,4 @@ import XCTest
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return folder
     }
-
-    private func waitUntil(timeout: Duration = .seconds(5), _ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 }

@@ -72,9 +72,7 @@ final class NotificationRoutingTests: XCTestCase {
         XCTAssertEqual(model.pendingNotificationResponses.count, 1)
 
         await model.restoreIndex()
-        for _ in 0..<50 where model.store.selectedSessionID != second.id {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.selectedSessionID == second.id }
         XCTAssertEqual(model.store.selectedSessionID, second.id)
         XCTAssertTrue(model.pendingNotificationResponses.isEmpty)
     }
@@ -466,7 +464,7 @@ final class NotificationRoutingTests: XCTestCase {
         await model.store.markUnread(id: idle.id)
         center.badgesAllowed = false
         await model.refreshNotificationPermission()
-        try await Task.sleep(for: .milliseconds(30))
+        try await waitUntil { attention.badges.last == .some(nil) }
         XCTAssertEqual(attention.badges.last, .some(nil))
         XCTAssertEqual(model.attentionBadgeCount, 1)
     }
@@ -634,22 +632,6 @@ final class NotificationRoutingTests: XCTestCase {
     private func waitForPost(in center: RecordingCenter, count: Int = 1) async throws -> SystemNotification {
         try await waitUntil { center.posted.count >= count }
         return center.posted[count - 1]
-    }
-
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        _ condition: @MainActor () -> Bool,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            guard ContinuousClock.now < deadline else {
-                XCTFail("Condition not met in time", file: file, line: line)
-                return
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
     }
 }
 

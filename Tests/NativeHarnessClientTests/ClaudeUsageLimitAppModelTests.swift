@@ -263,15 +263,6 @@ import XCTest
         return try XCTUnwrap(card)
     }
 
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appending(path: "claude-limit-\(UUID().uuidString)")

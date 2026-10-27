@@ -258,9 +258,7 @@ final class CodexComposerCommandTests: XCTestCase {
 
             await fixture.transport.emit(method: "turn/completed", params: .object(["threadId": .string("original"),
                 "turn": .object(["id": .string("turn-1"), "status": .string("completed"), "items": .array([])])]))
-            for _ in 0..<300 where try current(model, session).status != .ready {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await waitUntil { try current(model, session).status == .ready }
             XCTAssertEqual(try current(model, session).status, .ready)
             await model.runCodexComposerCommand(.planMode, in: try current(model, session))
             state = try XCTUnwrap(model.codexCapabilitiesBySessionID[session.id])

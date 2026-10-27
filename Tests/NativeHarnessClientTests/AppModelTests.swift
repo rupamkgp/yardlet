@@ -32,9 +32,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.store.sessions.first(where: { $0.id == child.id })?.inheritedContext?.isDelivered, true)
         // The side chat's first turn ends; a message sent while it ran would wait for that.
         await adapter.emit(.sessionStatusChanged(.ready), for: child.id, sequence: 1)
-        for _ in 0..<100 where model.store.sessions.first(where: { $0.id == child.id })?.status != .ready {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.sessions.first(where: { $0.id == child.id })?.status == .ready }
         await model.send("A follow-up", to: child)
         let followup = await adapter.lastSentPrompt()
         XCTAssertEqual(followup, "A follow-up")
@@ -121,16 +119,16 @@ final class AppModelTests: XCTestCase {
         workspace.setPanels(.init(trailingSurfaceID: "sideChat"))
         XCTAssertTrue(model.isSessionVisible(child.id))
         await adapter.emit(.turnCompleted, for: child.id, sequence: 10)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == child.id })?.completionState != .completed {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == child.id })?.completionState == .completed
         }
         XCTAssertFalse(try XCTUnwrap(model.store.sessions.first(where: { $0.id == child.id })).hasUnreadUpdate)
         workspace.setPanels(.init())
         XCTAssertFalse(model.isSessionVisible(child.id))
         XCTAssertTrue(model.isAttached(child.id))
         await adapter.emit(.error(message: "Side chat failed", recoverable: true), for: child.id, sequence: 11)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == child.id })?.hasUnreadUpdate != true {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == child.id })?.hasUnreadUpdate == true
         }
         XCTAssertTrue(try XCTUnwrap(model.store.sessions.first(where: { $0.id == child.id })).hasUnreadUpdate)
         XCTAssertNil(model.errorBySessionID[parent.id])
@@ -197,9 +195,7 @@ final class AppModelTests: XCTestCase {
         let adapter = FakeHarnessAdapter(kind: .codex)
         let model = try composerRefreshModel(adapter: adapter, sessions: [parent])
         XCTAssertFalse(model.canBranch(parent), "The first question is answered after one registry hop")
-        for _ in 0..<50 where !model.canBranch(parent) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.canBranch(parent) }
         XCTAssertTrue(model.canBranch(parent))
         XCTAssertFalse(model.isAttached(parent.id))
         let probes = await adapter.probeCount
@@ -236,9 +232,7 @@ final class AppModelTests: XCTestCase {
         await adapter.emit(.assistantDelta("Partial response"), for: session.id, sequence: 11)
         await adapter.finishEvents(for: session.id)
         // The handle goes before the failed status is written, so wait for both.
-        for _ in 0..<100 where model.isAttached(session.id) || model.store.sessions.first?.status != .failed {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !model.isAttached(session.id) && model.store.sessions.first?.status == .failed }
         XCTAssertFalse(model.isAttached(session.id))
         XCTAssertEqual(model.store.sessions.first?.status, .failed)
         XCTAssertTrue(model.activeLocalSessions.isEmpty)
@@ -310,9 +304,7 @@ final class AppModelTests: XCTestCase {
                                                 runtimeExecutableURL: URL(filePath: "/tmp/codex"), title: "Idle")
         let session = try XCTUnwrap(created)
         await adapter.finishEvents(for: session.id)
-        for _ in 0..<100 where model.isAttached(session.id) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !model.isAttached(session.id) }
         XCTAssertFalse(model.isAttached(session.id))
         XCTAssertEqual(model.store.sessions.first?.status, .ready)
         XCTAssertNil(model.errorBySessionID[session.id])
@@ -396,10 +388,7 @@ final class AppModelTests: XCTestCase {
         let session = try XCTUnwrap(created)
         await adapter.suspendNextCapabilityModes()
         let refresh = Task { await model.refreshConversationStatus(for: session) }
-        for _ in 0..<30 {
-            if await adapter.isCapabilityModesBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCapabilityModesBlocked }
         let blocked = await adapter.isCapabilityModesBlocked
         XCTAssertTrue(blocked)
         await model.delete(session)
@@ -434,9 +423,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(created.titleOrigin, .provisional)
 
         await adapter.emit(.turnCompleted, for: created.id, sequence: 10)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
-            != .provider {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .provider
         }
 
         let resolved = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
@@ -472,8 +460,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(created.titleOrigin, .provisional)
 
         await adapter.emit(.sessionStatusChanged(.running), for: created.id, sequence: 10)
-        for _ in 0..<50 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin != .provider {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .provider
         }
         let resolved = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
         XCTAssertEqual(resolved.title, "Measure the remaining lag")
@@ -505,9 +493,8 @@ final class AppModelTests: XCTestCase {
         let created = try XCTUnwrap(createdResult)
 
         await adapter.emit(.turnCompleted, for: created.id, sequence: 10)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
-            != .automatic {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .automatic
         }
         let fallback = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
         XCTAssertEqual(fallback.titleOrigin, .automatic)
@@ -515,9 +502,8 @@ final class AppModelTests: XCTestCase {
 
         providerTitle.withLock { $0 = "Fix failing test_calc.py tests" }
         await adapter.emit(.turnCompleted, for: created.id, sequence: 11)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
-            != .provider {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .provider
         }
         let resolved = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
         XCTAssertEqual(resolved.title, "Fix failing test_calc.py tests")
@@ -583,9 +569,8 @@ final class AppModelTests: XCTestCase {
             "turns": .array([])
         ]), to: &state))
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
-            != .provider {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .provider
         }
 
         let resolved = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
@@ -625,9 +610,8 @@ final class AppModelTests: XCTestCase {
 
         // No name arrived by the end of the first turn, so the local fallback stands in.
         await adapter.emit(.turnCompleted, for: created.id, sequence: 10)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
-            != .automatic {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .automatic
         }
         let fallback = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
         XCTAssertEqual(fallback.titleOrigin, .automatic)
@@ -642,9 +626,8 @@ final class AppModelTests: XCTestCase {
             "turns": .array([])
         ]), to: &state))
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
-            != .provider {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin == .provider
         }
         await model.refreshConversationStatus(for: created)
         await model.refreshVisibleProviderTitles()
@@ -739,9 +722,7 @@ final class AppModelTests: XCTestCase {
         await adapter.emit(.sessionStatusChanged(.running), for: created.id, sequence: 9)
         await adapter.emit(.turnCompleted, for: created.id, sequence: 10)
         await adapter.emit(.sessionStatusChanged(.ready), for: created.id, sequence: 11)
-        for _ in 0..<30 where notifications.posts.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !notifications.posts.isEmpty }
 
         XCTAssertTrue(model.store.sessions.first(where: { $0.id == created.id })?.hasUnreadUpdate == true)
         XCTAssertEqual(notifications.posts.count, 1)
@@ -777,17 +758,12 @@ final class AppModelTests: XCTestCase {
 
         await adapter.emit(.sessionStatusChanged(.running), for: created.id, sequence: 9)
         await adapter.emit(.turnCompleted, for: created.id, sequence: 10)
-        for _ in 0..<30 {
-            if notifications.isAuthorizationBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { notifications.isAuthorizationBlocked }
         XCTAssertTrue(notifications.isAuthorizationBlocked)
 
         await model.delete(created)
         notifications.releaseAuthorization()
-        for _ in 0..<30 where !notifications.didFinishAuthorization {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { notifications.didFinishAuthorization }
 
         XCTAssertTrue(model.store.sessions.isEmpty)
         XCTAssertTrue(notifications.posts.isEmpty)
@@ -816,10 +792,7 @@ final class AppModelTests: XCTestCase {
         let renameTask = Task {
             await model.rename(created, to: "Renamed after deletion")
         }
-        for _ in 0..<30 {
-            if await adapter.isThreadNameBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isThreadNameBlocked }
         let isBlocked = await adapter.isThreadNameBlocked
         XCTAssertTrue(isBlocked)
 
@@ -854,10 +827,7 @@ final class AppModelTests: XCTestCase {
         let archiveTask = Task {
             await model.archive(created)
         }
-        for _ in 0..<30 {
-            if await adapter.isArchiveBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isArchiveBlocked }
         let isBlocked = await adapter.isArchiveBlocked
         XCTAssertTrue(isBlocked)
 
@@ -892,10 +862,7 @@ final class AppModelTests: XCTestCase {
         let deleteTask = Task {
             await model.delete(created)
         }
-        for _ in 0..<30 {
-            if await adapter.isDeleteBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isDeleteBlocked }
         let isBlocked = await adapter.isDeleteBlocked
         XCTAssertTrue(isBlocked)
 
@@ -931,8 +898,8 @@ final class AppModelTests: XCTestCase {
         model.store.selectedSessionID = nil
 
         await adapter.emit(.sessionStatusChanged(.failed), for: created.id, sequence: 10)
-        for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.hasUnreadUpdate != true {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == created.id })?.hasUnreadUpdate == true
         }
 
         XCTAssertTrue(model.store.sessions.first(where: { $0.id == created.id })?.hasUnreadUpdate == true)
@@ -1078,10 +1045,7 @@ final class AppModelTests: XCTestCase {
                 initialPrompt: "Start immediately"
             )
         }
-        for _ in 0..<30 {
-            if await adapter.isCreateBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCreateBlocked }
 
         let isCreateBlocked = await adapter.isCreateBlocked
         XCTAssertTrue(isCreateBlocked)
@@ -1127,10 +1091,7 @@ final class AppModelTests: XCTestCase {
             let sendTask = Task {
                 await model.send("Continue immediately", to: session)
             }
-            for _ in 0..<30 {
-                if await adapter.isResumeBlocked { break }
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await waitUntil { await adapter.isResumeBlocked }
 
             let isResumeBlocked = await adapter.isResumeBlocked
             XCTAssertTrue(isResumeBlocked)
@@ -1387,8 +1348,8 @@ final class AppModelTests: XCTestCase {
             "turns": .array([])
         ]), to: &typedState))
         await adapter.emitPresentation(typedState, for: created.id)
-        for _ in 0..<20 where model.codexPresentationBySessionID[created.id]?.thread?.id != "provider-thread" {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.codexPresentationBySessionID[created.id]?.thread?.id == "provider-thread"
         }
 
         XCTAssertEqual(
@@ -1454,9 +1415,7 @@ final class AppModelTests: XCTestCase {
             lastAppliedSequence: 0
         )
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where transcriptRepository.load(for: created.id).count != 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { transcriptRepository.load(for: created.id).count == 2 }
         XCTAssertEqual(
             transcriptRepository.load(for: created.id).map(\.content),
             [
@@ -1527,9 +1486,8 @@ final class AppModelTests: XCTestCase {
         ]), to: &state))
         await adapter.emitPresentation(state, for: forked.id)
 
-        for _ in 0..<20 where model.codexPresentationBySessionID[forked.id]?.thread?.id
-            != "forked-provider-thread" {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.codexPresentationBySessionID[forked.id]?.thread?.id == "forked-provider-thread"
         }
 
         XCTAssertEqual(
@@ -1628,10 +1586,7 @@ final class AppModelTests: XCTestCase {
         let forkTask = Task {
             await model.branch(source)
         }
-        for _ in 0..<30 {
-            if await adapter.isForkBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isForkBlocked }
         let isBlocked = await adapter.isForkBlocked
         XCTAssertTrue(isBlocked)
 
@@ -1677,9 +1632,8 @@ final class AppModelTests: XCTestCase {
         ]), to: &state))
         state.thread?.turns[0].itemsNextCursor = "items-cursor-2"
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where model.codexPresentationBySessionID[created.id]?.thread?.turns
-            .first?.itemsNextCursor != "items-cursor-2" {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.codexPresentationBySessionID[created.id]?.thread?.turns.first?.itemsNextCursor == "items-cursor-2"
         }
 
         await model.loadMoreCodexItems(for: created, turnID: "turn-with-more-items")
@@ -1718,19 +1672,15 @@ final class AppModelTests: XCTestCase {
         ]), to: &state))
         state.thread?.turnsNextCursor = "turns-cursor-2"
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where model.codexPresentationBySessionID[created.id]?.thread?.turnsNextCursor
-            != "turns-cursor-2" {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.codexPresentationBySessionID[created.id]?.thread?.turnsNextCursor == "turns-cursor-2"
         }
 
         await adapter.suspendAndFailNextTurnPage()
         let loadTask = Task {
             await model.loadMoreCodexTurns(for: created)
         }
-        for _ in 0..<30 {
-            if await adapter.isTurnPageBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isTurnPageBlocked }
         let isTurnPageBlocked = await adapter.isTurnPageBlocked
         XCTAssertTrue(isTurnPageBlocked)
 
@@ -1776,19 +1726,15 @@ final class AppModelTests: XCTestCase {
         ]), to: &state))
         state.thread?.turns[0].itemsNextCursor = "items-cursor-2"
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where model.codexPresentationBySessionID[created.id]?.thread?.turns
-            .first?.itemsNextCursor != "items-cursor-2" {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.codexPresentationBySessionID[created.id]?.thread?.turns.first?.itemsNextCursor == "items-cursor-2"
         }
 
         await adapter.suspendAndFailNextItemPage()
         let loadTask = Task {
             await model.loadMoreCodexItems(for: created, turnID: "turn-with-more-items")
         }
-        for _ in 0..<30 {
-            if await adapter.isItemPageBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isItemPageBlocked }
         let isItemPageBlocked = await adapter.isItemPageBlocked
         XCTAssertTrue(isItemPageBlocked)
 
@@ -1855,10 +1801,7 @@ final class AppModelTests: XCTestCase {
         let loadTask = Task {
             await model.loadCodexCapabilities(for: created)
         }
-        for _ in 0..<30 {
-            if await adapter.isCapabilityModesBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCapabilityModesBlocked }
         let isBlocked = await adapter.isCapabilityModesBlocked
         XCTAssertTrue(isBlocked)
 
@@ -1926,10 +1869,7 @@ final class AppModelTests: XCTestCase {
                 in: created
             )
         }
-        for _ in 0..<30 {
-            if await adapter.isCodexServerResponseBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCodexServerResponseBlocked }
         let isBlocked = await adapter.isCodexServerResponseBlocked
         XCTAssertTrue(isBlocked)
 
@@ -1969,10 +1909,7 @@ final class AppModelTests: XCTestCase {
                 to: created
             )
         }
-        for _ in 0..<30 {
-            if await adapter.isCodexSubmissionBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCodexSubmissionBlocked }
         let isBlocked = await adapter.isCodexSubmissionBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2011,10 +1948,7 @@ final class AppModelTests: XCTestCase {
         let selectionTask = Task {
             await model.selectCodexMode(preset.id, for: created)
         }
-        for _ in 0..<30 {
-            if await adapter.isModeSelectionBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isModeSelectionBlocked }
         let isBlocked = await adapter.isModeSelectionBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2049,10 +1983,7 @@ final class AppModelTests: XCTestCase {
         let interruptTask = Task {
             await model.interrupt(created)
         }
-        for _ in 0..<30 {
-            if await adapter.isInterruptBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isInterruptBlocked }
         let isBlocked = await adapter.isInterruptBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2091,10 +2022,7 @@ final class AppModelTests: XCTestCase {
         let resumeTask = Task {
             await model.resume(session)
         }
-        for _ in 0..<30 {
-            if await adapter.isResumeBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isResumeBlocked }
         let isBlocked = await adapter.isResumeBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2189,9 +2117,7 @@ final class AppModelTests: XCTestCase {
             to: &state
         ))
         await adapter.emitPresentation(state, for: created.id)
-        for _ in 0..<30 where pendingRepository.load(for: created.id).isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !pendingRepository.load(for: created.id).isEmpty }
         XCTAssertEqual(pendingRepository.load(for: created.id).map(\.id), ["s:approval-1"])
         await model.shutdown()
 
@@ -2205,8 +2131,8 @@ final class AppModelTests: XCTestCase {
         await restoredModel.restoreIndex()
         let persistedSession = try XCTUnwrap(restoredModel.store.sessions.first)
         await restoredModel.resume(persistedSession)
-        for _ in 0..<30 where restoredModel.codexPresentationBySessionID[persistedSession.id]?.serverRequestsByID.isEmpty != false {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            restoredModel.codexPresentationBySessionID[persistedSession.id]?.serverRequestsByID.isEmpty == false
         }
 
         XCTAssertEqual(
@@ -2235,8 +2161,8 @@ final class AppModelTests: XCTestCase {
         await resolvedModel.restoreIndex()
         let resolvedSession = try XCTUnwrap(resolvedModel.store.sessions.first)
         await resolvedModel.resume(resolvedSession)
-        for _ in 0..<30 where resolvedModel.codexPresentationBySessionID[resolvedSession.id]?.serverRequestsByID.isEmpty != false {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            resolvedModel.codexPresentationBySessionID[resolvedSession.id]?.serverRequestsByID.isEmpty == false
         }
 
         guard case .resolved = resolvedModel.codexPresentationBySessionID[resolvedSession.id]?
@@ -2273,9 +2199,8 @@ final class AppModelTests: XCTestCase {
         await expiredModel.restoreIndex()
         let expiredSession = try XCTUnwrap(expiredModel.store.sessions.first)
         await expiredModel.resume(expiredSession)
-        for _ in 0..<30 where expiredModel.codexPresentationBySessionID[expiredSession.id]?
-            .serverRequestsByID["s:approval-expired"] == nil {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            expiredModel.codexPresentationBySessionID[expiredSession.id]?.serverRequestsByID["s:approval-expired"] != nil
         }
 
         guard case let .rejected(code, message) = expiredModel.codexPresentationBySessionID[
@@ -2315,7 +2240,7 @@ final class AppModelTests: XCTestCase {
         var partial = state(text: "Initial text")
         partial.thread?.turns[0].items[0].content = .agentMessage(.init(text: "Observed partial answer 🌿", phase: .finalAnswer, memoryCitation: nil))
         await adapter.emitPresentation(partial, for: session.id)
-        for _ in 0..<30 where timeline.load(for: session.id).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !timeline.load(for: session.id).isEmpty }
         let saved = try XCTUnwrap(timeline.load(for: session.id).first)
         XCTAssertEqual(saved.pageEntry.item.content, partial.thread?.turns[0].items[0].content)
         await adapter.emitPresentation(state(text: nil), for: session.id)
@@ -2323,7 +2248,10 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.codexPresentationBySessionID[session.id]?.thread?.turns[0].items.first?.content, partial.thread?.turns[0].items[0].content)
         let provider = state(text: "Provider history wins")
         await adapter.emitPresentation(provider, for: session.id)
-        try await Task.sleep(for: .milliseconds(30))
+        try await waitUntil {
+            model.codexPresentationBySessionID[session.id]?.thread?.turns[0].items.first?.content
+                != partial.thread?.turns[0].items[0].content
+        }
         XCTAssertEqual(model.codexPresentationBySessionID[session.id]?.thread?.turns[0].items.first?.content, provider.thread?.turns[0].items[0].content)
         await model.shutdown()
     }
@@ -2364,11 +2292,11 @@ final class AppModelTests: XCTestCase {
             return command.aggregatedOutput
         }
         await adapter.emitPresentation(state(output: nil), for: session.id)
-        for _ in 0..<50 where timeline.load(for: session.id).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !timeline.load(for: session.id).isEmpty }
         XCTAssertEqual(timeline.load(for: session.id).map(\.id), ["command"])
         for output in ["Compiling 1/3\n", "Compiling 1/3\nCompiling 2/3\n"] {
             await adapter.emitPresentation(state(output: output), for: session.id)
-            for _ in 0..<50 where shownOutput() != output { try await Task.sleep(for: .milliseconds(10)) }
+            try await waitUntil { shownOutput() == output }
             XCTAssertEqual(shownOutput(), output)
         }
         // The saved copy follows the live output, so a restart keeps what was seen. Output that
@@ -2378,9 +2306,7 @@ final class AppModelTests: XCTestCase {
             else { return nil }
             return saved.aggregatedOutput
         }
-        for _ in 0..<200 where savedOutput() != "Compiling 1/3\nCompiling 2/3\n" {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { savedOutput() == "Compiling 1/3\nCompiling 2/3\n" }
         XCTAssertEqual(savedOutput(), "Compiling 1/3\nCompiling 2/3\n")
         await model.shutdown()
     }
@@ -2453,9 +2379,7 @@ final class AppModelTests: XCTestCase {
             lastAppliedSequence: 0
         )
         await adapter.emitPresentation(providerState, for: created.id)
-        for _ in 0..<30 where timelineRepository.load(for: created.id).isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { !timelineRepository.load(for: created.id).isEmpty }
         XCTAssertEqual(timelineRepository.load(for: created.id).map(\.id), ["command-1"])
         await model.shutdown()
 
@@ -2481,9 +2405,8 @@ final class AppModelTests: XCTestCase {
         await resumedModel.restoreIndex()
         let resumedSession = try XCTUnwrap(resumedModel.store.sessions.first)
         await resumedModel.resume(resumedSession)
-        for _ in 0..<30 where resumedModel.codexPresentationBySessionID[resumedSession.id]?
-            .thread?.turns.first?.items.isEmpty != false {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            resumedModel.codexPresentationBySessionID[resumedSession.id]?.thread?.turns.first?.items.isEmpty == false
         }
 
         let restoredItems = resumedModel.codexPresentationBySessionID[resumedSession.id]?
@@ -2512,9 +2435,8 @@ final class AppModelTests: XCTestCase {
         await latestOnlyModel.restoreIndex()
         let latestSession = try XCTUnwrap(latestOnlyModel.store.sessions.first)
         await latestOnlyModel.resume(latestSession)
-        for _ in 0..<30 where latestOnlyModel.codexPresentationBySessionID[latestSession.id]?
-            .thread?.turns.first?.id != "turn-latest" {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            latestOnlyModel.codexPresentationBySessionID[latestSession.id]?.thread?.turns.first?.id == "turn-latest"
         }
         XCTAssertEqual(
             latestOnlyModel.codexPresentationBySessionID[latestSession.id]?.thread?.turns.map(\.id),
@@ -2580,10 +2502,7 @@ final class AppModelTests: XCTestCase {
         let openTask = Task {
             await model.openCodexSubagent(threadID: "child-thread", from: source)
         }
-        for _ in 0..<30 {
-            if await adapter.isResumeBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isResumeBlocked }
         let isBlocked = await adapter.isResumeBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2628,10 +2547,7 @@ final class AppModelTests: XCTestCase {
         let resumeTask = Task {
             await model.resume(created)
         }
-        for _ in 0..<30 {
-            if await adapter.isResumeBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isResumeBlocked }
         let isBlocked = await adapter.isResumeBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2684,10 +2600,7 @@ final class AppModelTests: XCTestCase {
         let importTask = Task {
             await model.importConversation(conversation, connection: nil, historySelection: selection)
         }
-        for _ in 0..<30 {
-            if await adapter.isSearchOccurrencesBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isSearchOccurrencesBlocked }
         let isBlocked = await adapter.isSearchOccurrencesBlocked
         XCTAssertTrue(isBlocked)
 
@@ -2866,15 +2779,20 @@ final class AppModelTests: XCTestCase {
             for: claudeSession.id,
             sequence: 1
         )
-        try await Task.sleep(for: AppModel.transcriptPublicationInterval + .milliseconds(60))
-        XCTAssertEqual(model.transcriptBySessionID[codexSession.id]?.map(\.content), [
+        let codexTranscript: [TranscriptEntryContent] = [
             .user(text: "codex prompt"),
             .assistant(text: "codex reply", isStreaming: true)
-        ])
-        XCTAssertEqual(model.transcriptBySessionID[claudeSession.id]?.map(\.content), [
+        ]
+        let claudeTranscript: [TranscriptEntryContent] = [
             .user(text: "claude prompt"),
             .assistant(text: "claude reply", isStreaming: true)
-        ])
+        ]
+        try await waitUntil {
+            model.transcriptBySessionID[codexSession.id]?.map(\.content) == codexTranscript
+                && model.transcriptBySessionID[claudeSession.id]?.map(\.content) == claudeTranscript
+        }
+        XCTAssertEqual(model.transcriptBySessionID[codexSession.id]?.map(\.content), codexTranscript)
+        XCTAssertEqual(model.transcriptBySessionID[claudeSession.id]?.map(\.content), claudeTranscript)
 
         let restoredCodexAdapter = FakeHarnessAdapter(kind: .codex)
         let restoredClaudeAdapter = FakeHarnessAdapter(kind: .claudeCode)
@@ -2972,12 +2890,12 @@ final class AppModelTests: XCTestCase {
                 sequence: 1
             )
         }
-        try await Task.sleep(for: AppModel.transcriptPublicationInterval + .milliseconds(60))
+        let reply = TranscriptEntryContent.assistant(text: "reply (session.harness.rawValue)", isStreaming: true)
+        try await waitUntil {
+            model.store.sessions.allSatisfy { model.transcriptBySessionID[$0.id]?.last?.content == reply }
+        }
         for session in model.store.sessions {
-            XCTAssertEqual(
-                model.transcriptBySessionID[session.id]?.last?.content,
-                .assistant(text: "reply (session.harness.rawValue)", isStreaming: true)
-            )
+            XCTAssertEqual(model.transcriptBySessionID[session.id]?.last?.content, reply)
         }
 
         let restoredAdapters = Dictionary(
@@ -3079,8 +2997,8 @@ final class AppModelTests: XCTestCase {
         await codexAdapter.emit(.sessionStatusChanged(.running), for: first.id, sequence: 1)
         await codexAdapter.emit(.turnCompleted, for: first.id, sequence: 2)
         await codexAdapter.emit(.sessionStatusChanged(.ready), for: first.id, sequence: 3)
-        for _ in 0..<20 where model.store.sessions.first(where: { $0.id == first.id })?.hasUnreadUpdate != true {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == first.id })?.hasUnreadUpdate == true
         }
         XCTAssertTrue(model.store.sessions.first(where: { $0.id == first.id })?.hasUnreadUpdate == true)
         XCTAssertEqual(model.store.sessions.first(where: { $0.id == first.id })?.completionState, .completed)
@@ -3192,9 +3110,7 @@ final class AppModelTests: XCTestCase {
 
         await model.send("first", to: session)
         await adapter.emit(.sessionStatusChanged(.waitingForApproval), for: session.id, sequence: 1)
-        for _ in 0..<30 where model.store.sessions.first?.status != .waitingForApproval {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.sessions.first?.status == .waitingForApproval }
         await model.send("second", to: session)
 
         let submissions = await adapter.codexSubmissions
@@ -3235,27 +3151,20 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.followUps.isPaused(session.id))
         XCTAssertTrue(queueRepository.isPaused(for: session.id))
         await adapter.emit(.sessionStatusChanged(.ready), for: session.id, sequence: 1)
-        for _ in 0..<30 where model.store.sessions.first?.status != .ready {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.sessions.first?.status == .ready }
         try await Task.sleep(for: .milliseconds(50))
         var submissionCount = await adapter.codexSubmissions.count
         XCTAssertEqual(submissionCount, 1)
         XCTAssertEqual(model.followUps.queue(for: session.id).map(\.draft.text), ["second"])
 
         model.resumeQueue(for: session)
-        for _ in 0..<30 {
-            if await adapter.codexSubmissions.count >= 2 { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.codexSubmissions.count >= 2 }
         submissionCount = await adapter.codexSubmissions.count
         XCTAssertEqual(submissionCount, 2)
         let resumed = await adapter.codexSubmissions.last
         XCTAssertEqual(resumed?.0.text, "second")
         XCTAssertEqual(resumed?.1, .start)
-        for _ in 0..<30 where !model.followUps.queue(for: session.id).isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.followUps.queue(for: session.id).isEmpty }
         XCTAssertTrue(model.followUps.queue(for: session.id).isEmpty)
         XCTAssertFalse(model.followUps.isPaused(session.id))
         XCTAssertFalse(queueRepository.isPaused(for: session.id))
@@ -3330,9 +3239,7 @@ final class AppModelTests: XCTestCase {
         // After an interrupt the queue holds; Steer on an item sends it as the next turn.
         await model.interrupt(session)
         await adapter.emit(.sessionStatusChanged(.ready), for: session.id, sequence: 1)
-        for _ in 0..<30 where model.store.sessions.first?.status != .ready {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.sessions.first?.status == .ready }
         session = try XCTUnwrap(model.store.sessions.first)
         await model.sendQueuedNow(try XCTUnwrap(queue.first?.id), for: session)
         submissions = await adapter.codexSubmissions
@@ -3403,18 +3310,13 @@ final class AppModelTests: XCTestCase {
         await model.submitCodex(CodexComposerDraft(inputs: [.text("sending")]), action: .queue, to: session)
         await adapter.suspendNextCodexSubmissionUntilReleased()
         await adapter.emit(.sessionStatusChanged(.ready), for: session.id, sequence: 1)
-        for _ in 0..<30 {
-            if await adapter.isCodexSubmissionBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCodexSubmissionBlocked }
         let isBlocked = await adapter.isCodexSubmissionBlocked
         XCTAssertTrue(isBlocked)
 
         await model.submitCodex(CodexComposerDraft(inputs: [.text("added while sending")]), action: .queue, to: session)
         await adapter.releaseSuspendedCodexSubmission()
-        for _ in 0..<30 where model.followUps.queue(for: session.id).count != 1 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.followUps.queue(for: session.id).count == 1 }
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(model.followUps.queue(for: session.id).map(\.draft.text), ["added while sending"])
         await model.shutdown()
@@ -3445,9 +3347,7 @@ final class AppModelTests: XCTestCase {
         await adapter.emit(.error(message: "You've hit your usage limit.", recoverable: false), for: created.id, sequence: 2)
         await adapter.emit(.turnCompleted, for: created.id, sequence: 3)
         await adapter.emit(.sessionStatusChanged(.ready), for: created.id, sequence: 4)
-        for _ in 0..<30 where model.store.sessions.first?.status != .ready {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.sessions.first?.status == .ready }
         try await Task.sleep(for: .milliseconds(20))
 
         XCTAssertEqual(notifications.posts.map(\.title), [L10n.string("Task failed")])
@@ -3600,10 +3500,7 @@ final class AppModelTests: XCTestCase {
             for: session.id,
             sequence: 1
         )
-        for _ in 0..<30 {
-            if await adapter.codexSubmissions.count >= 2 { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.codexSubmissions.count >= 2 }
         let submissionCount = await adapter.codexSubmissions.count
         XCTAssertEqual(submissionCount, 2)
         XCTAssertEqual(model.followUps.queue(for: session.id).map(\.draft.text), ["third"])
@@ -3636,19 +3533,13 @@ final class AppModelTests: XCTestCase {
         await model.submitCodex(CodexComposerDraft(inputs: [.text("cancel while failing")]), action: .queue, to: session)
         await adapter.suspendAndFailNextCodexSubmission()
         await adapter.emit(.sessionStatusChanged(.ready), for: session.id, sequence: 1)
-        for _ in 0..<30 {
-            if await adapter.isCodexSubmissionBlocked { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCodexSubmissionBlocked }
         let isBlocked = await adapter.isCodexSubmissionBlocked
         XCTAssertTrue(isBlocked)
 
         await model.delete(session)
         await adapter.releaseSuspendedCodexSubmission()
-        for _ in 0..<30 {
-            if await adapter.isCodexSubmissionBlocked == false { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.isCodexSubmissionBlocked == false }
 
         XCTAssertTrue(model.store.sessions.isEmpty)
         XCTAssertTrue(model.followUps.queue(for: session.id).isEmpty)
@@ -3719,12 +3610,13 @@ final class AppModelTests: XCTestCase {
         await model.send("hello", to: session)
         await adapter.emit(.assistantDelta("wor"), for: session.id, sequence: 1)
         await adapter.emit(.assistantDelta("ld"), for: session.id, sequence: 2)
-        try await Task.sleep(for: AppModel.transcriptPublicationInterval + .milliseconds(60))
-
-        XCTAssertEqual(model.transcriptBySessionID[session.id]?.map(\.content), [
+        let transcript: [TranscriptEntryContent] = [
             .user(text: "hello"),
             .assistant(text: "world", isStreaming: true)
-        ])
+        ]
+        try await waitUntil { model.transcriptBySessionID[session.id]?.map(\.content) == transcript }
+
+        XCTAssertEqual(model.transcriptBySessionID[session.id]?.map(\.content), transcript)
         let sentPrompts = await adapter.sentPrompts
         XCTAssertEqual(sentPrompts, ["hello"])
 
@@ -3735,7 +3627,9 @@ final class AppModelTests: XCTestCase {
             command: "git status"
         )
         await adapter.emit(.permissionRequested(permission), for: session.id, sequence: 3)
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.eventsBySessionID[session.id]?.contains { $0.payload == .permissionRequested(permission) } == true
+        }
         await model.respond(to: permission.id, decision: .deny, in: session)
 
         XCTAssertTrue(model.transcriptBySessionID[session.id]?.contains { entry in
@@ -3775,7 +3669,7 @@ final class AppModelTests: XCTestCase {
         )
 
         await adapter.emit(.usageUpdated(usage), for: session.id, sequence: 1)
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil { model.providerUsageBySessionID[session.id] != nil }
 
         XCTAssertEqual(model.providerUsageBySessionID[session.id], usage)
         XCTAssertTrue(model.transcriptBySessionID[session.id]?.isEmpty ?? true)
@@ -3802,7 +3696,9 @@ final class AppModelTests: XCTestCase {
 
         await model.send("first", to: session)
         await adapter.emit(.assistantDelta("answer"), for: session.id, sequence: 1)
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.eventsBySessionID[session.id]?.contains { $0.payload == .assistantDelta("answer") } == true
+        }
         await model.send("follow-up", to: session)
 
         XCTAssertEqual(model.transcriptBySessionID[session.id]?.map(\.content), [
@@ -3810,19 +3706,6 @@ final class AppModelTests: XCTestCase {
             .assistant(text: "answer", isStreaming: false),
             .user(text: "follow-up")
         ])
-    }
-
-    /// Waits for what the model does in its own tasks. The deadline only bounds a failure: a check
-    /// that holds goes on at once, however busy the machine is.
-    private func waitUntil(timeout: Duration = .seconds(10), _ condition: @MainActor () async -> Bool,
-                           file: StaticString = #filePath, line: UInt = #line) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        if await condition() { return }
-        XCTFail("Condition was not met within \(timeout)", file: file, line: line)
     }
 }
 

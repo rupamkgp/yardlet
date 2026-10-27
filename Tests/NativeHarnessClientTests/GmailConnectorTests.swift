@@ -176,8 +176,7 @@ final class GmailConnectorTests: XCTestCase {
         let redirect = try XCTUnwrap(browser.redirects.first)
         XCTAssertEqual(redirect.host(), "127.0.0.1")
         XCTAssertEqual(redirect.path(), "/callback")
-        let deadline = ContinuousClock.now + .seconds(2)
-        while browser.pages.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        try await waitUntil { !browser.pages.isEmpty }
         XCTAssertEqual(browser.pages.first?.contains("Yardlet"), true, "The loopback's page tells the person to go back")
         let form = FakeConnectorServer.form(try XCTUnwrap(google.requests.first { $0.url?.path() == "/token" }))
         XCTAssertEqual(form["redirect_uri"], redirect.absoluteString.components(separatedBy: "?").first)
@@ -343,10 +342,7 @@ final class GmailConnectorTests: XCTestCase {
         let center = makeCenter(agent: agent)
         try await center.saveGoogleApp(clientID: FakeGoogle.clientID, secret: FakeGoogle.clientSecret)
         let record = try XCTUnwrap(center.addGmailAccount())
-        let deadline = ContinuousClock.now + .seconds(2)
-        while center.activity[record.id] != .waitingForBrowser, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { center.activity[record.id] == .waitingForBrowser }
         XCTAssertEqual(ConnectorSettingsState.make(try XCTUnwrap(center.record(record.id)), in: center), .waitingForBrowser)
         center.cancelConnect(record.id)
         await center.waitForConnection(record.id)
@@ -702,7 +698,7 @@ private actor GmailPermissionRecorder {
     private var requests: [PermissionRequest] = []
     func append(_ request: PermissionRequest) { requests.append(request) }
     func waitFor(_ id: String) async throws -> PermissionRequest {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < deadline {
             if let request = requests.last(where: { $0.id == id }) { return request }
             try await Task.sleep(for: .milliseconds(20))

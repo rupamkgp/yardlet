@@ -92,10 +92,7 @@ final class PiAccountConnectionTests: XCTestCase {
         await model.login(descriptor: HarnessCatalog.descriptor(for: .pi)!, connection: ProviderConnection(id: "pi-test", name: "Test", harness: .pi, providerID: "openai-codex", homePath: nil, credentialSelector: nil), runtimeSelections: selections)
         let terminal = attach(model.loginController)
         defer { _ = terminal }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await gate.isWaiting), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { await gate.isWaiting }
         let isWaiting = await gate.isWaiting
         XCTAssertTrue(isWaiting)
         model.closeConsole()
@@ -120,10 +117,7 @@ final class PiAccountConnectionTests: XCTestCase {
         let model = AccountCenterModel(connections: store)
         defer { model.closeConsole() }
         let refresh = Task { await store.check(savedOf: [], policy: .refresh, runtimeSelections: selections) }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await gate.isWaiting), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { await gate.isWaiting }
         let descriptor = try XCTUnwrap(HarnessCatalog.descriptor(for: .pi))
         await model.login(descriptor: descriptor, connection: ProviderConnection(id: "pi-test", name: "Test", harness: .pi, providerID: "openai-codex", homePath: nil, credentialSelector: nil), runtimeSelections: selections)
         let terminal = attach(model.loginController)
@@ -149,26 +143,16 @@ final class PiAccountConnectionTests: XCTestCase {
         await model.login(descriptor: descriptor, connection: ProviderConnection(id: "pi-test", name: "Test", harness: .pi, providerID: "openai-codex", homePath: nil, credentialSelector: nil), runtimeSelections: selections)
         let terminal = attach(model.loginController)
         defer { _ = terminal }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await gate.isWaiting), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { await gate.isWaiting }
         await store.check(savedOf: [], policy: .refresh, runtimeSelections: selections)
         await gate.release()
         try await waitUntil { model.loginController.phase == .completed }
         XCTAssertEqual(store.defaultSnapshots[.pi]?.state, .signedIn)
     }
 
-    private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(6)
-        while !condition(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
-        XCTAssertTrue(condition())
-    }
 
     private func attach(_ controller: AccountLoginController) -> LocalProcessTerminalView {
-        let view = LocalProcessTerminalView(
+        let view = AccountLoginTerminalView(
             frame: NSRect(x: 0, y: 0, width: 900, height: 500),
             font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
             options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 200)

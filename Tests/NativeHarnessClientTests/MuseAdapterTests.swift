@@ -1036,17 +1036,6 @@ final class MuseAdapterTests: XCTestCase {
         try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
     }
 
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        _ predicate: @escaping @Sendable () async -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !(await predicate()), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let satisfied = await predicate()
-        XCTAssertTrue(satisfied)
-    }
 
     fileprivate static let sessionID = "0198f0aa-1111-7000-8000-0000000000aa"
     fileprivate static let turnID = "018f6a1e-9b3c-7c21-a54a-2f30bd3c9f10"

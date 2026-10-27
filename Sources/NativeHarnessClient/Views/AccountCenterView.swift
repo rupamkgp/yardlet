@@ -1213,7 +1213,7 @@ private struct AccountLoginTerminalHost: NSViewRepresentable {
     let isVisible: Bool
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let view = FocusableLoginTerminalView(
+        let view = AccountLoginTerminalView(
             frame: .zero,
             font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
             options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 5_000)
@@ -1234,7 +1234,7 @@ private struct AccountLoginTerminalHost: NSViewRepresentable {
 
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
         if isVisible, !context.coordinator.wasVisible,
-           let view = nsView as? FocusableLoginTerminalView {
+           let view = nsView as? AccountLoginTerminalView {
             view.requestFocus()
         }
         context.coordinator.wasVisible = isVisible
@@ -1259,7 +1259,17 @@ private struct AccountLoginTerminalHost: NSViewRepresentable {
     }
 }
 
-private final class FocusableLoginTerminalView: LocalProcessTerminalView {
+/// The login console's terminal. SwiftTerm reports that a process exited and delivers what it
+/// printed on separate paths, so the exit can come before the last lines; the view passes each
+/// delivery on, so those lines still reach `AccountLoginController.output`.
+final class AccountLoginTerminalView: LocalProcessTerminalView {
+    var onOutput: (@MainActor () -> Void)?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        super.dataReceived(slice: slice)
+        onOutput?()
+    }
+
     func requestFocus() {
         guard let window else { return }
         DispatchQueue.main.async { [weak self, weak window] in

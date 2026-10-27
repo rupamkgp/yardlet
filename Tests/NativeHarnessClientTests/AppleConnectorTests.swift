@@ -590,7 +590,7 @@ final class AppleConnectorTests: XCTestCase {
 
         bridge.exitOnStart = nil
         center.remove(record.id)
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil { bridge.channels.allSatisfy(\.terminated) }
         XCTAssertTrue(bridge.channels.allSatisfy(\.terminated), "Removing ends the bridge")
     }
 
@@ -607,14 +607,16 @@ final class AppleConnectorTests: XCTestCase {
         let slowResult = try await slow
         XCTAssertEqual(slowResult["content"]?.arrayValue?.first?["text"], .string("Done slowly"))
         server.channels.last?.ask(.object(["jsonrpc": .string("2.0"), "id": .string("srv-1"), "method": .string("ping")]))
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil {
+            server.received.contains { $0["id"] == .string("srv-1") && $0["result"] == .object([:]) }
+        }
         XCTAssertTrue(server.received.contains { $0["id"] == .string("srv-1") && $0["result"] == .object([:]) })
 
         let waiting = Task { try await client.callTool(name: "Slow", arguments: .object([:])) }
         try await Task.sleep(for: .milliseconds(50))
         waiting.cancel()
         await XCTAssertThrowsErrorAsync(try await waiting.value)
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil { server.received.contains { $0["method"] == .string("notifications/cancelled") } }
         XCTAssertTrue(server.received.contains { $0["method"] == .string("notifications/cancelled") })
         await client.close()
     }

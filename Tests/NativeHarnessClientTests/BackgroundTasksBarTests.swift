@@ -151,7 +151,7 @@ final class BackgroundTasksBarTests: XCTestCase {
         XCTAssertEqual(stops.count, 0, "Asking does not stop anything")
 
         XCTAssertEqual(stopAll.confirm(bar(), actions: actions), ["agent", "shell"])
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         repeat {
             stops = await transport.requestedValues.filter { $0["request"]?["subtype"]?.stringValue == "stop_task" }
             if stops.count >= 2 { break }
@@ -168,22 +168,5 @@ final class BackgroundTasksBarTests: XCTestCase {
                                       "task_id": .string("t-shell"), "patch": .object(["status": .string("killed")])]))
         try await waitUntil { !bar().isShown }
         await model.shutdown()
-    }
-
-    @MainActor
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        _ condition: @MainActor () -> Bool,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            guard ContinuousClock.now < deadline else {
-                XCTFail("Condition not met in time", file: file, line: line)
-                return
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
     }
 }

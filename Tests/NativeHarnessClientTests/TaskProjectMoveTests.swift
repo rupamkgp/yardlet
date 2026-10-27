@@ -302,9 +302,7 @@ final class TaskProjectMoveTests: XCTestCase {
                                                 runtimeExecutableURL: try runtime(), title: "Long build")
         let created = try XCTUnwrap(started)
         await adapter.emit(.sessionStatusChanged(.running), for: created.id, sequence: 10)
-        for _ in 0..<100 where model.store.sessions.first?.status != .running {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.store.sessions.first?.status == .running }
         let running = try XCTUnwrap(model.store.sessions.first { $0.id == created.id })
         XCTAssertEqual(running.status, .running)
         XCTAssertTrue(model.isAttached(running.id))
@@ -317,9 +315,7 @@ final class TaskProjectMoveTests: XCTestCase {
         XCTAssertEqual(moved.updatedAt, running.updatedAt, "A move is not activity")
         XCTAssertTrue(model.isAttached(running.id), "The attached session stays")
         await adapter.emit(.assistantDelta("Still streaming"), for: running.id, sequence: 11)
-        for _ in 0..<100 where model.transcriptBySessionID[running.id]?.isEmpty != false {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { model.transcriptBySessionID[running.id]?.isEmpty == false }
         XCTAssertTrue(model.transcriptBySessionID[running.id]?.contains {
             if case let .assistant(text, _) = $0.content { return text == "Still streaming" }
             return false

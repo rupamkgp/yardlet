@@ -174,7 +174,7 @@ final class ClaudeRequestedModelTests: XCTestCase {
         XCTAssertEqual(launched?.model, "claude-opus-5-5")
         await transport.emit(.object(["type": .string("result"), "subtype": .string("success"),
                                       "is_error": .bool(false), "result": .string("done")]))
-        let deadline = ContinuousClock.now + .seconds(3)
+        let deadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < deadline,
               model.store.sessions.first(where: { $0.id == session.id })?.status != .ready
                 || model.providerCapabilitiesBySessionID[session.id] == nil {

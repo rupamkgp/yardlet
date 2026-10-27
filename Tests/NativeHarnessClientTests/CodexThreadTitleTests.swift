@@ -138,12 +138,4 @@ final class CodexThreadTitleTests: XCTestCase {
         .object(["id": .string(id), "model": .string(id), "displayName": .string(id),
                  "defaultReasoningEffort": .string("medium"), "hidden": .bool(false)])
     }
-
-    private func waitUntil(_ condition: @escaping () async -> Bool) async throws {
-        for _ in 0..<300 {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Condition was not met")
-    }
 }

@@ -90,7 +90,11 @@ final class SubagentProviderHistoryTests: XCTestCase {
 
             try await adapter.send("Summarize README.md", to: handle)
             // A named thread asks for the model list and a side thread next; give it the chance.
-            try await Task.sleep(for: .milliseconds(150))
+            if keepsNoHistory {
+                try await Task.sleep(for: .milliseconds(150))
+            } else {
+                try await waitUntil { await transport.requestMethods.drop { $0 != "turn/start" }.count > 1 }
+            }
             let methods = await transport.requestMethods
             let afterTurn = methods.drop { $0 != "turn/start" }.dropFirst()
             if keepsNoHistory {

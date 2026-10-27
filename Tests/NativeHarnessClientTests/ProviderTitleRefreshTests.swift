@@ -108,9 +108,7 @@ final class ProviderTitleRefreshTests: XCTestCase {
             let repository = TitleRefreshRepository([session])
             let model = try makeModel(repository: repository, resolver: { _ in source.read() }, restores: false)
             let refresh = Task { await model.refreshConversationStatus(for: session) }
-            for _ in 0..<100 where source.readCount == 0 {
-                try await Task.sleep(for: .milliseconds(5))
-            }
+            try await waitUntil { source.readCount != 0 }
             guard source.readCount == 1 else {
                 source.release.signal()
                 await refresh.value

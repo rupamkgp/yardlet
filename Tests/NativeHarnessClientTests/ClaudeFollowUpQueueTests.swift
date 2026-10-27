@@ -370,16 +370,6 @@ final class ClaudeFollowUpQueueTests: XCTestCase {
     ) async throws {
         try await waitUntil { condition(await log.payloads) }
     }
-
-    private func waitUntil(_ condition: () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 }
 
 private actor FollowUpPayloadLog {

@@ -621,7 +621,7 @@ final class ClaudeAnswerableRequestTests: XCTestCase {
                 ])
             ])
         ]))
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         var recorded: HarnessAnsweredQuestions?
         while recorded == nil, ContinuousClock.now < deadline {
             recorded = await recorder.answeredQuestions(callID: "toolu_ask")
@@ -719,7 +719,7 @@ final class ClaudeAnswerableRequestTests: XCTestCase {
     private func waitForPermission(
         in recorder: AnswerableEventRecorder,
         id: String? = nil,
-        timeout: Duration = .seconds(2)
+        timeout: Duration = testWaitLimit
     ) async throws -> PermissionRequest {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {

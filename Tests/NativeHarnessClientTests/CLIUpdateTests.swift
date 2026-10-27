@@ -677,15 +677,6 @@ final class CLIUpdateTests: XCTestCase {
         let text = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
         return text.count > 1 && text.hasSuffix("/") ? String(text.dropLast()) : text
     }
-
-    private func waitUntil(timeout: Duration = .seconds(5), _ condition: () -> Bool,
-                           file: StaticString = #filePath, line: UInt = #line) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            guard ContinuousClock.now < deadline else { return XCTFail("Condition not met in time", file: file, line: line) }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-    }
 }
 
 final class Box<Value>: @unchecked Sendable {

@@ -167,10 +167,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
         session.attach(view)
         defer { session.stop() }
         session.send("exit 7\n")
-        let deadline = ContinuousClock.now + .seconds(3)
-        while session.isRunning, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { !session.isRunning }
         XCTAssertFalse(session.isRunning)
         XCTAssertEqual(session.exitCode, 7)
         XCTAssertNil(session.terminationSignal)
@@ -193,10 +190,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
                 + "else printf 'NHC_%s_%s\\r\\n' 'NOT' 'PTY'; fi\n"
         )
 
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !session.bufferText.contains("NHC_PTY_OK"), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { session.bufferText.contains("NHC_PTY_OK") }
         XCTAssertTrue(session.isRunning)
         XCTAssertTrue(session.bufferText.contains("NHC_PTY_OK"))
         XCTAssertFalse(session.bufferText.contains("NHC_NOT_PTY"), session.bufferText)
@@ -205,10 +199,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
         session.stop()
         XCTAssertFalse(session.isRunning)
 
-        let stopDeadline = ContinuousClock.now + .seconds(3)
-        while Darwin.kill(shellPID, 0) == 0, ContinuousClock.now < stopDeadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { Darwin.kill(shellPID, 0) != 0 }
         errno = 0
         XCTAssertEqual(Darwin.kill(shellPID, 0), -1)
         XCTAssertEqual(errno, ESRCH)
@@ -230,7 +221,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
         )
 
         var childPID: pid_t?
-        let startDeadline = ContinuousClock.now + .seconds(3)
+        let startDeadline = ContinuousClock.now + testWaitLimit
         while childPID == nil, ContinuousClock.now < startDeadline {
             if let marker = session.bufferText.components(separatedBy: "NHC_CHILD_PID=").last,
                let token = marker.split(whereSeparator: { $0 == " " || $0 == "\r" || $0 == "\n" }).first,
@@ -248,10 +239,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
         session.stop()
         XCTAssertFalse(session.isRunning)
 
-        let stopDeadline = ContinuousClock.now + .seconds(3)
-        while Darwin.kill(descendantPID, 0) == 0, ContinuousClock.now < stopDeadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { Darwin.kill(descendantPID, 0) != 0 }
         errno = 0
         XCTAssertEqual(Darwin.kill(descendantPID, 0), -1)
         XCTAssertEqual(errno, ESRCH)
@@ -273,7 +261,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
         }
 
         var childPID: pid_t?
-        let startDeadline = ContinuousClock.now + .seconds(3)
+        let startDeadline = ContinuousClock.now + testWaitLimit
         while childPID == nil, ContinuousClock.now < startDeadline {
             if let value = try? String(contentsOf: pidFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -292,10 +280,7 @@ final class NativeSurfaceRuntimeTests: XCTestCase {
         XCTAssertFalse(process.isRunning)
         XCTAssertEqual(exitCode, process.terminationStatus)
 
-        let stopDeadline = ContinuousClock.now + .seconds(3)
-        while Darwin.kill(descendantPID, 0) == 0, ContinuousClock.now < stopDeadline {
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await waitUntil { Darwin.kill(descendantPID, 0) != 0 }
         errno = 0
         XCTAssertEqual(Darwin.kill(descendantPID, 0), -1)
         XCTAssertEqual(errno, ESRCH)

@@ -80,7 +80,7 @@ final class WorkspaceMutationParityTests: XCTestCase {
     }
 
     private func loaded(_ state: WorkspaceFilesState) async throws {
-        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { !state.isLoading }
         XCTAssertFalse(state.isLoading); XCTAssertNotNil(state.document, state.fileError ?? "No document")
     }
 

@@ -337,7 +337,7 @@ final class RemoteSecureTests: XCTestCase {
         XCTAssertTrue(whileConnected.isEmpty)
 
         phone.disconnect()
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil { await harness.server.status.connectedDeviceIDs.isEmpty }
         try await harness.change(task: "A", to: .waiting, request: "r2")
         let push = try await sent.first()
         XCTAssertEqual(push.token, "fcm-token-1")
@@ -353,7 +353,7 @@ final class RemoteSecureTests: XCTestCase {
         await sent.answer(.unregistered)
         try await harness.change(task: "A", to: .unread, request: nil)
         _ = try await sent.count(2)
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil { await harness.devices.all().allSatisfy { $0.push == nil } }
         let pushes = await harness.devices.all().compactMap(\.push)
         XCTAssertTrue(pushes.isEmpty)
     }
@@ -406,7 +406,7 @@ final class RemoteSecureTests: XCTestCase {
         let client = RemoteRelayClient(server: harness.server, identity: harness.identity, baseURL: relay)
         client.start()
         defer { client.stop() }
-        for _ in 0..<300 where client.currentState != .connected { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitUntil { client.currentState == .connected }
         XCTAssertEqual(client.currentState, .connected)
 
         let ticket = await harness.server.openPairing()
@@ -517,7 +517,8 @@ final class RemoteSecureTests: XCTestCase {
     }
 
     static func waitForPort(_ listener: RemoteSecureListener) async throws -> UInt16 {
-        for _ in 0..<200 {
+        let deadline = ContinuousClock.now + testWaitLimit
+        while ContinuousClock.now < deadline {
             if case let .ready(port) = listener.currentState { return port }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -629,7 +630,7 @@ final class PipePhone: @unchecked Sendable {
 
     private var pending: [Data] = []
 
-    private func nextFrame(timeout: TimeInterval = 5) async throws -> Data {
+    private func nextFrame(timeout: TimeInterval = testWaitLimitSeconds) async throws -> Data {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             pending += transport.take()
@@ -676,7 +677,8 @@ final class PipePhone: @unchecked Sendable {
         connection.transportClosed()
     }
 
-    private func wait<Value>(_ what: String, timeout: TimeInterval = 5, _ read: () -> Value?) async throws -> Value {
+    private func wait<Value>(_ what: String, timeout: TimeInterval = testWaitLimitSeconds,
+                             _ read: () -> Value?) async throws -> Value {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             try pump()
@@ -703,7 +705,8 @@ actor PushRecorder {
     }
 
     func count(_ count: Int) async throws -> [RemotePushRequest] {
-        for _ in 0..<500 {
+        let deadline = ContinuousClock.now + testWaitLimit
+        while ContinuousClock.now < deadline {
             if requests.count >= count { return requests }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -757,7 +760,7 @@ final class SocketPhone: @unchecked Sendable {
     }
 
     /// Reads until the socket closes, and its close code.
-    func closeCode(timeout: TimeInterval = 5) async throws -> Int {
+    func closeCode(timeout: TimeInterval = testWaitLimitSeconds) async throws -> Int {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             do {

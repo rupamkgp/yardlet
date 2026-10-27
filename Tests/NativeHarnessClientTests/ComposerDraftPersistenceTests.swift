@@ -162,7 +162,7 @@ final class ComposerDraftPersistenceTests: XCTestCase {
         let drafts = ComposerDrafts(repository: repository, saveDelay: .milliseconds(20))
         let id = UUID()
         for index in 0..<100 { drafts.tasks.draft(for: id).text = "Input \(index)" }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil { repository.snapshot.tasks[id] != nil }
         XCTAssertEqual(repository.snapshot.tasks[id]?.text, "Input 99")
         drafts.tasks.draft(for: id).text = "Immediate pending edit"
         drafts.tasks.draft(for: id).clear()

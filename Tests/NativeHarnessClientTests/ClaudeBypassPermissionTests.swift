@@ -152,7 +152,7 @@ final class ClaudeBypassPermissionTests: XCTestCase {
         XCTAssertEqual(started.selectors.first { $0.id == "permissionMode" }?.currentValue, "manual")
 
         await transport.emit(Self.announcement("bypassPermissions"))
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         var mode: String?
         while ContinuousClock.now < deadline {
             mode = try await adapter.providerCapabilities(for: handle).selectors

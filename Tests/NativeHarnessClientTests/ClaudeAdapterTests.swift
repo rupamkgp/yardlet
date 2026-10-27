@@ -579,18 +579,6 @@ final class ClaudeAdapterTests: XCTestCase {
         let state = try await routed.providerCapabilities(for: handle)
         XCTAssertEqual(state.mcpServers, [HarnessMCPServerStatus(name: "github", state: .needsAuthentication)])
     }
-
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        _ predicate: @escaping @Sendable () async -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !(await predicate()), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let satisfied = await predicate()
-        XCTAssertTrue(satisfied)
-    }
 }
 
 private actor ClaudePayloadRecorder {

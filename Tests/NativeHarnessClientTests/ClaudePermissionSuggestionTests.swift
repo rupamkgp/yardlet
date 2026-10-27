@@ -460,7 +460,7 @@ final class ClaudePermissionSuggestionTests: XCTestCase {
             suggestions: [bashPrefixRule]
         ))
         var pending: PermissionRequest?
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         while pending == nil, ContinuousClock.now < deadline {
             pending = model.transcriptBySessionID[session.id]?.lazy.compactMap { entry in
                 guard case let .permission(request, .pending) = entry.content,
@@ -536,7 +536,7 @@ final class ClaudePermissionSuggestionTests: XCTestCase {
     private func waitForPermission(
         in recorder: SuggestionEventRecorder,
         id: String,
-        timeout: Duration = .seconds(2)
+        timeout: Duration = testWaitLimit
     ) async throws -> PermissionRequest {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {

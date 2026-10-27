@@ -25,6 +25,9 @@ Maintainers keep working notes outside this repository, in the ignored folder `d
 - Fix a cause where it lives, in the shared rule or path, rather than patching the one case that
   showed it. Add a test only when it pins a contract that could otherwise break unnoticed; prefer
   extending an existing test.
+- A test that checks something happened in its own time waits for it with `waitUntil`
+  (`Tests/NativeHarnessClientTests/Support/WaitUntil.swift`), not a fixed sleep: CI runs slower than
+  a Mac. A sleep is only for checking that something did not happen.
 - Run `swift test --build-system native --filter <test>` for the contract you changed and
   `scripts/test-fast.sh` before a pull request. CI runs the build and `scripts/test-fast.sh` on every
   pull request.

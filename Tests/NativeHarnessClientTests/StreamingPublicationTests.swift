@@ -184,16 +184,6 @@ final class StreamingPublicationTests: XCTestCase {
         ]))
         XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value)), value)
     }
-
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 }
 
 private final class Flag: @unchecked Sendable {
@@ -288,7 +278,7 @@ private struct TwoClaudeTasks {
         }
         model.store.selectedSessionID = tasks[0].id
         await model.send(HarnessUserInput(text: "Background work"), to: tasks[1])
-        let deadline = ContinuousClock.now + .seconds(3)
+        let deadline = ContinuousClock.now + testWaitLimit
         while ContinuousClock.now < deadline,
               model.store.sessions.first(where: { $0.id == tasks[1].id })?.status != .running {
             try await Task.sleep(for: .milliseconds(10))

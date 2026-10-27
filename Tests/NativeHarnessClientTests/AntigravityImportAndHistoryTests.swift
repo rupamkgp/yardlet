@@ -163,7 +163,7 @@ final class AntigravityImportAndHistoryTests: XCTestCase {
                         content: "<USER_REQUEST>\nFixture request three\n</USER_REQUEST>"),
             Self.record(index: 10, type: "PLANNER_RESPONSE", source: "MODEL", content: "Fixture answer three")
         ])
-        try await eventually {
+        try await waitUntil {
             (app.model.transcriptBySessionID[task.id] ?? []).contains { $0.content == .assistant(text: "Fixture answer three", isStreaming: false) }
         }
         let after = await app.recorder.calls
@@ -473,12 +473,6 @@ final class AntigravityImportAndHistoryTests: XCTestCase {
         // The Claude app's folder is empty, and Codex is not installed here.
         model.claudeDesktopSessionsRoot = root.appending(path: "claude-desktop")
         return ModelFixture(model: model, recorder: recorder, runtime: runtime)
-    }
-
-    private func eventually(timeout: Duration = .seconds(3), _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        XCTAssertTrue(condition())
     }
 }
 

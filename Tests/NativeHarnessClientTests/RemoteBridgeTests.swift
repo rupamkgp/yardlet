@@ -449,16 +449,8 @@ final class RemoteBridgeTests: XCTestCase {
             restoresIndexOnLaunch: false)
     }
 
-    private func waitUntil(timeout: Duration = .seconds(3), _ condition: () -> Bool,
-                           file: StaticString = #filePath, line: UInt = #line) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            guard ContinuousClock.now < deadline else { return XCTFail("Condition not met in time", file: file, line: line) }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-    }
 
-    private func waitUntilAsync(timeout: Duration = .seconds(3), _ condition: () async -> Bool,
+    private func waitUntilAsync(timeout: Duration = testWaitLimit, _ condition: () async -> Bool,
                                 file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = ContinuousClock.now + timeout
         while await !condition() {

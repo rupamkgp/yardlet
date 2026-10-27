@@ -18,11 +18,7 @@ final class AccountCenterLoadingTests: XCTestCase {
         )
 
         let refresh = Task { await store.check(savedOf: [], policy: .refresh, runtimeSelections: selections) }
-        let deadline = ContinuousClock.now + .seconds(2)
-        while store.defaultSnapshots[.openCode] == nil,
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { store.defaultSnapshots[.openCode] != nil }
 
         XCTAssertNotNil(store.defaultSnapshots[.openCode])
         XCTAssertFalse(store.isCheckingDefault(.openCode))

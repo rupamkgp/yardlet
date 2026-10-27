@@ -87,8 +87,8 @@ final class TaskDetachTests: XCTestCase {
                 codexParent.id: state("thread-parent", forkedFrom: nil),
             ],
             restoresIndexOnLaunch: false)
-        for _ in 0..<100 where model.store.sessions.first(where: { $0.id == codexFork.id })?.parentTaskID == nil {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            model.store.sessions.first(where: { $0.id == codexFork.id })?.parentTaskID != nil
         }
         // Give a link that should not come the same time to arrive.
         try await Task.sleep(for: .milliseconds(100))

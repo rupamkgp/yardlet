@@ -21,10 +21,7 @@ final class ActivityOutcomeTests: XCTestCase {
             for await event in await adapter.events(for: handle) { await recorder.append(event.payload) }
         }
         try await adapter.send("permission failure", to: handle)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await recorder.values.contains(.sessionStatusChanged(.failed))), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitUntil { await recorder.values.contains(.sessionStatusChanged(.failed)) }
         let payloads = await recorder.values
         await adapter.close(handle)
         collector.cancel()

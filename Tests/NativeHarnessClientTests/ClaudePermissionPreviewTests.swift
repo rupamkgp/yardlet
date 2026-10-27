@@ -270,7 +270,7 @@ final class ClaudePermissionPreviewTests: XCTestCase {
                 "input": editInput
             ])
         ]))
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + testWaitLimit
         var request: PermissionRequest?
         while request == nil, ContinuousClock.now < deadline {
             request = await recorder.permission()

@@ -48,7 +48,8 @@ final class CodexAdapterTests: XCTestCase {
         // and waits for it cannot keep the answer from being released.
         let observed = EndObservation()
         var probes: [Task<String, Never>] = []
-        for _ in 0..<200 where await !observed.seen {
+        let deadline = ContinuousClock.now + testWaitLimit
+        while await !observed.seen, ContinuousClock.now < deadline {
             probes.append(Task {
                 do { _ = try await adapter.collaborationModes(); return "listed" } catch {
                     if "\(error)" == ended { await observed.see() }
@@ -1109,12 +1110,10 @@ final class CodexAdapterTests: XCTestCase {
             params: .object([:])
         )
 
-        for _ in 0..<20 {
-            if await transport.sentErrorResponses.count == 1,
-               await transport.sentResponses.count == 1 {
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            let errors = await transport.sentErrorResponses.count
+            let responses = await transport.sentResponses.count
+            return errors == 1 && responses == 1
         }
         let errors = await transport.sentErrorResponses
         let responses = await transport.sentResponses
@@ -1328,9 +1327,7 @@ final class CodexAdapterTests: XCTestCase {
         ]))
         // Wait on what the review guard reads, not on the presentation state, which can already be
         // idle while the adapter has yet to process the completion.
-        for _ in 0..<300 where await adapter.activeTurnID(for: handle) != nil {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { await adapter.activeTurnID(for: handle) == nil }
         try await adapter.startWorkingTreeReview(in: handle)
 
         let requests = await transport.requests

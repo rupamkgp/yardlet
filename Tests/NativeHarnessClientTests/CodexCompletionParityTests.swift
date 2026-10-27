@@ -38,10 +38,9 @@ final class CodexCompletionParityTests: XCTestCase {
                 "item": .object(["id": .string("output"), "type": .string("exitedReviewMode"), "review": .string("QA finding")])]))
             await transport.emit(method: "turn/completed", params: .object(["threadId": .string("original"), "turn": finished]))
             var state = CodexTaskState.empty
-            for _ in 0..<100 {
+            try await waitUntil {
                 state = try await presentation.presentationState(for: handle)
-                if state.thread?.turns.first(where: { $0.id == "worker" })?.status == .interrupted { break }
-                try await Task.sleep(for: .milliseconds(10))
+                return state.thread?.turns.first(where: { $0.id == "worker" })?.status == .interrupted
             }
             XCTAssertEqual(state.thread?.turns.map(\.id), ["older", "worker", "review"])
             XCTAssertEqual(state.thread?.turns.last?.status, .completed)

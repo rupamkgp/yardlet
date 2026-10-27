@@ -44,7 +44,7 @@ final class RemoteFixtureTests: XCTestCase {
 
         let answer = await fixture.perform(.answerApproval(taskID: approval, requestID: "toolu_fixture_1", answer: .deny))
         XCTAssertNil(answer)
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(testWaitLimitSeconds)
         var taken: RemoteItem?
         while taken == nil, Date() < deadline {
             let items = await fixture.conversation(of: approval)?.turns.flatMap(\.items) ?? []

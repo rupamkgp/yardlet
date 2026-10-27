@@ -232,8 +232,8 @@ final class BrowserAccessibilityBridgeTests: XCTestCase {
         }
         let press = bridge.element(for: try XCTUnwrap(BrowserAccessibilityRecordingTests.find(bridge.tree, role: "button", label: "Press me")))
         XCTAssertTrue(press.accessibilityPerformPress())
-        for _ in 0..<50 where connection.sent.filter({ if case .mouse = $0 { true } else { false } }).count < 3 {
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil {
+            connection.sent.filter({ if case .mouse = $0 { true } else { false } }).count >= 3
         }
         let mouse = connection.sent.compactMap { if case .mouse(let id, let input) = $0, id == tab.id { input } else { nil } }
         XCTAssertEqual(mouse.map(\.kind), [.move, .down, .up])

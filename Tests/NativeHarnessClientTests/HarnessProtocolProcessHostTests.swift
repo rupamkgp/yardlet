@@ -404,10 +404,9 @@ final class HarnessProtocolProcessHostTests: XCTestCase {
             fixtureConfiguration(script: script, lines: [try line(.hello(manifest))])
         )
         var descendants: [Int32] = []
-        for _ in 0..<100 {
+        try await waitUntil {
             descendants = NativeProcessTree.descendantProcessIDs(of: session.processID)
-            if !descendants.isEmpty { break }
-            try await Task.sleep(for: .milliseconds(10))
+            return !descendants.isEmpty
         }
         XCTAssertFalse(descendants.isEmpty)
 
@@ -488,10 +487,6 @@ final class HarnessProtocolProcessHostTests: XCTestCase {
     }
 
     private func waitUntilProcessExits(_ processID: Int32) async throws {
-        for _ in 0..<100 {
-            if !isProcessAlive(processID) { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Process \(processID) remained alive")
+        try await waitUntil { !isProcessAlive(processID) }
     }
 }

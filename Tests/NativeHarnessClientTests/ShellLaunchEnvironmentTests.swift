@@ -120,12 +120,4 @@ final class ShellLaunchEnvironmentTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return folder
     }
-
-    private func waitUntil(timeout: Duration = .seconds(5), _ condition: @MainActor () -> Bool) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline, !condition() {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTAssertTrue(condition(), "Timed out")
-    }
 }

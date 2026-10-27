@@ -339,16 +339,6 @@ import XCTest
         let sentCount = await adapter.sent.count
         XCTAssertEqual(sentCount, 1, "Once a day")
     }
-
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let satisfied = await condition()
-        XCTAssertTrue(satisfied, "Timed out")
-    }
 }
 
 /// An Antigravity runtime that reports what the test tells it to.
