@@ -1,7 +1,7 @@
 # Contributing to Yardlet
 
-Thanks for taking the time. Yardlet is a personal open-source project, and reports from people who use it are the
-most useful contribution right now.
+Thanks for taking the time. Yardlet is a personal open-source project. Reports from people who use it and pull
+requests are both welcome.
 
 ## Issues
 
@@ -16,12 +16,26 @@ you would not post in public.
 
 ## Pull requests
 
-Pull requests are not accepted yet. Development still happens outside this repository, and this repository is updated
-from it at each release, so a pull request merged here would be overwritten by the next update. Once development
-moves into this repository, pull requests will open and this file will say how.
+Pull requests are welcome. Development happens in this repository: branches start from `main`, and
+changes land on `main` through pull requests.
 
-Until then, if you have a fix, describe it in an issue, with a patch or a link to a branch if you like. If the change is
-used, the commit credits you.
+1. For anything larger than a small fix, open an issue first so the approach can be agreed before
+   you spend time on it.
+2. Build and run the quick tests before you open the pull request:
+
+   ```bash
+   swift build --build-system native
+   ./scripts/test-fast.sh
+   ```
+
+   Building needs Xcode 27.1 or later. The default build system also compiles SwiftTerm's Metal
+   shaders and stops when the Metal toolchain is missing, so use `--build-system native`.
+3. CI runs the same build and tests on every pull request, and they must pass before it is merged.
+4. Keep one change per pull request. Say what changed, why, and how you checked it; for a change you
+   can see, add a screenshot or a short recording.
+5. Write code comments, documentation, commit messages and the pull request in English.
+
+[AGENTS.md](AGENTS.md) has the same rules for coding agents working in this repository.
 
 ## What fits Yardlet
 

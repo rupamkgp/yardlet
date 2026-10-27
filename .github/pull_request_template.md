@@ -1,1 +1,10 @@
-Thanks for the pull request. Pull requests are not accepted yet: this repository is updated from the development tree at each release, so a change merged here would be overwritten. Please describe the change in an issue instead, with a link to this branch if you like; see [CONTRIBUTING.md](https://github.com/zzunkie/yardlet/blob/main/CONTRIBUTING.md#pull-requests).
+<!-- Thanks for the pull request. CONTRIBUTING.md says what helps it get merged. -->
+
+## What changed and why
+
+
+## How it was checked
+
+- [ ] `swift build --build-system native`
+- [ ] `./scripts/test-fast.sh`
+- [ ] For a change you can see: a screenshot or a short recording below
