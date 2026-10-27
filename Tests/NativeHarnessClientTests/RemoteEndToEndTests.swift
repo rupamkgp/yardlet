@@ -39,8 +39,7 @@ final class RemoteEndToEndTests: XCTestCase {
 
         // The command runs and the answer streams in as changes, until the turn completes.
         let finished = try await phone.waitFor("the finished answer") { () -> [RemoteItem]? in
-            for event in phone.events(.conversation) { items = items.applying(event.changes ?? []) }
-            phone.consumeEvents(.conversation)
+            for event in phone.takeEvents(.conversation) { items = items.applying(event.changes ?? []) }
             let answer = items.last { $0.kind == .assistant && $0.role == "answer" }
             return answer?.streaming == nil && answer?.text?.contains("migration tests pass") == true ? items : nil
         }
@@ -176,17 +175,23 @@ final class PhoneSocket: @unchecked Sendable {
         }
     }
 
-    /// The events of a name not yet consumed, in order.
+    /// The events of a name not yet taken, in order.
     func events(_ name: RemoteEvent.Name) -> [RemoteEvent] {
-        let all = lock.withLock { texts }.compactMap { try? JSONDecoder().decode(RemoteEvent.self, from: Data($0.utf8)) }
-            .filter { $0.event == name }
-        return Array(all.dropFirst(lock.withLock { consumed[name, default: 0] }))
+        let (received, taken) = lock.withLock { (texts, consumed[name, default: 0]) }
+        return Array(Self.events(name, in: received).dropFirst(taken))
     }
 
-    func consumeEvents(_ name: RemoteEvent.Name) {
-        let count = lock.withLock { texts }.compactMap { try? JSONDecoder().decode(RemoteEvent.self, from: Data($0.utf8)) }
-            .filter { $0.event == name }.count
-        lock.withLock { consumed[name] = count }
+    /// The events of a name not yet taken, in order, marked taken in the same read: one that arrives meanwhile
+    /// is left for the next call rather than marked taken unseen.
+    func takeEvents(_ name: RemoteEvent.Name) -> [RemoteEvent] {
+        let (received, taken) = lock.withLock { (texts, consumed[name, default: 0]) }
+        let all = Self.events(name, in: received)
+        lock.withLock { consumed[name] = all.count }
+        return Array(all.dropFirst(taken))
+    }
+
+    private static func events(_ name: RemoteEvent.Name, in texts: [String]) -> [RemoteEvent] {
+        texts.compactMap { try? JSONDecoder().decode(RemoteEvent.self, from: Data($0.utf8)) }.filter { $0.event == name }
     }
 
     func waitUntilClosed() async throws {
