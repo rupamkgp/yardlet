@@ -2,9 +2,10 @@ import AppKit
 import ImageIO
 import SwiftUI
 
-/// Small previews of images sent in a conversation. A local file or an inline `data:` image is
-/// decoded off the main thread at a bounded size, and only the downscaled bitmap is cached, so a
-/// long conversation does not keep its originals in memory. A remote URL is never fetched.
+/// Small previews of images sent, viewed or returned in a conversation. A local file, an inline
+/// `data:` image or a tool's bytes are decoded off the main thread at a bounded size, and only the
+/// downscaled bitmap is cached, so a long conversation does not keep its originals in memory. A
+/// remote URL is never fetched.
 final class TranscriptImageThumbnails: @unchecked Sendable {
     static let shared = TranscriptImageThumbnails()
 
@@ -13,10 +14,18 @@ final class TranscriptImageThumbnails: @unchecked Sendable {
         case unavailable
     }
 
+    /// How large a preview is decoded: a tile (a thumbnail, cropped to fill), or a call's opened
+    /// details, where the image is shown whole up to the conversation's width.
+    enum Size: String, Sendable {
+        case tile, detail
+    }
+
     /// Pixels on a preview's shorter side: an 80 pt tile on a 2x display, with headroom for the
     /// larger interface scales.
     static let shortSidePixels = 240
     static let longSidePixels = 1_024
+    /// Pixels on a detail preview's longer side: a 320 pt high screenshot on a 2x display.
+    static let detailLongSidePixels = 1_280
     /// A larger file is not read for a preview; the attachment shows as its name instead.
     static let maximumFileBytes = 64 * 1_048_576
 
@@ -41,10 +50,23 @@ final class TranscriptImageThumbnails: @unchecked Sendable {
         url.isFileURL || url.scheme == "data"
     }
 
-    func cachedPreview(for url: URL) -> Preview? {
+    func cachedPreview(for url: URL, size: Size = .tile) -> Preview? {
         guard Self.canPreview(url) else { return .unavailable }
-        let key = url.absoluteString as NSString
-        return keptEntry(for: key)?.preview ?? cache.object(forKey: key)?.preview
+        return cachedPreview(forKey: Self.key(url.absoluteString, size))
+    }
+
+    /// The preview of bytes a tool returned, cached under `key`, which names them for as long as the
+    /// conversation shows them.
+    func cachedPreview(forKey key: String, size: Size) -> Preview? {
+        cachedPreview(forKey: Self.key(key, size))
+    }
+
+    private func cachedPreview(forKey key: String) -> Preview? {
+        keptEntry(for: key as NSString)?.preview ?? cache.object(forKey: key as NSString)?.preview
+    }
+
+    private static func key(_ key: String, _ size: Size) -> String {
+        size == .tile ? key : key + "#" + size.rawValue
     }
 
     /// Forgets `url`'s preview, as NSCache does to any entry when the system is short of memory or
@@ -66,10 +88,19 @@ final class TranscriptImageThumbnails: @unchecked Sendable {
         keptLock.withLock { kept[key] = entry }
     }
 
-    func preview(for url: URL) async -> Preview {
-        if let cached = cachedPreview(for: url) { return cached }
-        let preview = await Task.detached(priority: .utility) { Self.decodePreview(url) }.value
-        let key = url.absoluteString
+    func preview(for url: URL, size: Size = .tile) async -> Preview {
+        if let cached = cachedPreview(for: url, size: size) { return cached }
+        return await decode(key: Self.key(url.absoluteString, size), size: size) { Self.readOriginal(url) }
+    }
+
+    /// The preview of bytes a tool returned, cached under `key` (`cachedPreview(forKey:size:)`).
+    func preview(of data: Data, forKey key: String, size: Size) async -> Preview {
+        if let cached = cachedPreview(forKey: key, size: size) { return cached }
+        return await decode(key: Self.key(key, size), size: size) { data }
+    }
+
+    private func decode(key: String, size: Size, read: @escaping @Sendable () -> Data?) async -> Preview {
+        let preview = await Task.detached(priority: .utility) { Self.decodePreview(read(), size: size) }.value
         var cost = key.utf8.count
         if case let .image(image) = preview { cost += image.bytesPerRow * image.height }
         cache.setObject(Entry(preview), forKey: key as NSString, cost: cost)
@@ -82,17 +113,21 @@ final class TranscriptImageThumbnails: @unchecked Sendable {
         await Task.detached(priority: .userInitiated) { Self.readOriginal(url) }.value
     }
 
-    private static func decodePreview(_ url: URL) -> Preview {
-        guard let data = readOriginal(url),
+    private static func decodePreview(_ data: Data?, size: Size) -> Preview {
+        guard let data, data.count <= maximumFileBytes,
               let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0 else { return .unavailable }
         // The tile fills a square, so the shorter side sets the resolution; a very long image is capped.
+        // A detail shows the whole image, so the longer side does.
         let longSide = max(width, height)
         let aspect = Double(longSide) / Double(min(width, height))
-        let pixels = min(longSide, longSidePixels, Int((Double(shortSidePixels) * aspect).rounded(.up)))
+        let pixels = switch size {
+        case .tile: min(longSide, longSidePixels, Int((Double(shortSidePixels) * aspect).rounded(.up)))
+        case .detail: min(longSide, detailLongSidePixels)
+        }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,

@@ -35,15 +35,21 @@ struct ConversationLiveWorkLine<Cell: View>: View {
             if live.items.isEmpty {
                 label(isOpen: false)
             } else {
-                Button {
-                    isOpen.toggle()
-                    onToggle(isOpen)
-                } label: {
-                    label(isOpen: isOpen)
+                HStack(alignment: .center, spacing: 2) {
+                    Button {
+                        isOpen.toggle()
+                        onToggle(isOpen)
+                    } label: {
+                        label(isOpen: isOpen)
+                    }
+                    .buttonStyle(.plain)
+                    .parityPointer()
+                    .accessibilityValue(L10n.string(isOpen ? "Expanded" : "Collapsed"))
+                    // Folded, the line shows its calls' images, as a summary line does.
+                    if !isOpen {
+                        ConversationToolImageThumbnails(images: live.items.flatMap(\.toolPreviewImages))
+                    }
                 }
-                .buttonStyle(.plain)
-                .parityPointer()
-                .accessibilityValue(L10n.string(isOpen ? "Expanded" : "Collapsed"))
             }
             if isOpen, !live.items.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {

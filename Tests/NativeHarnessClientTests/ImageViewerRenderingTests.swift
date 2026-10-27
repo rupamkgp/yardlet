@@ -135,7 +135,140 @@ final class ImageViewerRenderingTests: XCTestCase {
         XCTAssertNotNil(pasteboard.data(forType: .tiff))
     }
 
+    /// A call's images show at the end of its line, as the Claude app shows a call's screenshots: a
+    /// Codex image view, MCP screenshot and generated image in a finished turn, unfolded; a Claude Code `Read` of an
+    /// image and an MCP screenshot in a running turn, whose live line shows them too. A summary line
+    /// shows its calls' images; an image that cannot be read leaves its line its words; opened, a
+    /// line shows its image whole; a click opens the call's images over the window. Renders at window
+    /// size go to `.build/tool-image-qa` in light and dark.
+    func testACallsImagesShowOnItsLineAndOpenOverTheWindow() async throws {
+        let settings = try write(Self.screenshot(), as: "settings.png")
+        let phone = try write(Self.screenshot(width: 1_170, height: 2_532, dpiScale: 3), as: "phone.png")
+        let gone = scratch.appending(path: "gone.png")
+        let screenshot = try Self.screenshot(width: 1_440, height: 900, dpiScale: 1).base64EncodedString()
+        let directory = try WindowlessRender.directory("tool-image-qa")
+        let size = NSSize(width: 960, height: 760)
+        let opened = OpenedImages()
+
+        // Codex: a finished turn's image views and the computer-use screenshot it took.
+        let decoder = CodexTaskDecoder()
+        func message(_ id: String, _ text: String, _ phase: String) -> JSONValue {
+            .object(["id": .string(id), "type": .string("agentMessage"), "text": .string(text), "phase": .string(phase)])
+        }
+        func imageView(_ id: String, _ url: URL) -> JSONValue {
+            .object(["id": .string(id), "type": .string("imageView"), "path": .string(url.path(percentEncoded: false))])
+        }
+        let items: [JSONValue] = [
+            .object(["id": .string("u1"), "type": .string("userMessage"),
+                     "content": .array([.object(["type": .string("text"), "text": .string("The settings window clips its last row. Why?")])])]),
+            message("m1", "Looking at the screenshot you saved first.", "commentary"),
+            imageView("v1", settings),
+            message("m2", "The older screenshot is gone, so I'll look at the phone layout and the window as it is now.", "commentary"),
+            imageView("v2", gone),
+            imageView("v3", phone),
+            .object(["id": .string("s1"), "type": .string("mcpToolCall"), "server": .string("computer-use"),
+                     "tool": .string("screenshot"), "status": .string("completed"), "arguments": .object([:]),
+                     "result": .object(["content": .array([.object(["type": .string("image"), "data": .string(screenshot),
+                                                                     "mimeType": .string("image/png")])])])]),
+            message("m3", "Here is the window with the last row in view.", "commentary"),
+            .object(["id": .string("g1"), "type": .string("imageGeneration"), "status": .string("completed"),
+                     "result": .string(screenshot), "revisedPrompt": .string("The settings window with its last row in view")]),
+            message("m4", "The list keeps a fixed height while the rows grow, so the last row falls below it.", "final_answer")
+        ]
+        var thread = try XCTUnwrap(decoder.thread(from: .object(["id": .string("thread-images")])))
+        thread.turns = [try XCTUnwrap(decoder.turn(from: .object([
+            "id": .string("t1"), "status": .string("completed"), "durationMs": .integer(12_000), "items": .array(items)
+        ]), fallbackID: "t1"))]
+        let codex = CodexTaskState(thread: thread)
+
+        // Claude Code: a running turn that read an image file, then took a screenshot and runs tests.
+        var projection = ClaudeSessionProjection()
+        var builder = TranscriptBuilder()
+        builder.appendUser("The settings window clips its last row. Why?")
+        let png = try Self.screenshot(width: 1_440, height: 900, dpiScale: 1).base64EncodedString()
+        let read = #"{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"\#(settings.path(percentEncoded: false))"}}"#
+        let shot = #"{"type":"tool_use","id":"shot","name":"mcp__computer-use__app_screenshot","input":{"app":"com.example.settings"}}"#
+        for json in [
+            #"{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the screenshot first."},\#(read)]}}"#,
+            #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"\#(png)"}}]}]}}"#,
+            #"{"type":"assistant","message":{"content":[{"type":"text","text":"Now the window as it is, then the tests."},\#(shot)]}}"#,
+            #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"shot","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"\#(png)"}},{"type":"text","text":"Captured the window"}]}]}}"#,
+            #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"swift test --filter SettingsTests","description":"Run the settings tests"}}]}}"#
+        ] {
+            for payload in projection.payloads(from: try ClaudeWireCodec().decodeLine(Data(json.utf8))) { builder.apply(payload) }
+        }
+
+        let codexImages = ["settings.png", "phone.png", L10n.string("Tool result image"), L10n.string("Image")]
+        for appearance in WindowlessRender.Appearance.allCases {
+            let codexHost = WindowlessRender.Host(
+                TaskConversationView(harness: .codex, workspaceURL: scratch, entries: [], sessionStatus: .ready,
+                                     latestTurnIsComplete: true, codexTaskState: codex, providerSessionID: "thread-images")
+                    .environment(\.openImageViewer) { opened.requests.append($0) }
+                    .environment(\.colorScheme, appearance.colorScheme)
+                    .frame(width: size.width, height: size.height)
+                    .background(ParityTheme.canvas),
+                size: size, appearance: appearance
+            )
+            defer { codexHost.close() }
+            codexHost.settle(passes: 12)
+            XCTAssertTrue(codexHost.hosting.pressButton(labeled: L10n.format("Worked for %lld seconds", Int64(12))))
+            await codexHost.settle { Self.thumbnails(in: codexHost) == codexImages }
+            try WindowlessRender.writePNG(codexHost.capture().bitmap,
+                                          to: directory.appending(path: "codex-\(appearance.suffix).png"))
+            // The image that is gone leaves its line its words.
+            let words = codexHost.accessibilityElements().map(\.label).joined(separator: "\n")
+            XCTAssertTrue(words.contains(ConversationLineWords.filling(L10n.string("codex.row.viewedImage"), ["gone.png"]).text),
+                          words)
+
+            // A click opens the call's images.
+            XCTAssertTrue(codexHost.hosting.pressButton(labeled: "phone.png"))
+            XCTAssertEqual(opened.requests.last?.items.map(\.name), ["phone.png"])
+            // Folded, the summary line shows its calls' images and opens them together, leaving out
+            // the one that cannot be read.
+            XCTAssertTrue(codexHost.hosting.pressButton(labeled: L10n.string("codex.summary.calledTool.leading")))
+            await settle(codexHost)
+            XCTAssertEqual(Self.thumbnails(in: codexHost), codexImages)
+            try WindowlessRender.writePNG(codexHost.capture().bitmap,
+                                          to: directory.appending(path: "codex-folded-\(appearance.suffix).png"))
+            XCTAssertTrue(codexHost.hosting.pressButton(labeled: L10n.string("Tool result image")))
+            XCTAssertEqual(opened.requests.last?.items.map(\.name), ["phone.png", L10n.string("Tool result image")])
+            XCTAssertEqual(opened.requests.last?.index, 1)
+
+            // Opened, the line shows its image whole in place of the one at its end.
+            let line = ConversationLineWords.filling(L10n.string("codex.row.viewedImage"), ["settings.png"]).text
+            XCTAssertTrue(codexHost.hosting.pressButton(labeled: line))
+            await settle(codexHost)
+            await settle(codexHost)
+            XCTAssertEqual(Self.thumbnails(in: codexHost), codexImages)
+            try WindowlessRender.writePNG(codexHost.capture().bitmap,
+                                          to: directory.appending(path: "codex-opened-\(appearance.suffix).png"))
+
+            let claudeHost = WindowlessRender.Host(
+                TaskConversationView(harness: .claudeCode, workspaceURL: scratch, entries: builder.entries,
+                                     sessionStatus: .running)
+                    .environment(\.openImageViewer) { opened.requests.append($0) }
+                    .environment(\.colorScheme, appearance.colorScheme)
+                    .frame(width: size.width, height: size.height)
+                    .background(ParityTheme.canvas),
+                size: size, appearance: appearance
+            )
+            defer { claudeHost.close() }
+            // The read's line, and the live line for the screenshot and the running tests.
+            await claudeHost.settle { Self.thumbnails(in: claudeHost) == [L10n.string("Image"), L10n.string("Image")] }
+            try WindowlessRender.writePNG(claudeHost.capture().bitmap,
+                                          to: directory.appending(path: "claude-\(appearance.suffix).png"))
+        }
+    }
+
     // MARK: - Helpers
+
+    /// The call images that open the viewer, by name, top to bottom.
+    private static func thumbnails<Content: View>(in host: WindowlessRender.Host<Content>) -> [String] {
+        let names: Set = ["settings.png", "phone.png", "gone.png", L10n.string("Tool result image"), L10n.string("Image")]
+        return host.accessibilityElements()
+            .filter { $0.role == NSAccessibility.Role.button.rawValue && names.contains($0.label) }
+            .map(\.label)
+    }
 
     private func conversation(images: [TranscriptImageAttachment]) -> some View {
         let entries = [
@@ -224,6 +357,12 @@ final class ImageViewerRenderingTests: XCTestCase {
         bitmap.size = NSSize(width: CGFloat(width) / dpiScale, height: CGFloat(height) / dpiScale)
         return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
     }
+}
+
+/// The viewer requests a conversation made.
+@MainActor
+private final class OpenedImages {
+    var requests: [ImageViewerRequest] = []
 }
 
 /// Opens `request` through the environment, as a thumbnail's click does.

@@ -35,4 +35,20 @@ extension JSONValue {
         let text = chunks.joined(separator: "\n")
         return text.isEmpty ? nil : text
     }
+
+    /// The inline images of a provider content array, at most eight as the Claude app previews a
+    /// call's screenshots: Claude's `{"type": "image", "source": {"type": "base64", …}}` and MCP's
+    /// `{"type": "image", "data": …, "mimeType": …}`. An image by URL is never fetched and is left out.
+    var contentImages: [TranscriptImageAttachment]? {
+        guard case let .array(values) = self else { return nil }
+        var images: [TranscriptImageAttachment] = []
+        for block in values where images.count < 8 && block["type"]?.stringValue == "image" {
+            let source = block["source"]
+            let mimeType = source?["media_type"]?.stringValue ?? block["mimeType"]?.stringValue
+            let data = source?["type"]?.stringValue == "base64" ? source?["data"]?.stringValue : block["data"]?.stringValue
+            guard let mimeType, let data, let url = InlineImageInput.url(mimeType: mimeType, base64: data) else { continue }
+            images.append(TranscriptImageAttachment(url: url, name: nil))
+        }
+        return images.isEmpty ? nil : images
+    }
 }

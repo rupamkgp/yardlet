@@ -467,7 +467,8 @@ struct TranscriptBuilder: Sendable {
             diff: update.diff ?? existing.diff,
             isBackground: update.isBackground ?? existing.isBackground,
             subtask: update.subtask ?? existing.subtask,
-            answeredQuestions: update.answeredQuestions ?? existing.answeredQuestions
+            answeredQuestions: update.answeredQuestions ?? existing.answeredQuestions,
+            images: update.images ?? existing.images
         )
     }
 

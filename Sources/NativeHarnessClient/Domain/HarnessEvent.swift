@@ -265,6 +265,10 @@ struct HarnessActivity: Codable, Equatable, Sendable {
     /// The questions the call asked and the answers its result recorded, for a call that asks the
     /// person (Claude Code's `AskUserQuestion`). Optional so older transcript caches still decode.
     var answeredQuestions: HarnessAnsweredQuestions? = nil
+    /// The images the provider's result carried (an image file the call read, a screenshot), which
+    /// the call's line previews. Inline bytes stay out of the reading cache, as a sent image's do
+    /// (`TranscriptImageAttachment`), and come back when the history is read again.
+    var images: [TranscriptImageAttachment]? = nil
 
     init(
         id: String,
@@ -277,7 +281,8 @@ struct HarnessActivity: Codable, Equatable, Sendable {
         diff: HarnessActivityDiff? = nil,
         isBackground: Bool? = nil,
         subtask: HarnessSubtaskReference? = nil,
-        answeredQuestions: HarnessAnsweredQuestions? = nil
+        answeredQuestions: HarnessAnsweredQuestions? = nil,
+        images: [TranscriptImageAttachment]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -290,6 +295,7 @@ struct HarnessActivity: Codable, Equatable, Sendable {
         self.isBackground = isBackground
         self.subtask = subtask
         self.answeredQuestions = answeredQuestions
+        self.images = images
     }
 
     /// True when the card has nothing but the legacy slot to show.

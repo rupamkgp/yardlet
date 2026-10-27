@@ -11,7 +11,7 @@ import UniformTypeIdentifiers
 /// One image the viewer shows: a sent or attached image by its URL (a file or an inline `data:`
 /// image; a remote URL is never fetched), or a tool's image by its bytes.
 struct ImageViewerItem {
-    enum Source {
+    enum Source: Sendable {
         case url(URL)
         case data(Data)
     }

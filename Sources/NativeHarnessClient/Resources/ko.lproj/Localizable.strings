@@ -1762,6 +1762,11 @@
 "codex.row.ranCommand" = "명령 실행됨";
 "codex.row.runningCommand" = "명령 실행 중";
 "codex.row.stoppedCommand" = "명령 중지됨";
+"codex.row.viewedImage" = "%@ <verb>확인함</verb>";
+"codex.row.viewingImage" = "%@ <verb>확인 중</verb>";
+"codex.row.viewedAnImage" = "이미지 1개 확인함";
+"codex.row.generatedImage" = "이미지 생성함";
+"codex.row.generatingImage" = "이미지 생성 중";
 "codex.summary.calledTool.leading" = "도구 호출함";
 "codex.summary.calledTool" = "도구 호출함";
 "codex.summary.calledTools.leading" = "도구 호출함";

@@ -333,7 +333,18 @@ enum ConversationLineWording {
         }
         let verb = tool.kind.label
         let subject = tool.name.isEmpty || tool.name == verb ? "" : relative(tool.name, to: workspaceURL)
-        return ConversationLineWords(verb: verb, trailing: subject)
+        switch tool.kind {
+        // The image itself shows at the line's end; the words say what Codex did with it, as the Codex
+        // app's "Viewed an image" does.
+        case .imageView:
+            if subject.isEmpty { return ConversationLineWords(verb: localize("codex.row.viewedAnImage")) }
+            return .filling(localize(phase == .running ? "codex.row.viewingImage" : "codex.row.viewedImage"), [subject])
+        case .imageGeneration:
+            if phase == .running { return ConversationLineWords(verb: localize("codex.row.generatingImage")) }
+            return ConversationLineWords(verb: localize("codex.row.generatedImage"), trailing: subject)
+        default:
+            return ConversationLineWords(verb: verb, trailing: subject)
+        }
     }
 
     /// A path inside the task's folder, from the folder.

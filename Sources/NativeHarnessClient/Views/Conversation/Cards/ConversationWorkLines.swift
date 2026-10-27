@@ -109,6 +109,8 @@ struct ConversationStatusLine<Trailing: View, Actions: View, Detail: View>: View
     let trailing: Trailing
     let actions: Actions
     let detail: Detail
+    /// The call's images, small at the line's end while it is folded; opened, its details show them.
+    let images: [ConversationToolImage]
     /// The person opened or folded the line.
     let onToggle: ((Bool) -> Void)?
 
@@ -120,11 +122,12 @@ struct ConversationStatusLine<Trailing: View, Actions: View, Detail: View>: View
     init(
         words: [ConversationLineWords], phase: ConversationItemPhase, hasDetail: Bool, startsOpen: Bool,
         accessibilityLabel: String, opensForReview: Bool = false,
-        isHistoryMatch: Bool = false, onToggle: ((Bool) -> Void)? = nil,
+        isHistoryMatch: Bool = false, images: [ConversationToolImage] = [], onToggle: ((Bool) -> Void)? = nil,
         @ViewBuilder trailing: () -> Trailing, @ViewBuilder actions: () -> Actions,
         @ViewBuilder detail: () -> Detail
     ) {
         self.onToggle = onToggle
+        self.images = images
         self.words = words.isEmpty ? [ConversationLineWords(verb: accessibilityLabel)] : words
         self.phase = phase
         self.hasDetail = hasDetail
@@ -156,6 +159,9 @@ struct ConversationStatusLine<Trailing: View, Actions: View, Detail: View>: View
                 } else {
                     labels(isOpen: false)
                         .accessibilityElement(children: .combine)
+                }
+                if !showsDetail {
+                    ConversationToolImageThumbnails(images: images)
                 }
                 actions
             }
@@ -219,18 +225,24 @@ struct ConversationWorkGroup<Cell: View>: View {
         let title = ConversationWorkSummary.header(for: items, harness: harness)
         let phase = ConversationWorkSummary.phase(of: items)
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                isOpen.toggle()
-                onToggle?(isOpen)
-            } label: {
-                ConversationStatusLineLabel(words: title, phase: phase, isOpen: isOpen, canOpen: true,
-                                            trailing: ConversationRunningMark(isShown: phase == .running && !isOpen)
-                                                .centeredOnCapHeight(ofTextSize: ConversationStatusLineFont.size * interfaceScale))
+            HStack(alignment: .center, spacing: 2) {
+                Button {
+                    isOpen.toggle()
+                    onToggle?(isOpen)
+                } label: {
+                    ConversationStatusLineLabel(words: title, phase: phase, isOpen: isOpen, canOpen: true,
+                                                trailing: ConversationRunningMark(isShown: phase == .running && !isOpen)
+                                                    .centeredOnCapHeight(ofTextSize: ConversationStatusLineFont.size * interfaceScale))
+                }
+                .buttonStyle(.plain)
+                .parityPointer()
+                .accessibilityLabel(title.text)
+                .accessibilityValue(L10n.string(isOpen ? "Expanded" : "Collapsed"))
+                // Folded, the summary shows its calls' images, as the Claude app's turn summary does.
+                if !isOpen {
+                    ConversationToolImageThumbnails(images: items.flatMap(\.toolPreviewImages))
+                }
             }
-            .buttonStyle(.plain)
-            .parityPointer()
-            .accessibilityLabel(title.text)
-            .accessibilityValue(L10n.string(isOpen ? "Expanded" : "Collapsed"))
             if isOpen {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -548,13 +560,14 @@ struct ConversationWorkLine: View, Equatable {
 
     private func toolLine(_ tool: ConversationTool) -> some View {
         let texts = [tool.input, tool.output, tool.detail, tool.errorMessage].compactMap { $0 }.filter { !$0.isEmpty }
+        let images = tool.previewImages
         return ConversationStatusLine(
             words: [ConversationLineWording.tool(tool, phase: item.phase, harness: harness, workspaceURL: workspaceURL)],
             phase: item.phase,
-            hasDetail: !texts.isEmpty || tool.mcpResult?.isEmpty == false || tool.diff != nil,
+            hasDetail: !texts.isEmpty || tool.mcpResult?.isEmpty == false || tool.diff != nil || !tool.images.isEmpty,
             startsOpen: startsOpen,
             accessibilityLabel: tool.name.isEmpty ? tool.kind.label : tool.name, isHistoryMatch: item.isHistoryMatch,
-            onToggle: record
+            images: images, onToggle: record
         ) {
             if let connector = tool.connector {
                 ConnectorIcon(name: connector.connector, presetID: connector.presetID, sources: connector.icons, size: 16 * interfaceScale)
@@ -588,6 +601,7 @@ struct ConversationWorkLine: View, Equatable {
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
                 }
+                ConversationToolImageDetails(images: Array(images.prefix(tool.images.count)))
                 if let result = tool.mcpResult, !result.isEmpty {
                     CodexMCPResultContent(projection: result)
                 }

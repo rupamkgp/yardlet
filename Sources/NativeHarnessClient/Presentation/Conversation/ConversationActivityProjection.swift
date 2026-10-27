@@ -52,7 +52,7 @@ enum ConversationActivityProjection {
         return .tool(ConversationTool(
             kind: .activity(activity.kind), name: activity.title, input: activity.input,
             output: activity.output, isBackground: activity.isBackground == true, isApproved: isApproved,
-            detail: legacyDetail(activity),
+            detail: legacyDetail(activity), images: activity.images ?? [],
             connector: ConnectorToolLabels.shared.label(forClaudeTool: activity.kind)
         ))
     }

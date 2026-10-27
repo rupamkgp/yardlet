@@ -2,9 +2,9 @@ import AppKit
 import SwiftUI
 
 /// The result body of an MCP tool call, shown in the timeline card that already names the server
-/// and tool. Text keeps the bounded monospaced treatment the command output uses; an image is a
-/// scaled preview that opens over the window with the result's other images; a resource link is
-/// its name, description and URI.
+/// and tool. Text keeps the bounded monospaced treatment the command output uses; an image is shown
+/// whole as any call's image is (`ConversationToolImageTile`) and opens over the window with the
+/// result's other images; a resource link is its name, description and URI.
 struct CodexMCPResultContent: View {
     let projection: CodexMCPResultProjection
 
@@ -14,31 +14,25 @@ struct CodexMCPResultContent: View {
     var body: some View {
         if !projection.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
+                let images = projection.previewImages
                 ForEach(projection.blocks) { block in
                     switch block {
                     case let .text(_, text):
                         CodexBoundedOutput(text: text)
                     case let .image(id, data, _):
-                        CodexMCPResultImage(data: data) { open(id) }
+                        let key = CodexMCPResultProjection.previewKey(block: id, data: data)
+                        if let index = images.firstIndex(where: { $0.key == key }) {
+                            ConversationToolImageTile(image: images[index], isOneOfSeveral: images.count > 1) {
+                                ConversationToolImage.open(images, at: index, viewer: openImageViewer,
+                                                           pauseFollowing: pauseFollowing)
+                            }
+                        }
                     case let .resourceLink(_, link):
                         CodexMCPResultLink(link: link)
                     }
                 }
             }
         }
-    }
-
-    private func open(_ id: CodexMCPResultProjection.Block.ID) {
-        let images = projection.blocks.compactMap { block -> (id: CodexMCPResultProjection.Block.ID, data: Data)? in
-            guard case let .image(id, data, _) = block else { return nil }
-            return (id, data)
-        }
-        guard let index = images.firstIndex(where: { $0.id == id }) else { return }
-        pauseFollowing()
-        openImageViewer(ImageViewerRequest(
-            items: images.map { ImageViewerItem(name: L10n.string("Tool result image"), source: .data($0.data)) },
-            index: index
-        ))
     }
 }
 
@@ -102,29 +96,5 @@ private struct CodexMCPResultLink: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .contain)
-    }
-}
-
-private struct CodexMCPResultImage: View {
-    let data: Data
-    let open: () -> Void
-
-    @Environment(\.yardletInterfaceScale) private var interfaceScale
-
-    var body: some View {
-        if let image = NSImage(data: data) {
-            Button(action: open) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 260 * interfaceScale, maxHeight: 190 * interfaceScale)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                    .overlay { RoundedRectangle(cornerRadius: 7).stroke(ParityTheme.separator) }
-            }
-            .buttonStyle(.plain)
-            .parityPointer()
-            .accessibilityLabel(L10n.string("Tool result image"))
-            .help(L10n.string("View the image"))
-        }
     }
 }

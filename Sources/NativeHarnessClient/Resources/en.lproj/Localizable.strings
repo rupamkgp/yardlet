@@ -1762,6 +1762,11 @@
 "codex.row.ranCommand" = "Ran command";
 "codex.row.runningCommand" = "Running command";
 "codex.row.stoppedCommand" = "Stopped command";
+"codex.row.viewedImage" = "<verb>Viewed</verb> %@";
+"codex.row.viewingImage" = "<verb>Viewing</verb> %@";
+"codex.row.viewedAnImage" = "Viewed an image";
+"codex.row.generatedImage" = "Generated image";
+"codex.row.generatingImage" = "Generating image";
 "codex.summary.calledTool.leading" = "Called a tool";
 "codex.summary.calledTool" = "called a tool";
 "codex.summary.calledTools.leading" = "Called tools";

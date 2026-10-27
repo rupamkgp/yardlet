@@ -1216,7 +1216,8 @@ struct ClaudeEventProjector: Sendable {
             detail: started?.detail,
             outcome: block["is_error"]?.boolValue == true ? .failed : nil,
             input: started?.input,
-            output: block["content"]?.contentText
+            output: block["content"]?.contentText,
+            images: block["content"]?.contentImages
         )
     }
 }

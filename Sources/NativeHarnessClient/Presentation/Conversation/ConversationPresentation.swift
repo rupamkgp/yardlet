@@ -359,6 +359,9 @@ struct ConversationTool: Equatable, Sendable {
     var detail: String? = nil
     /// An MCP call's result: its text and images.
     var mcpResult: CodexMCPResultProjection? = nil
+    /// The images the call looked at, made or returned, apart from an MCP result's: a Codex image
+    /// view's file, a generated image, a Claude Code result's screenshot. The line previews them.
+    var images: [TranscriptImageAttachment] = []
     /// The Yardlet connector whose tool this is, for its name and icon on the row.
     var connector: ConnectorToolLabels.Label? = nil
 }

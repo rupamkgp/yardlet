@@ -270,6 +270,35 @@ final class ClaudeSessionProjectionTests: XCTestCase {
         try ClaudeWireCodec().decodeLine(Data(json.utf8))
     }
 
+    /// A tool result's images go with its call, live and read back from the history alike: the image
+    /// file `Read` returned and an MCP screenshot beside its text, each inline, for the call's line to
+    /// preview. The reading cache keeps none of their bytes.
+    func testAToolResultsImagesStayWithTheCallButOutOfTheReadingCache() throws {
+        var projection = ClaudeSessionProjection()
+        var builder = TranscriptBuilder()
+        builder.appendUser("Look at the settings window")
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        for json in [
+            #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"/tmp/settings.png"}},{"type":"tool_use","id":"shot","name":"mcp__computer-use__app_screenshot","input":{"app":"com.example"}}]}}"#,
+            #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"\#(png)"}}]}]}}"#,
+            #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"shot","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"\#(png)"}},{"type":"text","text":"Captured the window"}]}]}}"#
+        ] { try apply(json, to: &projection, builder: &builder) }
+
+        for id in ["read", "shot"] {
+            let call = try XCTUnwrap(activity(id, in: builder))
+            XCTAssertEqual(call.state, .completed)
+            XCTAssertEqual(call.value.images?.compactMap(\.url?.scheme), ["data"], id)
+            guard case let .tool(tool) = ConversationActivityProjection.kind(
+                call.value, harness: .claudeCode, phase: .completed, isApproved: false
+            ) else { return XCTFail("\(id) is a call's line") }
+            XCTAssertEqual(tool.previewImages.count, 1, id)
+            let saved = try JSONDecoder().decode(HarnessActivity.self, from: JSONEncoder().encode(call.value))
+            XCTAssertEqual(saved.images?.count, 1)
+            XCTAssertNil(saved.images?.first?.url, "the reading cache keeps no inline bytes")
+        }
+        XCTAssertEqual(activity("shot", in: builder)?.value.output, "Captured the window")
+    }
+
     private func apply(_ json: String, to projection: inout ClaudeSessionProjection, builder: inout TranscriptBuilder) throws {
         for payload in projection.payloads(from: try decode(json)) { builder.apply(payload) }
     }

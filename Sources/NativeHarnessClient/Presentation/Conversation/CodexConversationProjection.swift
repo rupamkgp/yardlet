@@ -448,11 +448,15 @@ enum CodexConversationProjection {
         case let .webSearch(query, _, _):
             kind = .tool(ConversationTool(kind: .webSearch, name: query))
         case let .imageView(path):
-            kind = .tool(ConversationTool(kind: .imageView, name: path))
+            kind = .tool(ConversationTool(kind: .imageView, name: path, images: Self.image(at: path).map { [$0] } ?? []))
         case let .imageGeneration(image):
+            // The file Codex saved it to, else the image it returned inline.
+            let generated = image.savedPath.flatMap(Self.image(at:))
+                ?? (image.result.isEmpty ? nil : Self.image(at: image.result.hasPrefix("data:")
+                    ? image.result : "data:image/png;base64," + image.result))
             kind = .tool(ConversationTool(
                 kind: .imageGeneration, name: image.savedPath ?? image.revisedPrompt ?? "", status: image.status,
-                output: image.savedPath == nil ? nil : image.revisedPrompt
+                output: image.savedPath == nil ? nil : image.revisedPrompt, images: generated.map { [$0] } ?? []
             ))
             if isFailure(image.status) { phase = .failed }
         case let .sleep(durationMilliseconds):
@@ -596,6 +600,15 @@ enum CodexConversationProjection {
         case "failed", "failure", "error", "declined": .failed
         default: nil
         }
+    }
+
+    /// The image a Codex item names: a file by its absolute path, or a `data:`, file or web URL. A web
+    /// image is shown by its name and never fetched; a relative path names no file Yardlet can find.
+    private static func image(at reference: String) -> TranscriptImageAttachment? {
+        if reference.hasPrefix("/") { return TranscriptImageAttachment(url: URL(filePath: reference)) }
+        guard let url = URL(string: reference), let scheme = url.scheme?.lowercased(),
+              ["data", "file", "http", "https"].contains(scheme) else { return nil }
+        return TranscriptImageAttachment(url: url)
     }
 
     private static func isFailure(_ status: String) -> Bool {

@@ -172,7 +172,8 @@ private struct SentImageThumbnail: View {
 }
 
 /// An attached image that cannot be previewed, by name, as sent messages showed it before.
-private struct SentImageNameChip: View {
+/// An image that cannot be shown, by its name.
+struct SentImageNameChip: View {
     let name: String
 
     var body: some View {
@@ -193,9 +194,11 @@ private struct SentImageNameChip: View {
     }
 }
 
-/// Rows that wrap and sit against the trailing edge, as a sent message's attachments do.
+/// Rows that wrap and sit against the trailing edge, as a sent message's attachments do, or against
+/// the leading edge.
 struct SentAttachmentFlow: Layout {
     var spacing: CGFloat
+    var alignsTrailing = true
 
     private struct Row {
         var indices: [Int] = []
@@ -212,7 +215,7 @@ struct SentAttachmentFlow: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var y = bounds.minY
         for row in rows(subviews, width: bounds.width) {
-            var x = bounds.maxX - row.width
+            var x = alignsTrailing ? bounds.maxX - row.width : bounds.minX
             for index in row.indices {
                 let size = size(of: subviews[index], width: bounds.width)
                 subviews[index].place(
