@@ -8,9 +8,11 @@ section of this document by its title.
 
 - A connector is a remote MCP server (Streamable HTTP) that an outside service runs. Yardlet signs in once, keeps the
   credentials in Keychain, and offers that server's tools to Claude Code, Codex and ACP harnesses through the Yardlet
-  MCP server (`yardlet`). The exceptions are Gmail, Google Calendar and Google Drive, which are servers Yardlet runs
-  inside the app. They sign in once per Google account and call Google's public REST APIs (the "Google" section). The
-  Apple connectors (App Store Connect, the Mac's calendars, reminders and contacts, and Xcode) are also servers inside
+  MCP server (`yardlet`). The exceptions are Gmail, Google Calendar, Google Drive, Google Analytics and Google Ads,
+  which are servers Yardlet runs inside the app. They sign in once per Google account and call Google's public REST APIs
+  (the "Google" section). Outlook Mail, Outlook Calendar, OneDrive and Microsoft Teams are servers inside the app as
+  well: they sign in once per Microsoft account and call Microsoft Graph (the "Microsoft 365" section). The Apple
+  connectors (App Store Connect, the Mac's calendars, reminders and contacts, and Xcode) are also servers inside
   the app. App Store Connect calls Apple's REST API with the person's API key, the three Mac connectors use the Mac's
   data once macOS allows it, and Xcode goes through Xcode's `mcpbridge` (the "Apple" section). A connector can also be
   a program Yardlet runs on this Mac (stdio), from an MCP registry or another app's settings, once the person has seen
@@ -32,13 +34,14 @@ section of this document by its title.
 | Type | When | Behavior |
 |---|---|---|
 | OAuth (dynamic registration) | The server asks for sign-in with a 401 and supports dynamic client registration | The steps below |
-| OAuth (your own client) | No dynamic registration (Slack, a GitHub OAuth app the user registered) | The steps below, with the user's client ID (and secret) and a fixed redirect in place of step 4 |
+| OAuth (your own client) | No dynamic registration (Slack, Zoom, a GitHub OAuth app the user registered) | The steps below, with the user's client ID (and secret) and a fixed redirect in place of step 4 |
 | GitHub device code | GitHub, when the build has the client ID of Yardlet's GitHub OAuth app | The "GitHub sign-in" section |
 | Access token | Servers without dynamic registration (GitHub personal access tokens and others) | Sends the pasted value as `Authorization: Bearer` |
 | Key in a header | A registry server that names its own header for the key (`x-api-key`) | Sends the pasted value as is in that header (`tokenHeader`), not in `Authorization` |
 | Key in the address | Servers that take the key as a query (Browserbase `browserbaseApiKey`) | Adds it to the address on each request. It is not in the saved address or headers |
 | No authentication | The server answers without a 401 | Connects as is |
-| Google account | Gmail, Google Calendar and Google Drive | The "Google" section |
+| Google account | Gmail, Google Calendar, Google Drive, Google Analytics and Google Ads | The "Google" section |
+| Microsoft account | Outlook Mail, Outlook Calendar, OneDrive and Microsoft Teams | The "Microsoft 365" section |
 | App Store Connect API key | App Store Connect | The `.p8` key file, the key ID and (for a team key) the issuer ID. The "Apple" section |
 | macOS permission | Apple Calendar, Apple Reminders and Apple Contacts | macOS asks once when it is turned on. The "Apple" section |
 | App on this Mac | Xcode | No sign-in. Xcode's `mcpbridge` provides the tools. The "Apple" section |
@@ -120,14 +123,16 @@ registration, the connection error shows the reason the service gave.
 | Sign-in | Services |
 |---|---|
 | Dynamic registration OAuth | Linear, Notion, Atlassian, Sentry, Asana, ClickUp, monday.com, Todoist, Airtable, Miro, Dropbox, Intercom, Zapier, Pipedream, Composio, Make, Granola, Fireflies, Gamma, GitLab, Supabase, Neon, Prisma Postgres, Netlify, Cloudflare, PostHog, Semgrep, Postman, Jam, Stripe, PayPal, Square, Mercury (read-only), Webflow, Wix, Tavily |
-| No authentication | Exa, Hugging Face, Context7, DeepWiki, OpenAI Docs, Microsoft Learn, AWS Knowledge, Cloudflare Docs, the Figma desktop app server (`http://127.0.0.1:3845/mcp`, turned on in Dev Mode). Exa, Hugging Face and Context7 allow more after a sign-in, but Yardlet does not ask for one |
-| Your own OAuth app | Slack (the "Slack" section) |
-| Google account | Gmail, Google Calendar, Google Drive (the "Google" section) |
+| No authentication | Exa, Hugging Face, Context7, DeepWiki, OpenAI Docs, Microsoft Learn, AWS Knowledge, Cloudflare Docs, Twilio Docs, the Figma desktop app server (`http://127.0.0.1:3845/mcp`, turned on in Dev Mode). Exa, Hugging Face and Context7 allow more after a sign-in, but Yardlet does not ask for one |
+| Your own OAuth app | Slack (the "Slack" section), Zoom Meetings, Zoom Team Chat, Zoom Docs |
+| Google account | Gmail, Google Calendar, Google Drive, Google Analytics, Google Ads (the "Google" section) |
+| Microsoft account | Outlook Mail, Outlook Calendar, OneDrive, Microsoft Teams (the "Microsoft 365" section) |
 | Apple | App Store Connect (API key), Apple Calendar, Apple Reminders and Apple Contacts (macOS permission), Xcode (`mcpbridge` on this Mac) (the "Apple" section) |
 | GitHub | GitHub (`https://api.githubcopilot.com/mcp/`): device code sign-in (the "GitHub sign-in" section), a personal access token or your own OAuth app |
 | Key in the address | Browserbase (`https://mcp.browserbase.com/mcp`, key in Keychain) |
 
-- Order: widely used services (Linear, Notion, Slack, the three Google services, the three Mac services, GitHub,
+- Order: widely used services (Linear, Notion, Slack, the five Google services, the four Microsoft services, the three
+  Mac services, GitHub,
   Browserbase, Atlassian, Sentry) → work and planning → development and operations (Xcode and App Store Connect first) →
   payments and sites → Figma desktop → search and docs. An entry's symbol (SF Symbol) is used before the service icon
   arrives and when it cannot be fetched (the "Icons" section).
@@ -150,6 +155,18 @@ registration, the connection error shows the reason the service gave.
   ask for a sign-in before listing tools, so they are left to a registry search until a connection is tried. Merge Agent
   Handler's docs sign in with Merge's own command-line tool first; n8n, Klavis, Arcade and Gumloop give each person or
   workspace its own address, so they are added by URL.
+- Zoom (`https://mcp.zoom.us/mcp/{meeting,chat,canvas}/streamable`, developers.zoom.us/docs/mcp/servers) has one server
+  per product. Its servers answer an unauthenticated `initialize` with 401 and protected resource metadata that names
+  `https://zoom.us` as the authorization server, which has no registration endpoint and takes the secret only as Basic
+  (`client_secret_basic`) with PKCE `S256` (2026-10-27). So each product signs in with a Zoom app of the person's own (a
+  General app, user-managed) and the fixed loopback redirect, which Zoom accepts for native clients. The three entries
+  ask only for the read scopes of their server's `scopes_supported`: meetings, their assets and recordings; Team Chat
+  messages, channels, contacts and files; and Docs files, exports and comments (`canvas:write:file_search` searches and
+  writes nothing). The Zoom page in Add connector takes the client once, adds the products picked, and signs each in
+  in turn. A product the account's plan lacks still connects, and its tools answer with Zoom's reason.
+- Twilio Docs (`https://mcp.twilio.com/docs`, twilio.com/docs/ai/mcp) searches and reads Twilio's public API
+  documentation without a sign-in (`twilio__search`, `twilio__retrieve`). It has no account's messages or calls, which
+  need Twilio's API keys and are not in the directory.
 - A server that is not in the list is added by its address under "Another MCP server" in Add connector, or found in the
   registries (the "Registries" section).
 
@@ -160,7 +177,12 @@ Not included:
 - Servers without a registration endpoint, which need an app registration for each client: Box, HubSpot, Asana
   `/v2/mcp`.
 - Google's official MCP servers (`gmailmcp`, `calendarmcp` and `drivemcp.googleapis.com`): they need the Workspace
-  Developer Preview. Instead, Yardlet runs servers with the same tool names itself (the "Google" section).
+  Developer Preview. Instead, Yardlet runs servers with the same tool names itself (the "Google" section). Google's
+  Analytics and Google Ads MCP servers run locally with Python and Application Default Credentials; Yardlet calls the
+  same APIs with the account's Google sign-in instead.
+- Microsoft's own MCP servers: Work IQ follows each tenant's Microsoft 365 Copilot licensing and admin policy, and
+  Microsoft says its earlier per-product servers are not for new projects. Yardlet runs its own servers on Microsoft
+  Graph instead (the "Microsoft 365" section).
 - Unofficial Google addresses, Gmail and Drive relay servers run by other companies, and reading Slack or GitHub tokens
   from other apps.
 - App Store Connect MCP servers made by other companies: their code would hold the API key. Yardlet calls Apple's API
@@ -428,7 +450,7 @@ calls, and the composer list and the settings text say that Antigravity is not s
 
 - **Settings → Connectors:** a one-paragraph introduction (every harness and account, except Antigravity) → "Your
   connectors" and "Add connector" (when empty, a single one inside the empty state) → "You use these elsewhere" → "Set
-  up in one go" (Google and Slack) → the claude.ai account connectors switch.
+  up in one go" (Google, Microsoft 365, Slack and Zoom, two to a row) → the claude.ai account connectors switch.
   - Your connectors: connected first, then in progress, needs sign-in and error (with a red reason line). The state is a
     dot and one word (`ConnectorSettingsState`), and there is one action button (Reconnect, Connect, Set up…, Try again
     or Cancel). A line under the list says when changes reach tasks (the "Tool lists of running tasks" section).
@@ -504,16 +526,18 @@ What the person does (per service):
   (`toolsUpdatedAt`), directory ID (`presetID`), your own OAuth client ID (`oauthClientID`, not a secret), scope, extra
   authorization parameters, the key's query name (`tokenQueryParameter`), server icons (`serverIcons`) and connectors
   turned off per task (`offInTasks`: task ID → connector ID), the header a pasted key goes in (`tokenHeader`), and a
-  program's runtime, program name, package, version, origin and environment names (`program`). Google services have `localService`, `account` (the
-  address) and `googleAccountID`, and the top of the file has the `googleOAuthClientID` of the Google app the user saved
-  (not a secret). Apple services have `localService`, and App Store Connect also has `account` (the key ID). The server
+  program's runtime, program name, package, version, origin and environment names (`program`). Google and Microsoft
+  services have `localService`, `account` (the address) and `googleAccountID` (the account's sign-in, for both), and the
+  top of the file has the `googleOAuthClientID` of the Google app the user saved and the `microsoftOAuthApp` (client ID
+  and directory) of the Microsoft app the user saved (neither is a secret). Apple services have `localService`, and App Store Connect also has `account` (the key ID). The server
   address of the three Mac services is the Mac app that holds that data (`/System/Applications/Calendar.app` and
   others), and Xcode's is the path of the `mcpbridge` it found. No secrets are written. Older files are read as they are
   (new fields are empty when missing).
 - Keychain: generic password, service `<bundle ID>.connectors`, account the connector UUID (for Google, the ID of the
   account sign-in), and a JSON value (kinds `oauth`, `token`, `client`, `signingKey` and `program`; a program's
   arguments and environment values; access and refresh tokens,
-  expiry, client ID and secret, token endpoint and auth method, resource; `signingKey` holds App Store Connect's key ID,
+  expiry, client ID and secret, token endpoint and auth method, resource, and for Microsoft the scope a refresh names
+  again (`refreshScope`); `signingKey` holds App Store Connect's key ID,
   issuer ID and PEM). `client` is what is left before sign-in or after a disconnect: only your own client. The ID and
   secret of the Google app the user saved are a single item under the same service with a fixed account
   (`GoogleOAuth.appCredentialID`). The Google app built into the build is not written to Keychain.
@@ -528,7 +552,8 @@ What the person does (per service):
 
 ## 9. Google
 
-Gmail, Google Calendar and Google Drive are not remote MCP servers but servers that Yardlet runs inside the app.
+Gmail, Google Calendar, Google Drive, Google Analytics and Google Ads are not remote MCP servers but servers that Yardlet
+runs inside the app.
 Harnesses get them through the `yardlet` MCP server (`yardlet-mcp` → socket → app) like other connectors, so tokens do
 not leave Yardlet, and injection, the per-task switch and the Antigravity exclusion are the same. Tool names and
 arguments follow Google's official MCP servers (the ones claude.ai's Google connectors use). The Google Drive connector
@@ -565,15 +590,20 @@ also provides tools that read and edit the structure inside Docs, Sheets and Sli
 
 ### Accounts and services
 
-- The Google services are three of `LocalConnectorService`: `gmail`, `googleCalendar` (`google-calendar`) and
-  `googleDrive` (`google-drive`) (`LocalConnectorService.google`, `isGoogle`; the rest are Apple services, the "Apple"
-  section). Their directory entries use `SignIn.googleAccount`, and their addresses are
-  `https://gmail.googleapis.com/gmail/v1/`, `https://www.googleapis.com/calendar/v3/` and `…/drive/v3/`.
+- The Google services are five of `LocalConnectorService`: `gmail`, `googleCalendar` (`google-calendar`),
+  `googleDrive` (`google-drive`), `googleAnalytics` (`google-analytics`) and `googleAds` (`google-ads`)
+  (`LocalConnectorService.google`, `isGoogle`, `accountProvider` `.google`). Their directory entries use
+  `SignIn.googleAccount`, and their addresses are `https://gmail.googleapis.com/gmail/v1/`,
+  `https://www.googleapis.com/calendar/v3/`, `…/drive/v3/`, `https://analyticsadmin.googleapis.com/v1beta/` and
+  `https://googleads.googleapis.com/v26/`.
+- A new account starts with Gmail, Calendar and Drive (`LocalConnectorService.googleDefaults`). Analytics and Ads ask for
+  more, so their scopes are asked for only when the person turns them on for an account.
 - **One account, one connector per service:** each service of a Google account is its own `ConnectorRecord` (the
   per-task switch, tool rows and reconnect are per service), and they share one sign-in:
-  `ConnectorRecord.googleAccountID` (the Keychain item of that account's sign-in),
-  `credentialID = googleAccountID ?? id`. The account's first service is stored under its own ID.
-  `ConnectorCenter.googleAccounts` groups them by `credentialID`.
+  `ConnectorRecord.accountSignInID` (the Keychain item of that account's sign-in; saved as `googleAccountID`, its name
+  from when only Google accounts had one), `credentialID = accountSignInID ?? id`. The account's first service is stored
+  under its own ID. `ConnectorCenter.accounts(.google)` (`googleAccounts`) groups them by `credentialID`. Microsoft
+  accounts use the same machinery (the "Microsoft 365" section).
 - **One sign-in:** the fixed loopback `127.0.0.1:47823/callback` → `accounts.google.com/o/oauth2/v2/auth` in the default
   browser. It requests the scopes of all services turned on for that account at once (in directory order) and sends
   `include_granted_scopes=true`, `access_type=offline`, `prompt=select_account consent` for a new account,
@@ -581,7 +611,8 @@ also provides tools that read and edit the structure inside Docs, Sheets and Sli
   Tokens come from `oauth2.googleapis.com/token`, with the secret sent in the form. A missing refresh token is reported
   as a failure.
 - **Account address:** taken from the Gmail profile's `emailAddress`, else the primary calendar (the `id` of
-  `users/me/calendarList/primary`), else Drive `about`'s `user.emailAddress` (no extra scopes are requested). An address
+  `users/me/calendarList/primary`), else Drive `about`'s `user.emailAddress`, else the OpenID user info's `email` (for an
+  account with only Analytics or Ads, whose scopes include `userinfo.email` for this). An address
   that already exists joins that account (for a service it already has, the new row is dropped). A new sign-in is stored
   only after its address has been read with a separate session. So when a reconnect brings a different account, that
   sign-in is not stored and only the reason is kept, and the account's previous sign-in, state and tools stay as they
@@ -594,17 +625,18 @@ also provides tools that read and edit the structure inside Docs, Sheets and Sli
   stays while another service uses it (even when the first service is turned off). The Keychain item is deleted with the
   last service. Yardlet does not revoke scopes at Google (the user revokes them under third-party access in their Google
   Account).
-- **Names:** the first account's slugs are `gmail`, `calendar` and `drive`; when a name is already taken, the first part
+- **Names:** the first account's slugs are `gmail`, `calendar`, `drive`, `analytics` and `google_ads`; when a name is
+  already taken, the first part
   of the address is added (`gmail_<prefix>`). Tool titles and descriptions are `Gmail · address: …` and
   `[Gmail · address] …`. The tool list is built into the app, so no server is asked.
-- **Refresh (`GoogleAPISession`):** before a call when the token expires within 1 minute, and on a 401 it refreshes once
+- **Refresh (`OAuthAPISession`):** before a call when the token expires within 1 minute, and on a 401 it refreshes once
   and sends again. One refresh runs at a time per account. When Google refuses a refresh with `invalid_grant` (access
   revoked, 6 months unused, password changed, 7 days in Testing status), that account becomes "Needs sign-in", settings
   and the composer show "Reconnect", and calls return a tool error saying to sign in again. A network failure is only
   that call's error and does not change the state.
 - **Reconnect and remove:** reconnecting a Google service signs in the whole account again. Remove removes only that
   service, and "Remove this Google account" removes the whole account. Yardlet does not ask Google to revoke tokens.
-- Google account row: the address, three service chips (on or off, and state), and Reconnect and `…` when needed. Below
+- Google account row: the address, five service chips (on or off, and state), and Reconnect and `…` when needed. Below
   them is "What Yardlet asks Google for" (the scopes and their classes).
 
 ### Scopes
@@ -617,7 +649,15 @@ also provides tools that read and edit the structure inside Docs, Sheets and Sli
 | Calendar | `calendar.events.freebusy` | sensitive | `suggest_time` (freeBusy.query) |
 | Drive | `drive.readonly` | restricted | Read and export all files, and read the structure inside Docs, Sheets and Slides |
 | Drive | `drive.file` | non-sensitive | Create and copy, and change only files Yardlet created (including editing Docs, Sheets and Slides) |
+| Analytics | `analytics.readonly` | sensitive (see below) | Read accounts, properties, Ads links, custom definitions and reports |
+| Analytics, Ads | `userinfo.email` | non-sensitive | The address of an account that has none of Gmail, Calendar and Drive |
+| Ads | `adwords` | restricted | Google Ads has no narrower scope; Yardlet only lists customers and runs GAQL `SELECT`s |
 
+- Google's public lists do not name the class of `analytics.readonly`; the table follows the Cloud console's Data Access
+  page, which is where to check it. Google's Ads guide lists `adwords` as restricted
+  (developers.google.com/google-ads/api/docs/productionize/secure-credentials). It also covers changing campaigns and
+  budgets, so reading only is the code's to keep: the Ads tools reach only `customers:listAccessibleCustomers`,
+  `googleAds:search` with a query checked to be a `SELECT`, and `googleAdsFields:search`.
 - Scopes are prefixed with `https://www.googleapis.com/auth/`. The full `drive`, `calendar` and
   `https://mail.google.com/` scopes are not requested. So Yardlet cannot change or delete the person's other Drive
   files, and the Drive tools have no delete.
@@ -735,6 +775,30 @@ v1):
   `valueRenderOption` is an error without a request).
 - Which files the editing tools can reach, and which APIs must be enabled, are in "Scopes".
 
+Google Analytics (`GoogleAnalyticsToolCatalog`, `GoogleAnalyticsToolRunner`, Analytics Admin and Data APIs v1beta). Names
+and arguments follow Google's own Analytics MCP server (github.com/googleanalytics/google-analytics-mcp), whose
+arguments are snake case:
+
+| Tool | API | Notes |
+|---|---|---|
+| `get_account_summaries` | Admin `GET accountSummaries` | Every page, up to 2,000 accounts |
+| `get_property_details` | Admin `GET properties/{id}` | `property_id` is `123` or `properties/123` |
+| `list_google_ads_links` | Admin `GET properties/{id}/googleAdsLinks` | |
+| `get_custom_dimensions_and_metrics` | Data `GET properties/{id}/metadata` | Only those with `customDefinition` |
+| `run_report` | Data `POST properties/{id}:runReport` | `date_ranges`, `dimensions`, `metrics`, `dimension_filter` and `metric_filter` (FilterExpression as the API takes it), `order_bys`, `limit` (default 1,000), `offset`, `currency_code`. Rows come back as `headers` and lists of values |
+| `run_realtime_report` | Data `POST properties/{id}:runRealtimeReport` | The same without dates |
+
+Google Ads (`GoogleAdsToolCatalog`, `GoogleAdsToolRunner`, Google Ads API v26). Names follow Google's own Google Ads MCP
+server (developers.google.com/google-ads/api/docs/developer-toolkit/mcp-server). Developer tokens ended on 2026-09-09, so
+none is sent:
+
+| Tool | API | Notes |
+|---|---|---|
+| `list_accessible_customers` | `GET customers:listAccessibleCustomers` | |
+| `search` | `POST customers/{id}/googleAds:search` | `customer_id` (dashes dropped), `query` (refused without a request unless it starts with `SELECT`), `login_customer_id` as the `login-customer-id` header, `page_token` |
+| `get_resource_metadata` | `POST googleAdsFields:search` | The fields under a resource name, with whether each can be selected, filtered and sorted |
+
+- Analytics and Ads answers over 100,000 characters become an error that says how to narrow the request.
 - Descriptions say only what the tool does, in under 260 characters. Annotations: reading tools have
   `readOnlyHint: true` and `openWorldHint: false`, sending and writing tools `openWorldHint: true`, and `modify_labels`,
   `delete_event`, `update_file` and the Docs, Sheets and Slides writes other than `insert_dimension` have
@@ -769,14 +833,14 @@ under "Set up in one go" in Settings → Connectors opens the steps below in ord
 
 1. **New Project** (console.cloud.google.com/projectcreate): create a project.
 2. **Enable APIs**: on one page
-   (`flows/enableapi?apiid=gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com`),
-   enable the six APIs. The Drive connector's Docs, Sheets and Slides tools use the last three.
+   (`flows/enableapi?apiid=gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com,analyticsadmin.googleapis.com,analyticsdata.googleapis.com,googleads.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com`),
+   enable the nine APIs. The Drive connector's Docs, Sheets and Slides tools use the last three.
 3. **Google Auth Platform**: app name (copy button), user support email, audience, contact information. To use personal
    Gmail accounts, the audience is **External**. If only accounts of one Workspace organization are used and the project
    is inside that organization, **Internal** works too (no verification screen and no 100-user limit).
 4. **Audience** → Publish app → "In production" (for External). Left at "Testing", it needs a new sign-in every 7 days.
-5. **Data Access** → Add or remove scopes → paste the six scopes (copy button) into Manually add scopes, then Update and
-   Save.
+5. **Data Access** → Add or remove scopes → paste the nine scopes (copy button) into Manually add scopes, then Update and
+   Save. Analytics' and Ads' scopes are asked for only on accounts that turn those services on.
 6. **Create client**: type Desktop app → paste the client ID and client secret into Yardlet's fields (the format is
    checked) and **Save**. If you create a Web application instead, add `http://127.0.0.1:47823/callback` to the
    authorized redirect URIs.
@@ -799,6 +863,8 @@ that organization only.
   Picker screen where the person picks the file. For now, Yardlet edits a copy.
 - Calendar: `search_events` is word search, not semantic search. The time zone is this Mac's (reading the time zone in
   the calendar settings needs another scope).
+- Analytics: annotations, audiences, funnel reports (v1alpha) and any change to a property. Ads: anything that changes
+  an account (mutates), and keyword planning.
 
 ## 10. Apple
 
@@ -1116,12 +1182,17 @@ registered OAuth app can offer a sign-in button. Yardlet signs in with the devic
 | `Sources/NativeHarnessClient/Connectors/MCPHTTPClient.swift` | Streamable HTTP client, `WWW-Authenticate` parsing, event stream, key in the address | engine |
 | `Sources/NativeHarnessClient/Connectors/ConnectorOAuth.swift` | Discovery, dynamic registration, your own client, authorization URL, token exchange and refresh, PKCE | engine |
 | `Sources/NativeHarnessClient/Connectors/ConnectorCenter.swift` | The connector list, connecting and sign-in, the per-task switch, standing in for harness servers (`withYardletStandIns`), tool lists and calls, per-session token refresh (`ConnectorSession`), the Google app, accounts and sign-in, adding and connecting Apple services (`isAvailable`, `addLocal`, `addAppStoreConnectKey`), list change notification (`onToolsChanged`) | engine |
-| `Sources/NativeHarnessClient/Connectors/GoogleOAuth.swift` | Google endpoints, the app in the build (`BuiltInApp`), the Keychain item ID of the Google app, authorization parameters, scope checks, `GoogleAPISession` | engine |
+| `Sources/NativeHarnessClient/Connectors/GoogleOAuth.swift` | Google endpoints, the app in the build (`BuiltInApp`), the Keychain item ID of the Google app, authorization parameters, scope checks | engine |
+| `Sources/NativeHarnessClient/Connectors/OAuthAPISession.swift` | One account's bearer token for a REST API Yardlet calls itself (Google's, Microsoft Graph): refresh a minute before expiry and once after a 401, one at a time | engine |
+| `Sources/NativeHarnessClient/Connectors/ConnectorToolSupport.swift` | Argument reading (`ConnectorToolArguments`) and schema pieces (`ConnectorToolSchema`) shared by Yardlet's own servers | engine |
 | `Sources/NativeHarnessClient/Connectors/GmailToolCatalog.swift`, `GmailAPI.swift`, `GmailToolRunner.swift` | Gmail tool definitions, annotations and tools that ask; REST calls, reading messages (charset, HTML→text) and building MIME; requests and responses per tool | engine |
-| `Sources/NativeHarnessClient/Connectors/GoogleREST.swift` | Calendar and Drive REST client (JSON, downloads, multipart uploads), argument reading (`GoogleToolArguments`), schema pieces (`GoogleToolSchema`) | engine |
+| `Sources/NativeHarnessClient/Connectors/GoogleREST.swift` | REST client of the Google APIs other than Gmail (JSON, extra headers, downloads, multipart uploads) | engine |
 | `Sources/NativeHarnessClient/Connectors/GoogleCalendarToolCatalog.swift`, `GoogleCalendarToolRunner.swift` | Calendar tools, scopes and tools that ask; Calendar API v3 requests and responses; `CalendarTime` (time zones, free time) | engine |
 | `Sources/NativeHarnessClient/Connectors/GoogleDriveToolCatalog.swift`, `GoogleDriveToolRunner.swift` | Drive tools, scopes and tools that ask; Drive API v3 requests and responses (export, multipart); `DriveQuery` | engine |
 | `Sources/NativeHarnessClient/Connectors/GoogleEditorsToolCatalog.swift`, `GoogleEditorsToolRunner.swift` | The Drive connector's Docs, Sheets and Slides tools, tools that ask and APIs that must be enabled; Docs, Sheets and Slides API requests and responses; paging | engine |
+| `Sources/NativeHarnessClient/Connectors/GoogleAnalyticsToolCatalog.swift`, `GoogleAnalyticsToolRunner.swift`, `GoogleAdsToolCatalog.swift`, `GoogleAdsToolRunner.swift` | Analytics and Ads tools and scopes; Admin, Data and Google Ads API requests, report rows, the `SELECT` check | engine |
+| `Sources/NativeHarnessClient/Connectors/MicrosoftOAuth.swift`, `GraphAPI.swift` | Microsoft's endpoints per tenant, the app in the build, the person's app, permissions and grant checks, sign-in errors; the Graph client (headers, page links only into Graph, uploads) and shared shapes (`GraphShape`) | engine |
+| `Sources/NativeHarnessClient/Connectors/OutlookMailToolCatalog.swift`, `OutlookMailToolRunner.swift`, `OutlookCalendarToolCatalog.swift`, `OutlookCalendarToolRunner.swift`, `OneDriveToolCatalog.swift`, `OneDriveToolRunner.swift`, `TeamsToolCatalog.swift`, `TeamsToolRunner.swift` | The Microsoft 365 tools, permissions and tools that ask; Graph requests and answers | engine |
 | `Sources/NativeHarnessClient/Connectors/AppStoreConnectAPI.swift`, `AppStoreConnectToolCatalog.swift`, `AppStoreConnectToolRunner.swift` | `.p8` keys and ES256 tokens (the `ES256Signing` contract), the key session (a new token after a 401), JSON:API requests, the 14 tools and those that ask | engine |
 | `Sources/NativeHarnessClient/Connectors/MacDataStore.swift`, `MacDataToolCatalog.swift`, `MacDataToolRunner.swift` | The Mac data store contract (`MacDataStoring`), permission states and error text; calendar, reminder and contact tools and running them | engine |
 | `Sources/NativeHarnessClient/Connectors/MCPStdioClient.swift`, `XcodeBridge.swift` | stdio MCP client (matching request IDs, cancellation, the reason from standard error), the child process channel, finding `mcpbridge` and the Xcode version | engine |
@@ -1130,7 +1201,7 @@ registered OAuth app can offer a sign-in button. Yardlet signs in with the devic
 | `Sources/NativeHarnessClient/Connectors/ConnectorIcons.swift` | `MCPServerIcon` (`serverInfo.icons`), icon source order (`ConnectorIconSources`), own-site check (`ConnectorIconSite`), directory icon addresses | engine |
 | `Sources/NativeHarnessClient/AgentTools/AgentToolBroker.swift` | `tools/list` and the connector call path, per-task scope, injection conditions, `tools/watch` | engine |
 | `Sources/NativeHarnessClient/AgentTools/AgentToolInjection.swift` | Injection documents, the `deniedMcpServers` setting, `ClaudeAIConnectorPreference` | engine |
-| `Sources/NativeHarnessClient/AgentTools/GmailToolApproval.swift`, `GoogleToolApproval.swift`, `AppleToolApproval.swift` | Text of Claude Code request cards for Gmail, Calendar and Drive writes (Docs, Sheets and Slides included), and for App Store Connect and Mac calendar and reminder writes | engine |
+| `Sources/NativeHarnessClient/AgentTools/GmailToolApproval.swift`, `GoogleToolApproval.swift`, `MicrosoftToolApproval.swift`, `AppleToolApproval.swift` | Text of Claude Code request cards for Gmail, Calendar and Drive writes (Docs, Sheets and Slides included), for Outlook, OneDrive and Teams writes, and for App Store Connect and Mac calendar and reminder writes | engine |
 | `Sources/YardletAgentTools/MCPServer.swift` | `listChanged: true`, the list the client got (`MCPToolListing`), watching the list and `notifications/tools/list_changed` (`watchToolList`) | engine |
 | `Sources/NativeHarnessClient/Adapters/Claude/ClaudeProcessTransport.swift` | `ENABLE_CLAUDEAI_MCP_SERVERS=false` | engine |
 | `Sources/NativeHarnessClient/Presentation/ConnectorSetupAssistant.swift` | "Set up in one go" step state, console links, values to copy, field checks | presentation |
@@ -1138,7 +1209,7 @@ registered OAuth app can offer a sign-in button. Yardlet signs in with the devic
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorSettingsView.swift` | Settings → Connectors, the one-word state (`ConnectorSettingsState`), the "Set up in one go" cards | views |
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorAddSheet.swift` | The "Add connector" sheet, steps and links per service (`ConnectorSetupGuide`) | views |
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorRegistryViews.swift` | "From MCP registries" (`ConnectorRegistrySection`) and a program's page (`ConnectorProgramPage`) | views |
-| `Sources/NativeHarnessClient/Views/AppShell/GoogleSetupPage.swift`, `SlackSetupPage.swift`, `ConnectorSetupAssistantViews.swift` | Google and Slack setup assistants (step rows, copy buttons, checked fields, per-account service chips) | views |
+| `Sources/NativeHarnessClient/Views/AppShell/GoogleSetupPage.swift`, `MicrosoftSetupPage.swift`, `SlackSetupPage.swift`, `ZoomSetupPage.swift`, `ServiceAccountList.swift`, `ConnectorSetupAssistantViews.swift` | Google, Microsoft 365, Slack and Zoom setup assistants (step rows, copy buttons, checked fields), and the account list with per-account service chips that Google and Microsoft share | views |
 | `Sources/NativeHarnessClient/Views/AppShell/AppStoreConnectSetupPage.swift` | The App Store Connect page (steps, key type, choosing the `.p8`, ID fields, key list, the Trash question) | views |
 | `Sources/NativeHarnessClient/Views/Composer/ComposerPlusMenu.swift` | Rows and keys of the composer "+" menu (`ComposerMenuList`), the "+" order (`ComposerPlusMenu`), the connector list (`ComposerConnectorsMenu`) | views |
 | `Sources/NativeHarnessClient/Views/Composer/ComposerConnectorsMenu.swift`, `Presentation/Composer/ComposerConnectorList.swift` | The connector environment, `ConnectorIcon`, session rail rows, list state | views |
@@ -1150,14 +1221,15 @@ Tests:
 | `Tests/NativeHarnessClientTests/ConnectorTests.swift` | The whole flow with fake authorization and MCP servers, names, the broker, loopback, refresh (retrying temporary failures, refresh token rotation, refresh by another copy), Keychain (opt-in `NHC_KEYCHAIN_LIVE=1`) |
 | `Tests/NativeHarnessClientTests/ConnectorDirectoryTests.swift` | The directory, discovery with real metadata shapes, your own client, public clients and the key in the address, the per-task switch, duplicate exclusion and standing in for Claude harness servers (`--settings`), settings parsing (fake values), import, the claude.ai environment, injection documents, tool rows |
 | `Tests/NativeHarnessClientTests/ConnectorLiveToolsTests.swift` | `list_changed` and list refresh with a fake MCP client, `tools/watch` over the socket, per-task changes in a real `ConnectorCenter`, clients that re-read and clients that do not, notification at the end of a turn, per-harness text |
-| `Tests/NativeHarnessClientTests/GmailConnectorTests.swift`, `GoogleCalendarDriveConnectorTests.swift`, `GoogleBuiltInAppTests.swift` | With a fake Google (`FakeGoogle`, `FakeGoogleWorkspace`): sign-in, scopes, accounts, and the requests and asking for each tool; the app in the build |
+| `Tests/NativeHarnessClientTests/GmailConnectorTests.swift`, `GoogleCalendarDriveConnectorTests.swift`, `GoogleBuiltInAppTests.swift`, `GoogleAnalyticsAdsConnectorTests.swift` | With a fake Google (`FakeGoogle`, `FakeGoogleWorkspace`, `FakeAnalyticsAds`): sign-in, scopes, accounts, and the requests and asking for each tool; the app in the build; Analytics reports and Ads reading only |
+| `Tests/NativeHarnessClientTests/MicrosoftConnectorTests.swift` | With a fake identity platform and Graph (`FakeMicrosoft`): the public-client sign-in, a tenant of the person's app, rotated refresh tokens, the requests of mail, calendar, OneDrive and Teams tools, and a request card |
 | `Tests/NativeHarnessClientTests/AppleConnectorTests.swift` | The whole flow with a fake App Store Connect (checking the token signature on every request), a fake Mac store and a fake `mcpbridge`: team key and individual key tokens, the key only in Keychain, the request and reply for each tool, refused keys, asking only for writes and the card text, Mac permissions and calendars, reminders and contacts, finding, connecting, restarting and removing Xcode, stdio with a real shell process |
 | `Tests/NativeHarnessClientTests/GitHubDeviceSignInTests.swift` | Device code request, waiting, refusal and expiry, sending it to MCP as a bearer token |
 | `Tests/NativeHarnessClientTests/MCPRegistryTests.swift` | Recorded registry answers (`Fixtures/mcp-registry-*.json`), checks on someone else's data, order, the client's requests, commands from packages, program connectors with a fake stdio server (keys only in Keychain, a harness's own copy, removal), a key in a named header, other apps' settings and one program's launch |
 | `Tests/NativeHarnessClientTests/ConnectorRegistryRenderingTests.swift` | Draws the registry list, a search, a program's page and programs offered from other apps under `.build/connector-registry-qa/`, light and dark |
 | `Tests/NativeHarnessClientTests/ConnectorSetupAssistantTests.swift` | The Slack manifest and link encoding, Google and Slack step state, field checks, suggestions read by name only |
 | `Tests/NativeHarnessClientTests/ConnectorIconTests.swift` | Icon order, themes and source limits, fetching, cache and waiting after a failure (opt-in `YARDLET_CONNECTOR_ICONS_LIVE=1` fetches from the real service sites and draws them) |
-| `Tests/NativeHarnessClientTests/ConnectorsRenderingTests.swift`, `ConnectorsEasyQARenderingTests.swift`, `PlusConnectorsQARenderingTests.swift`, `GmailSetupRenderingTests.swift`, `AppleConnectorsRenderingTests.swift` | Draws settings, the add sheet, the assistants, the composer list and the App Store Connect page under `.build/`, in light and dark. The Apple connection flow runs with accessibility presses in a transparent off-screen window |
+| `Tests/NativeHarnessClientTests/ConnectorsRenderingTests.swift`, `ConnectorsEasyQARenderingTests.swift`, `PlusConnectorsQARenderingTests.swift`, `GmailSetupRenderingTests.swift`, `AppleConnectorsRenderingTests.swift`, `MicrosoftZoomRenderingTests.swift` | Draws settings, the add sheet, the assistants, the composer list and the App Store Connect page under `.build/`, in light and dark. The Apple connection flow runs with accessibility presses in a transparent off-screen window |
 
 ## 16. QA (without a model turn)
 
@@ -1178,3 +1250,164 @@ Tests:
 
 Real service sign-ins and model turns are not part of this QA. Unit tests use fake authorization, MCP and Google servers
 and real metadata shapes, and rendering tests draw without a screen.
+
+## 17. Microsoft 365
+
+Outlook Mail, Outlook Calendar, OneDrive and Microsoft Teams are servers that Yardlet runs inside the app on Microsoft
+Graph v1.0 (`outlookMail`, `outlookCalendar`, `oneDrive` and `teams` of `LocalConnectorService`, `accountProvider`
+`.microsoft`). Like Google's, they go into the tasks of every harness and account through the one `yardlet` MCP server,
+tokens stay in Yardlet, and the per-task switch, tool row labels and the Antigravity exclusion work as for other
+connectors. Each Microsoft account signs in once for the services turned on for it, with the same account machinery as
+Google's (the "Google" section, "Accounts and services").
+
+### App and sign-in
+
+- **The app** is a public client of the Microsoft identity platform: authorization code with PKCE `S256`, no secret, and
+  the fixed loopback `http://127.0.0.1:47823/callback`. A build may carry Yardlet's own registration:
+  `scripts/build-app.sh` reads `YARDLET_MICROSOFT_CLIENT_ID` or `Packaging/MicrosoftOAuthClient.json`
+  (`{"client_id": …}`, kept out of git; an example is `Packaging/MicrosoftOAuthClient.example.json`) and writes
+  `YardletMicrosoftOAuthClientID` into Info.plist (`MicrosoftOAuth.BuiltInApp`). A person may save an app of their own
+  (client ID and an optional directory), which takes precedence; it is kept in `connectors.json` because a public client
+  has no secret. Each account's Keychain item carries the client and token endpoint it signed in with.
+- **Endpoints:** `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize` and `…/token`, where the tenant is
+  `common` (work, school and personal accounts) unless the person's app names its directory; Graph at
+  `https://graph.microsoft.com/v1.0/`. No discovery request and no dynamic registration.
+- **One sign-in** asks for `offline_access`, `User.Read` and the permissions of the services turned on, in directory
+  order, with `prompt=select_account` for a new account and `login_hint=<address>` for a sign-in again. A missing refresh
+  token is a failure. The identity platform rotates refresh tokens on every use; the new one replaces the stored one,
+  and each refresh names the permissions again (`ConnectorCredential.refreshScope`).
+- **Granted permissions:** the token answer lists Graph permissions with or without `https://graph.microsoft.com/`, in
+  any case; both are read (`MicrosoftOAuth.grantedServices`). A service whose permissions are missing gets "Needs
+  sign-in" with a reason, as Google's partial grants do.
+- **Account address:** Graph `GET me?$select=mail,userPrincipalName`: `mail`, else the sign-in name (a personal account
+  may have no `mail`). A different account on a reconnect, cancelling, merging the same account, and naming slugs
+  (`outlook`, `outlook_calendar`, `onedrive`, `teams`; a later account adds its address's first part) are as for Google.
+- **Consent:** none of the permissions needs an administrator by Graph's permission table, but an organization's
+  consent policy can still require one; Microsoft's default for a new tenant leaves mail, calendar and chat permissions
+  out of user consent. The page says to ask the administrator to grant consent, or to register the app in the
+  organization. Personal accounts have Outlook and OneDrive; Graph has no Teams for them, so a new account starts without
+  Teams.
+
+### Permissions
+
+| Service | Permissions | Why |
+|---|---|---|
+| All | `offline_access`, `User.Read` | Stay signed in; read whose account it is |
+| Outlook Mail | `Mail.ReadWrite`, `Mail.Send` | Search and read, drafts, read state, flags, categories and moving; sending |
+| Outlook Calendar | `Calendars.ReadWrite` | Read, create, change, delete and answer events; free and busy times |
+| OneDrive | `Files.ReadWrite` | Read every file; create new files and folders (see below) |
+| Microsoft Teams | `Chat.Read`, `ChatMessage.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `ChannelMessage.Send` | Read chats; send to chats and channels; list teams and channels |
+
+- Graph has no OneDrive permission that writes only new files without a file picker, so the code keeps the writes to
+  new files and folders: an upload's `@microsoft.graph.conflictBehavior` is `fail` (default) or `rename`, never
+  `replace` (Graph's default for a PUT), and there is no delete, move or sharing.
+- Reading channel messages needs `ChannelMessage.Read.All`, which only an administrator can grant, so it is left out.
+
+### Tools
+
+Names and arguments follow Yardlet's Gmail, Google Calendar and Google Drive tools where they mean the same, so a model
+uses both providers alike. Graph's list answers become `nextPageToken`, which is the page link Graph gave; a link that
+does not point into the Graph base is refused before any request, so the token goes nowhere else. Errors show Graph's
+`error.message` and the HTTP status.
+
+Outlook Mail (`OutlookMailToolCatalog`, `OutlookMailToolRunner`):
+
+| Tool | Graph | Notes |
+|---|---|---|
+| `search_messages` | `GET me/messages` or `me/mailFolders/{id}/messages` | `query` as `$search` (KQL; Graph sorts by date and takes no `$orderby` with it), otherwise newest first; `folderId` (an ID or `inbox`, `archive`…), `unreadOnly`, 1–50 per page. No body |
+| `get_message` | `GET me/messages/{id}` with attachments' names | `format` text (default, `Prefer: outlook.body-content-type="text"`) or html, 40,000 characters |
+| `list_folders` | `GET me/mailFolders` or `…/childFolders` | |
+| `create_draft` | `POST me/messages`, or `createReply`/`createReplyAll` | to, cc, bcc, subject, body or htmlBody, `replyToMessageId`, `replyAll` |
+| `send_draft` | `POST me/messages/{id}/send` | |
+| `send_message` | `POST me/sendMail` (kept in Sent Items), or `reply`/`replyAll` | A reply's text goes as `comment`, which keeps the quoted original |
+| `update_message` | `PATCH me/messages/{id}`, `POST …/move` | `isRead`, `flag`, `categories`, `moveToFolderId`; moving gives a new ID |
+
+Addresses with a comma, a line break or no `@` are refused before the request.
+
+Outlook Calendar (`OutlookCalendarToolCatalog`, `OutlookCalendarToolRunner`):
+
+| Tool | Graph | Notes |
+|---|---|---|
+| `list_calendars` | `GET me/calendars` | |
+| `list_events` | `GET me/calendarView` or `me/calendars/{id}/calendarView` | By default the next 7 days, in start order, recurring events expanded |
+| `get_event` | `GET me/events/{id}` | With the body as text |
+| `suggest_time` | `POST me/calendar/getSchedule` | Everything but free counts as busy, then `CalendarTime.freeSlots` as for Google. A personal account has no `getSchedule`: its own events stand for its busy times, and the attendees come back in `unavailableCalendars` |
+| `create_event` | `POST me/events` or `me/calendars/{id}/events` | `summary`, `startTime`, `endTime`, `timeZone`, `allDay`, `description`, `location`, `attendeeEmails`, `optionalAttendeeEmails`, `addTeamsMeeting`, `reminderMinutes`, `showAs`. Outlook invites the attendees |
+| `update_event` | `PATCH me/events/{id}` (with a GET first when times or attendees change) | Moving only the start keeps the length; `addedAttendeeEmails`, `removedAttendeeEmails` |
+| `delete_event` | `DELETE me/events/{id}` | For a meeting the account organizes, Outlook sends a cancellation |
+| `respond_to_event` | `POST me/events/{id}/accept`, `decline` or `tentativelyAccept` | `responseStatus`, `responseComment`, `sendResponse` |
+
+- Times: Graph is asked for and given times in UTC (`Prefer: outlook.timezone="UTC"`, `{dateTime, timeZone: "UTC"}`), so
+  no Windows time zone name is needed. A time without an offset is read in `timeZone` or this Mac's zone, and answers
+  give each time with that zone's offset. An all-day event is midnight UTC of its first day and of the day after its last,
+  which Outlook keeps on those dates; answers give its first and last day.
+
+OneDrive (`OneDriveToolCatalog`, `OneDriveToolRunner`):
+
+| Tool | Graph | Notes |
+|---|---|---|
+| `search_files` | `GET me/drive/root/search(q='…')` | Names, metadata and content, including files shared with the account |
+| `list_folder` | `GET me/drive/root/children` or `me/drive/items/{id}/children` | |
+| `get_file_metadata` | `GET me/drive/items/{id}` | Name, type, size, folder, link, last change |
+| `read_file_content` | The item's `@microsoft.graph.downloadUrl` | Text files only (text types and common text extensions), 100,000 characters |
+| `download_file_content` | The same address | base64, up to 5 MB |
+| `upload_file` | `PUT me/drive/items/{parent}:/{name}:/content?@microsoft.graph.conflictBehavior=fail` | Text or base64, up to 4 MB; `rename` on request; names with `/ \ : * ? " < > |` are refused |
+| `create_folder` | `POST me/drive/items/{parent}/children` | `fail` or `rename` |
+
+- The download address is short-lived and carries its own authorization, so it is fetched without the account's token.
+  `me/drive/recent` is not used: Microsoft stops it in November 2026.
+
+Microsoft Teams (`TeamsToolCatalog`, `TeamsToolRunner`):
+
+| Tool | Graph | Notes |
+|---|---|---|
+| `list_chats` | `GET me/chats?$expand=members` | Most recently active first within the page, with members' names |
+| `list_chat_messages` | `GET chats/{id}/messages` | Newest first, HTML read as text, 8,000 characters each |
+| `send_chat_message` | `POST chats/{id}/messages` | Text |
+| `list_teams` | `GET me/joinedTeams` | |
+| `list_channels` | `GET teams/{id}/channels` | |
+| `send_channel_message` | `POST teams/{id}/channels/{id}/messages` or `…/messages/{id}/replies` | `subject` for a new post, `replyToMessageId` for a thread |
+
+### When the harness asks
+
+- Tools that ask (`LocalConnectorService.approvalRequiredTools`): Outlook Mail `send_draft`, `send_message` and
+  `update_message`; Outlook Calendar `create_event`, `update_event`, `delete_event` and `respond_to_event`; OneDrive
+  `upload_file` and `create_folder`; Teams `send_chat_message` and `send_channel_message`. Drafts are not asked about, as
+  for Gmail.
+- Claude Code: the request cards use Yardlet's text and have no "Always allow" (`MicrosoftToolApproval`): mail shows the
+  recipients, subject and the first 1,200 characters of the body; a message change shows read state, flag, categories and
+  where it moves; events show the title, time, invitees, a Teams link and what Outlook sends; OneDrive shows the name,
+  folder and what happens when the name is taken; Teams shows the chat or the team and channel, and the message.
+- Codex and ACP: as for Google, from the annotations (`destructiveHint` on `update_message`, `update_event` and
+  `delete_event`).
+
+### Turning off and removing
+
+- Per task with the switch; per account with the service chips on the Microsoft page; Remove deletes the record, and the
+  account's Keychain item goes with its last service. Yardlet does not revoke consent at Microsoft: a personal account
+  removes Yardlet at account.live.com/consent/Manage, and an organization's administrator removes its consent in
+  Microsoft Entra.
+
+### Your own Microsoft app
+
+Someone whose build has no Microsoft app, or whose organization admits only apps it registered, registers one in
+Microsoft Entra. The Microsoft page opens the steps in order (`ConnectorSetupAssistant.microsoft`):
+
+1. **App registrations → New registration** (entra.microsoft.com): name Yardlet; supported accounts "any organizational
+   directory and personal Microsoft accounts", or only the organization's; no redirect yet.
+2. **Manifest**: add `http://127.0.0.1:47823/callback` to `publicClient` → `redirectUris`, or in the older AAD Graph
+   manifest `{ "url": "http://127.0.0.1:47823/callback", "type": "InstalledClient" }` to `replyUrlsWithType`, and save.
+   Microsoft's redirect form does not take a `127.0.0.1` address (learn.microsoft.com/entra/identity-platform/reply-url),
+   and a public client redirect makes the app a desktop client with no secret. Not as a web or single-page redirect:
+   those need a secret or an `Origin` header.
+3. **API permissions → Microsoft Graph → Delegated**: the permissions above. An administrator may grant consent for the
+   organization here.
+4. Paste the **Application (client) ID**, and for a single-organization app its **Directory (tenant) ID**, then Save.
+5. Pick the services and **Sign in with Microsoft**.
+
+### Not included
+
+- Mail: attachments (reading their content, sending them), deleting, rules, shared mailboxes.
+- Calendar: recurrence rules on create, shared calendars of other people, rooms.
+- OneDrive: replacing or deleting files, sharing, SharePoint sites, reading Word, Excel, PowerPoint and PDF as text.
+- Teams: reading channel messages (administrator consent), creating chats or teams, meeting transcripts.

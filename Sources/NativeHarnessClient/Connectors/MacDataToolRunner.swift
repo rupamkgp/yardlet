@@ -11,8 +11,8 @@ struct MacDataToolRunner: Sendable {
     var timeZone: TimeZone = .current
     var now: @Sendable () -> Date = { Date() }
 
-    typealias Problem = GoogleToolArguments.Problem
-    private typealias Arguments = GoogleToolArguments
+    typealias Problem = ConnectorToolArguments.Problem
+    private typealias Arguments = ConnectorToolArguments
 
     /// The kind of data a service's tools reach.
     static func kind(of service: LocalConnectorService) -> MacDataKind? {

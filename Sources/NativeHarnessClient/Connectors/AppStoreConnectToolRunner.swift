@@ -11,7 +11,7 @@ struct AppStoreConnectToolRunner: Sendable {
     static let crashLogLimit = 100_000
 
     typealias Catalog = AppStoreConnectToolCatalog
-    private typealias Arguments = GoogleToolArguments
+    private typealias Arguments = ConnectorToolArguments
 
     func call(_ tool: String, _ arguments: ToolJSON) async throws -> AgentToolResult {
         let arguments = arguments.objectValue ?? [:]
@@ -35,7 +35,7 @@ struct AppStoreConnectToolRunner: Sendable {
             default: return .error("Unknown tool: \(tool)")
             }
             return .text(Arguments.text(answer))
-        } catch let problem as GoogleToolArguments.Problem {
+        } catch let problem as ConnectorToolArguments.Problem {
             return .error(problem.localizedDescription)
         }
     }
@@ -103,7 +103,7 @@ struct AppStoreConnectToolRunner: Sendable {
         } else if let app = Arguments.string(arguments, "appId") {
             query.append(URLQueryItem(name: "filter[apps]", value: app))
         } else {
-            throw GoogleToolArguments.Problem.invalid("groupId or appId is required.")
+            throw ConnectorToolArguments.Problem.invalid("groupId or appId is required.")
         }
         if let email = Arguments.string(arguments, "email") { query.append(URLQueryItem(name: "filter[email]", value: email)) }
         let answer = try await api.get(["v1", "betaTesters"], query)
@@ -114,7 +114,7 @@ struct AppStoreConnectToolRunner: Sendable {
         let app = try AppStoreConnectAPI.segment(try Arguments.required(arguments, "appId"))
         let kind = Arguments.string(arguments, "kind") ?? "both"
         guard ["screenshot", "crash", "both"].contains(kind) else {
-            throw GoogleToolArguments.Problem.invalid("kind is screenshot, crash, or both.")
+            throw ConnectorToolArguments.Problem.invalid("kind is screenshot, crash, or both.")
         }
         var query = [
             URLQueryItem(name: "limit", value: String(Arguments.pageSize(arguments, "limit", range: 1...200, fallback: 20))),
@@ -160,7 +160,7 @@ struct AppStoreConnectToolRunner: Sendable {
         case "highest": "-rating"
         case "lowest": "rating"
         case "newest": "-createdDate"
-        default: throw GoogleToolArguments.Problem.invalid("sort is newest, oldest, highest, or lowest.")
+        default: throw ConnectorToolArguments.Problem.invalid("sort is newest, oldest, highest, or lowest.")
         }
         var query = page(arguments, fallback: 20) + [
             URLQueryItem(name: "sort", value: sort),
@@ -232,10 +232,10 @@ struct AppStoreConnectToolRunner: Sendable {
             return .object(["added": .bool(true), "groupId": .string(group), "testerId": .string(tester)])
         }
         guard let email = Arguments.string(arguments, "email") else {
-            throw GoogleToolArguments.Problem.invalid("email or testerId is required.")
+            throw ConnectorToolArguments.Problem.invalid("email or testerId is required.")
         }
         guard email.contains("@"), !email.contains(where: \.isWhitespace) else {
-            throw GoogleToolArguments.Problem.invalid("Not an email address: \(email)")
+            throw ConnectorToolArguments.Problem.invalid("Not an email address: \(email)")
         }
         var attributes: [String: ToolJSON] = ["email": .string(email)]
         for key in ["firstName", "lastName"] { if let value = Arguments.string(arguments, key) { attributes[key] = .string(value) } }

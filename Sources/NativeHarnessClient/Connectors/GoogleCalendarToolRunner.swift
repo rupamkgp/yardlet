@@ -11,8 +11,8 @@ struct GoogleCalendarToolRunner {
     var timeZone: TimeZone = .current
     var now: () -> Date = { Date() }
 
-    typealias Problem = GoogleToolArguments.Problem
-    private typealias Arguments = GoogleToolArguments
+    typealias Problem = ConnectorToolArguments.Problem
+    private typealias Arguments = ConnectorToolArguments
 
     func call(_ name: String, _ arguments: ToolJSON) async throws -> AgentToolResult {
         let arguments = arguments.objectValue ?? [:]
@@ -326,7 +326,7 @@ struct GoogleCalendarToolRunner {
         if !overrides.isEmpty {
             body["reminders"] = .object(["useDefault": .bool(false), "overrides": .array(try overrides.map { reminder in
                 guard let method = reminder["method"]?.stringValue, ["email", "popup"].contains(method),
-                      let minutes = GoogleToolArguments.integer(reminder["minutes"]), minutes >= 0 else {
+                      let minutes = ConnectorToolArguments.integer(reminder["minutes"]), minutes >= 0 else {
                     throw Problem.invalid("Each reminder has a method, email or popup, and minutes.")
                 }
                 return .object(["method": .string(method), "minutes": .integer(Int64(minutes))])
@@ -406,7 +406,7 @@ struct GoogleCalendarToolRunner {
 
     /// An event as the tools return it: what it is, when, who, and where to join.
     static func event(_ event: ToolJSON) -> ToolJSON {
-        var fields = GoogleToolArguments.pick(event, ["id", "summary", "location", "status", "htmlLink", "start", "end",
+        var fields = ConnectorToolArguments.pick(event, ["id", "summary", "location", "status", "htmlLink", "start", "end",
                                                       "recurringEventId", "recurrence", "eventType", "visibility",
                                                       "colorId", "created", "updated"])
         if let description = event["description"]?.stringValue {
@@ -418,7 +418,7 @@ struct GoogleCalendarToolRunner {
         if let organizer = event["organizer"]?["email"] { fields["organizer"] = organizer }
         if let attendees = event["attendees"]?.arrayValue {
             fields["attendees"] = .array(attendees.map { attendee in
-                var item = GoogleToolArguments.pick(attendee, ["email", "displayName", "responseStatus", "comment"])
+                var item = ConnectorToolArguments.pick(attendee, ["email", "displayName", "responseStatus", "comment"])
                 for key in ["optional", "organizer", "self", "resource"] where attendee[key] == .bool(true) {
                     item[key == "optional" ? "optionalAttendee" : key] = .bool(true)
                 }
@@ -429,7 +429,7 @@ struct GoogleCalendarToolRunner {
             .first { $0["entryPointType"]?.stringValue == "video" }?["uri"]
         if let link = event["hangoutLink"] ?? video { fields["conferenceUrl"] = link }
         if let attachments = event["attachments"]?.arrayValue {
-            fields["attachments"] = .array(attachments.map { .object(GoogleToolArguments.pick($0, ["title", "fileUrl"])) })
+            fields["attachments"] = .array(attachments.map { .object(ConnectorToolArguments.pick($0, ["title", "fileUrl"])) })
         }
         if let reminders = event["reminders"] { fields["reminders"] = reminders }
         return .object(fields)
@@ -506,14 +506,14 @@ enum CalendarTime {
                 let parts = text.split(separator: ":").map { Int($0) }
                 guard parts.count == 2, let hour = parts[0], let minute = parts[1], (0...24).contains(hour), (0..<60).contains(minute),
                       hour * 60 + minute <= 1_440 else {
-                    throw GoogleToolArguments.Problem.invalid("\(name) is a time of day such as 09:00.")
+                    throw ConnectorToolArguments.Problem.invalid("\(name) is a time of day such as 09:00.")
                 }
                 return hour * 60 + minute
             }
             self.start = try minutes(start, "preferences.startHour")
             self.end = try minutes(end, "preferences.endHour")
             if let first = self.start, let last = self.end, last <= first {
-                throw GoogleToolArguments.Problem.invalid("preferences.endHour is after startHour.")
+                throw ConnectorToolArguments.Problem.invalid("preferences.endHour is after startHour.")
             }
         }
     }

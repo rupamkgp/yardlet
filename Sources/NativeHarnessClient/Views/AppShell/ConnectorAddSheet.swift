@@ -22,11 +22,21 @@ struct ConnectorSetupGuide: Equatable {
                     Link(title: L10n.string("Create in Slack"), url: SlackAppManifest.createURL),
                     Link(title: L10n.string("Slack's MCP guide"), url: URL(string: "https://docs.slack.dev/ai/mcp-server")!)
                 ])
-        case "gmail", "google-calendar", "google-drive":
+        case "gmail", "google-calendar", "google-drive", "google-analytics", "google-ads":
             return ConnectorSetupGuide(steps: ConnectorSetupAssistant.google(opened: [], appSaved: false, connectedAccounts: 0)
                 .steps.map(\.title), links: [
                     Link(title: L10n.string("Enable APIs"), url: ConnectorSetupAssistant.googleAPIs),
                     Link(title: L10n.string("Create client"), url: ConnectorSetupAssistant.googleClients)
+                ])
+        case "outlook-mail", "outlook-calendar", "onedrive", "microsoft-teams":
+            return ConnectorSetupGuide(steps: ConnectorSetupAssistant.microsoft(opened: [], appSaved: false, connectedAccounts: 0)
+                .steps.map(\.title), links: [
+                    Link(title: L10n.string("App registrations"), url: ConnectorSetupAssistant.microsoftRegistrations)
+                ])
+        case let id where id.hasPrefix("zoom-"):
+            return ConnectorSetupGuide(steps: ConnectorSetupAssistant.zoom(opened: [], products: [preset], clientEntered: false, connected: false)
+                .steps.map(\.title), links: [
+                    Link(title: L10n.string("Build an app on Zoom"), url: ConnectorSetupAssistant.zoomCreate)
                 ])
         case "github":
             return ConnectorSetupGuide(steps: [], links: [
@@ -61,7 +71,7 @@ struct ConnectorSetupGuide: Equatable {
             return switch preset.signIn {
             case .oauth, .none, .macPermission, .localApp: .oneClick
             case .token, .appStoreConnectKey: .key
-            case .registeredClient, .googleAccount: .ownApp
+            case .registeredClient, .googleAccount, .microsoftAccount: .ownApp
             }
         }
 
@@ -80,11 +90,25 @@ struct ConnectorSetupGuide: Equatable {
         return preset.name.localizedCaseInsensitiveContains(wanted) || preset.id.localizedCaseInsensitiveContains(wanted)
     }
 
-    /// Google's one row stands for Gmail, Calendar, and Drive, so a search for any of them names it.
+    /// Google's one row stands for Gmail, Calendar, Drive, Analytics, and Ads, so a search for any of them names it.
     static func matchesGoogle(query: String) -> Bool {
+        matches(["Google", "Gmail", "Google Calendar", "Google Drive", "Google Analytics", "Google Ads"], query: query)
+    }
+
+    /// Microsoft 365's one row stands for Outlook, OneDrive, and Teams.
+    static func matchesMicrosoft(query: String) -> Bool {
+        matches(["Microsoft 365", "Outlook", "Outlook Calendar", "OneDrive", "Microsoft Teams", "Office"], query: query)
+    }
+
+    /// Zoom's one row stands for Meetings, Team Chat, and Docs.
+    static func matchesZoom(query: String) -> Bool {
+        matches(["Zoom", "Zoom Meetings", "Zoom Team Chat", "Zoom Docs"], query: query)
+    }
+
+    private static func matches(_ names: [String], query: String) -> Bool {
         let wanted = query.trimmingCharacters(in: .whitespaces)
         guard !wanted.isEmpty else { return true }
-        return ["Google", "Gmail", "Google Calendar", "Google Drive"].contains { $0.localizedCaseInsensitiveContains(wanted) }
+        return names.contains { $0.localizedCaseInsensitiveContains(wanted) }
     }
 
     /// A row's second line in the directory, where it says more than its section does: one-click
@@ -100,8 +124,13 @@ struct ConnectorSetupGuide: Equatable {
         case "browserbase": return L10n.string("API key")
         case "slack": return L10n.string("A Slack app made from Yardlet's manifest")
         case "mercury": return L10n.string("Read-only")
-        case "gmail", "google-calendar", "google-drive":
+        case "twilio-docs": return L10n.string("Public API docs · no account data")
+        case "gmail", "google-calendar", "google-drive", "google-analytics", "google-ads":
             return L10n.string("Your own Google OAuth app · personal and Workspace accounts")
+        case "outlook-mail", "outlook-calendar", "onedrive", "microsoft-teams":
+            return L10n.string("Your own Microsoft app · personal and work accounts")
+        case let id where id.hasPrefix("zoom-"):
+            return L10n.string("A Zoom app of your own · reads only")
         default: break
         }
         return preset.signIn == ConnectorPreset.SignIn.none ? L10n.string("No sign-in") : nil
@@ -267,6 +296,7 @@ struct ConnectorAddSheet: View {
         let keys = ConnectorSetupGuide.Kind.key.presets(gitHubSignIn: gitHubSignIn)
             .filter { ConnectorSetupGuide.matches($0, query: query) }
         let googleSignsIn = googleBuiltIn && ConnectorSetupGuide.matchesGoogle(query: query)
+        let microsoftSignsIn = microsoftBuiltIn && ConnectorSetupGuide.matchesMicrosoft(query: query)
         let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
         return VStack(alignment: .leading, spacing: 22) {
             HStack(spacing: 6) {
@@ -287,7 +317,7 @@ struct ConnectorAddSheet: View {
             .padding(.horizontal, 10)
             .frame(height: 30)
             .parityCard(cornerRadius: 8)
-            if !oneClick.isEmpty || googleSignsIn {
+            if !oneClick.isEmpty || googleSignsIn || microsoftSignsIn {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L10n.string("Connect in one click")).font(.headline)
                     Text(L10n.string("Yardlet adds the service at once. For one with a sign-in, your browser opens: sign in and allow, and that is all."))
@@ -297,6 +327,12 @@ struct ConnectorAddSheet: View {
                     // A build with Yardlet's own Google app signs in to Google without a setup.
                     if googleSignsIn {
                         googleRow
+                            .padding(.horizontal, 12)
+                            .parityCard()
+                            .padding(.top, 2)
+                    }
+                    if microsoftSignsIn {
+                        microsoftRow
                             .padding(.horizontal, 12)
                             .parityCard()
                             .padding(.top, 2)
@@ -319,7 +355,7 @@ struct ConnectorAddSheet: View {
             if !searching || ownAppMatches {
                 ownAppSection
             }
-            if searching, oneClick.isEmpty, keys.isEmpty, !googleSignsIn, !ownAppMatches {
+            if searching, oneClick.isEmpty, keys.isEmpty, !googleSignsIn, !microsoftSignsIn, !ownAppMatches {
                 Text(L10n.string("No service in the directory has that name. Add it by its address below."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -340,11 +376,24 @@ struct ConnectorAddSheet: View {
 
     /// The build carries Yardlet's own Google app, so Google signs in without an app of the person's own.
     private var googleBuiltIn: Bool { center.googleBuiltInApp != nil }
+    /// The same for Yardlet's own Microsoft app.
+    private var microsoftBuiltIn: Bool { center.microsoftBuiltInApp != nil }
 
     /// The services under "Needs an OAuth app of your own" that the search names.
     private var ownAppMatches: Bool {
         (!googleBuiltIn && ConnectorSetupGuide.matchesGoogle(query: query))
+            || (!microsoftBuiltIn && ConnectorSetupGuide.matchesMicrosoft(query: query))
             || ConnectorPreset.preset(id: "slack").map { ConnectorSetupGuide.matches($0, query: query) } == true
+            || ConnectorSetupGuide.matchesZoom(query: query)
+    }
+
+    /// The names under "Needs an OAuth app of your own", for its folded heading.
+    private var ownAppNames: String {
+        var names: [String] = []
+        if !googleBuiltIn { names.append(L10n.string("Google (Gmail, Calendar, Drive)")) }
+        if !microsoftBuiltIn { names.append("Microsoft 365") }
+        names += ["Slack", "Zoom"]
+        return names.joined(separator: ", ")
     }
 
     // MARK: Sections
@@ -386,7 +435,7 @@ struct ConnectorAddSheet: View {
                         .rotationEffect(.degrees(showsOwnApps ? 90 : 0))
                         .frame(width: 12)
                     Text(L10n.string("Needs an OAuth app of your own")).font(.headline)
-                    Text(googleBuiltIn ? "Slack" : L10n.string("Google (Gmail, Calendar, Drive), Slack"))
+                    Text(ownAppNames)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -413,7 +462,13 @@ struct ConnectorAddSheet: View {
                         googleRow
                         Divider().padding(.leading, 34)
                     }
+                    if !microsoftBuiltIn {
+                        microsoftRow
+                        Divider().padding(.leading, 34)
+                    }
                     if let slack = ConnectorPreset.preset(id: "slack") { presetRow(slack) }
+                    Divider().padding(.leading, 34)
+                    zoomRow
                 }
                 .padding(.horizontal, 12)
                 .parityCard()
@@ -454,7 +509,7 @@ struct ConnectorAddSheet: View {
     /// A service added already; Gmail takes any number of accounts and App Store Connect any
     /// number of keys, so neither is ever "added". Xcode and the Mac's data are once per Mac.
     private func isAdded(_ preset: ConnectorPreset) -> Bool {
-        guard preset.signIn != .googleAccount, preset.signIn != .appStoreConnectKey else { return false }
+        guard preset.signIn != .googleAccount, preset.signIn != .microsoftAccount, preset.signIn != .appStoreConnectKey else { return false }
         if let service = preset.localService { return center.connectors.contains { $0.localService == service } }
         let address = MCPServerAddress.canonical(preset.serverURL)
         return center.connectors.contains { MCPServerAddress.canonical($0.serverURL) == address }
@@ -519,6 +574,9 @@ struct ConnectorAddSheet: View {
         if preset.signIn == .googleAccount, !center.googleAccounts.isEmpty {
             return L10n.format("%lld Google accounts", Int64(center.googleAccounts.count))
         }
+        if preset.signIn == .microsoftAccount, !center.microsoftAccounts.isEmpty {
+            return L10n.format("%lld Microsoft accounts", Int64(center.microsoftAccounts.count))
+        }
         let keys = center.connectors.filter { $0.localService == .appStoreConnect }.count
         if preset.signIn == .appStoreConnectKey, keys > 0 { return L10n.format("%lld keys", Int64(keys)) }
         return ConnectorSetupGuide.summary(preset, gitHubSignIn: center.canSignInToGitHub)
@@ -545,6 +603,51 @@ struct ConnectorAddSheet: View {
         .id("google")
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.string("Google · Gmail, Calendar, Drive"))
+    }
+
+    /// Outlook, OneDrive, and Teams in one row: one Microsoft app and one page sets up all four.
+    private var microsoftRow: some View {
+        HStack(spacing: 10) {
+            ConnectorIcon(name: "Microsoft 365", presetID: "outlook-mail", size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(L10n.string("Microsoft 365 · Outlook, OneDrive, Teams")).font(.callout.weight(.medium))
+                Text(microsoftBuiltIn && center.microsoftAccounts.isEmpty
+                     ? L10n.string("Sign in with Microsoft · personal and work accounts")
+                     : ConnectorPreset.preset(id: "outlook-mail").flatMap(rowSummary) ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(microsoftBuiltIn ? L10n.string("Connect") : L10n.string("Set up…")) { open(ConnectorPreset.preset(id: "outlook-mail")) }
+                .controlSize(.small)
+        }
+        .padding(.vertical, 8)
+        .id("microsoft")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.string("Microsoft 365 · Outlook, OneDrive, Teams"))
+    }
+
+    /// Zoom's products in one row: one Zoom app serves them all.
+    private var zoomRow: some View {
+        let added = center.connectors.filter { $0.preset?.isZoom == true }.count
+        return HStack(spacing: 10) {
+            ConnectorIcon(name: "Zoom", presetID: "zoom-meetings", size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(L10n.string("Zoom · Meetings, Team Chat, Docs")).font(.callout.weight(.medium))
+                Text(added > 0 ? L10n.format("%lld products added", Int64(added)) : L10n.string("A Zoom app of your own · reads only"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(L10n.string("Set up…")) { open(ConnectorPreset.preset(id: "zoom-meetings")) }
+                .controlSize(.small)
+        }
+        .padding(.vertical, 8)
+        .id("zoom")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.string("Zoom · Meetings, Team Chat, Docs"))
     }
 
     private func oneClickTile(_ preset: ConnectorPreset) -> some View {
@@ -602,14 +705,20 @@ struct ConnectorAddSheet: View {
             .buttonStyle(.borderless)
             .parityPointer()
             let google = preset.signIn == .googleAccount
+            let microsoft = preset.signIn == .microsoftAccount
             HStack(spacing: 12) {
                 ConnectorIcon(name: google ? "Google" : preset.name, presetID: google ? nil : preset.id, sources: google ? .google : nil, size: 34)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(google ? L10n.string("Connect Google") : L10n.format("Connect %@", preset.name))
+                    Text(google ? L10n.string("Connect Google") : microsoft ? L10n.string("Connect Microsoft 365")
+                         : preset.isZoom ? L10n.string("Connect Zoom") : L10n.format("Connect %@", preset.name))
                         .font(.title3.weight(.semibold))
                     if google {
                         Text(googleBuiltIn ? L10n.string("Gmail, Google Calendar, and Google Drive with one sign-in per account")
                              : L10n.string("Gmail, Google Calendar, and Google Drive with one Google OAuth app"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if microsoft {
+                        Text(microsoftBuiltIn ? L10n.string("Outlook, OneDrive, and Teams with one sign-in per account")
+                             : L10n.string("Outlook, OneDrive, and Teams with one Microsoft app"))
                             .font(.caption).foregroundStyle(.secondary)
                     } else if kind == .ownApp {
                         Text(L10n.string("Needs an OAuth app of your own"))
@@ -622,6 +731,10 @@ struct ConnectorAddSheet: View {
             }
             if google {
                 GoogleSetupPage(center: center, showsSteps: showsGoogleSteps, service: preset.localService)
+            } else if microsoft {
+                MicrosoftSetupPage(center: center, service: preset.localService)
+            } else if preset.isZoom {
+                ZoomSetupPage(center: center, product: preset)
             } else if preset.signIn == .appStoreConnectKey {
                 AppStoreConnectSetupPage(center: center)
             } else if preset.id == "slack" {

@@ -46,7 +46,7 @@ enum AppStoreConnectToolCatalog {
                 "appId": appID,
                 "version": string("The marketing version (1.2.0)."),
                 "buildNumber": string("The build number (CFBundleVersion)."),
-                "processingState": GoogleToolSchema.enumeration("PROCESSING, FAILED, INVALID, or VALID.",
+                "processingState": ConnectorToolSchema.enumeration("PROCESSING, FAILED, INVALID, or VALID.",
                                                                  ["PROCESSING", "FAILED", "INVALID", "VALID"]),
                 "limit": limit(default: 20),
                 "cursor": cursor
@@ -69,7 +69,7 @@ enum AppStoreConnectToolCatalog {
                 + "with comments, with the device and build. get_beta_crash_log reads a crash's log.",
              properties: [
                 "appId": appID,
-                "kind": GoogleToolSchema.enumeration("screenshot, crash, or both (default).", ["screenshot", "crash", "both"]),
+                "kind": ConnectorToolSchema.enumeration("screenshot, crash, or both (default).", ["screenshot", "crash", "both"]),
                 "buildId": string("Only feedback on this build, from list_builds."),
                 "limit": limit(default: 20)
              ], required: ["appId"], readOnly: true),
@@ -81,10 +81,10 @@ enum AppStoreConnectToolCatalog {
              "Lists an app's App Store reviews, newest first, with rating, title, text, country, and any response.",
              properties: [
                 "appId": appID,
-                "rating": GoogleToolSchema.integer("Only reviews with this many stars.", 1...5),
+                "rating": ConnectorToolSchema.integer("Only reviews with this many stars.", 1...5),
                 "territory": string("Only reviews from this country, as a three-letter code (KOR, USA)."),
-                "hasResponse": GoogleToolSchema.boolean("true for reviews answered, false for those not."),
-                "sort": GoogleToolSchema.enumeration("newest (default), oldest, highest, or lowest.",
+                "hasResponse": ConnectorToolSchema.boolean("true for reviews answered, false for those not."),
+                "sort": ConnectorToolSchema.enumeration("newest (default), oldest, highest, or lowest.",
                                                      ["newest", "oldest", "highest", "lowest"]),
                 "limit": limit(default: 20),
                 "cursor": cursor
@@ -104,7 +104,7 @@ enum AppStoreConnectToolCatalog {
              properties: [
                 "appId": appID,
                 "platform": platform,
-                "state": GoogleToolSchema.enumeration("Only submissions in this state.",
+                "state": ConnectorToolSchema.enumeration("Only submissions in this state.",
                                                       ["READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW",
                                                        "UNRESOLVED_ISSUES", "CANCELING", "COMPLETING", "COMPLETE"]),
                 "limit": limit(default: 10)
@@ -145,21 +145,21 @@ enum AppStoreConnectToolCatalog {
     private static var appID: ToolJSON { string("The app's ID, from list_apps.") }
 
     private static var platform: ToolJSON {
-        GoogleToolSchema.enumeration("IOS, MAC_OS, TV_OS, or VISION_OS.", platforms)
+        ConnectorToolSchema.enumeration("IOS, MAC_OS, TV_OS, or VISION_OS.", platforms)
     }
 
     private static var cursor: ToolJSON { string("nextCursor from the previous page.") }
 
     private static func limit(default value: Int) -> ToolJSON {
-        GoogleToolSchema.integer("Items per page, 1 to 200. Defaults to \(value).", 1...200)
+        ConnectorToolSchema.integer("Items per page, 1 to 200. Defaults to \(value).", 1...200)
     }
 
-    private static func string(_ description: String) -> ToolJSON { GoogleToolSchema.string(description) }
+    private static func string(_ description: String) -> ToolJSON { ConnectorToolSchema.string(description) }
 
     private static func tool(_ name: String, _ title: String, _ description: String,
                              properties: [String: ToolJSON], required: [String] = [],
                              readOnly: Bool, destructive: Bool = false, openWorld: Bool = false) -> ToolJSON {
-        GoogleToolSchema.tool(name, title, description, properties: properties, required: required,
+        ConnectorToolSchema.tool(name, title, description, properties: properties, required: required,
                               readOnly: readOnly, destructive: destructive, openWorld: openWorld)
     }
 }

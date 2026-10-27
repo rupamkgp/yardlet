@@ -77,18 +77,19 @@ final class ConnectorSetupAssistantTests: XCTestCase {
         XCTAssertEqual(links[.project], "https://console.cloud.google.com/projectcreate")
         XCTAssertEqual(links[.apis], "https://console.cloud.google.com/flows/enableapi?apiid="
             + "gmail.googleapis.com,calendar-json.googleapis.com,drive.googleapis.com,"
+            + "analyticsadmin.googleapis.com,analyticsdata.googleapis.com,googleads.googleapis.com,"
             + "docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com")
         XCTAssertEqual(links[.consent], "https://console.cloud.google.com/auth/overview")
         XCTAssertEqual(links[.publish], "https://console.cloud.google.com/auth/audience")
         XCTAssertEqual(links[.scopes], "https://console.cloud.google.com/auth/scopes")
         XCTAssertEqual(links[.client], "https://console.cloud.google.com/auth/clients")
         XCTAssertNil(links[.googleSignIn])
-        // Every value to paste has a copy button: the app name, the six scopes, the redirect URL.
+        // Every value to paste has a copy button: the app name, the nine scopes, the redirect URL.
         let copies = Dictionary(uniqueKeysWithValues: fresh.steps.map { ($0.id, $0.copies.map(\.value)) })
         XCTAssertEqual(copies[.consent], ["Yardlet"])
         XCTAssertEqual(copies[.scopes]?.first?.split(separator: "\n").map(String.init),
                        GoogleOAuth.scopes.map(\.url))
-        XCTAssertEqual(GoogleOAuth.scopes.count, 6)
+        XCTAssertEqual(GoogleOAuth.scopes.count, 9)
         XCTAssertEqual(copies[.client], ["Yardlet", "http://127.0.0.1:47823/callback"])
 
         // Opened pages check off; the attention moves to the first step not done.

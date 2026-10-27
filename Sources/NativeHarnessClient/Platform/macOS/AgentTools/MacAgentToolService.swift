@@ -57,6 +57,7 @@ final class MacAgentToolService: NativeSurfaceResource {
             clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         )
         connectorEnvironment.googleBuiltInApp = GoogleOAuth.BuiltInApp.from(info: Bundle.main.infoDictionary)
+        connectorEnvironment.microsoftBuiltInApp = MicrosoftOAuth.BuiltInApp.from(info: Bundle.main.infoDictionary)
         connectorEnvironment.gitHubClientID = GitHubDeviceSignIn.clientID(from: Bundle.main.infoDictionary)
         connectorEnvironment.copyToClipboard = { text in
             TranscriptClipboard.copy(text)

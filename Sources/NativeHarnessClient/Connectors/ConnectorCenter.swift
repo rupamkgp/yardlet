@@ -32,6 +32,10 @@ protocol ConnectorRepository {
     /// §2.2): Settings shows it without a keychain read. The app's secret is in the secure store.
     func loadGoogleAppClientID() -> String?
     func saveGoogleAppClientID(_ clientID: String?)
+    /// The Microsoft Entra app the person registered: a public client, so its client ID and
+    /// directory are all there is, and none of it is secret.
+    func loadMicrosoftApp() -> MicrosoftOAuth.App?
+    func saveMicrosoftApp(_ app: MicrosoftOAuth.App?)
 }
 
 @MainActor
@@ -39,11 +43,14 @@ final class InMemoryConnectorRepository: ConnectorRepository {
     var records: [ConnectorRecord]
     var taskChoices: ConnectorTaskChoices
     var googleAppClientID: String?
+    var microsoftApp: MicrosoftOAuth.App?
 
-    init(records: [ConnectorRecord] = [], taskChoices: ConnectorTaskChoices = [:], googleAppClientID: String? = nil) {
+    init(records: [ConnectorRecord] = [], taskChoices: ConnectorTaskChoices = [:], googleAppClientID: String? = nil,
+         microsoftApp: MicrosoftOAuth.App? = nil) {
         self.records = records
         self.taskChoices = taskChoices
         self.googleAppClientID = googleAppClientID
+        self.microsoftApp = microsoftApp
     }
 
     func load() -> [ConnectorRecord] { records }
@@ -52,11 +59,13 @@ final class InMemoryConnectorRepository: ConnectorRepository {
     func saveTaskChoices(_ choices: ConnectorTaskChoices) { taskChoices = choices }
     func loadGoogleAppClientID() -> String? { googleAppClientID }
     func saveGoogleAppClientID(_ clientID: String?) { googleAppClientID = clientID }
+    func loadMicrosoftApp() -> MicrosoftOAuth.App? { microsoftApp }
+    func saveMicrosoftApp(_ app: MicrosoftOAuth.App?) { microsoftApp = app }
 }
 
 /// `~/.yardlet/connectors.json`: names, addresses, status, each server's tool list, the
-/// connectors turned off per task, and the Google OAuth app's client ID. Secrets are never
-/// written here.
+/// connectors turned off per task, the Google OAuth app's client ID, and the Microsoft Entra app
+/// the person registered. Secrets are never written here.
 struct FileConnectorRepository: ConnectorRepository {
     private struct Snapshot: Codable {
         var version = 1
@@ -65,6 +74,9 @@ struct FileConnectorRepository: ConnectorRepository {
         var offInTasks: [String: [String]]?
         /// The Google OAuth app's client ID (not a secret). Absent in files from before.
         var googleOAuthClientID: String?
+        /// The person's own Microsoft Entra app (a public client, nothing secret). Absent in files
+        /// from before.
+        var microsoftOAuthApp: MicrosoftOAuth.App?
     }
 
     let fileURL: URL
@@ -119,6 +131,16 @@ struct FileConnectorRepository: ConnectorRepository {
         write(current)
     }
 
+    func loadMicrosoftApp() -> MicrosoftOAuth.App? {
+        snapshot()?.microsoftOAuthApp
+    }
+
+    func saveMicrosoftApp(_ app: MicrosoftOAuth.App?) {
+        var current = snapshot() ?? Snapshot(connectors: [])
+        current.microsoftOAuthApp = app
+        write(current)
+    }
+
     private func write(_ snapshot: Snapshot) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -161,6 +183,10 @@ final class ConnectorCenter: ConnectorToolProviding {
         var google: GoogleOAuth.Endpoints = .live
         /// The Google OAuth app this build carries; nil when it carries none.
         var googleBuiltInApp: GoogleOAuth.BuiltInApp?
+        /// Microsoft's sign-in and Graph addresses, for Outlook, OneDrive, and Teams.
+        var microsoft: MicrosoftOAuth.Endpoints = .live
+        /// The Microsoft Entra app this build carries; nil when it carries none.
+        var microsoftBuiltInApp: MicrosoftOAuth.BuiltInApp?
         /// The client ID of Yardlet's own GitHub OAuth app, for GitHub's device sign-in; nil when
         /// the build carries none, and GitHub then takes a pasted token.
         var gitHubClientID: String?
@@ -172,7 +198,7 @@ final class ConnectorCenter: ConnectorToolProviding {
         /// Waits before trying a token refresh the server could not answer again (tests pass one
         /// that does not).
         var refreshRetrySleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
-        /// The zone Google Calendar reads a time without an offset in: the Mac's.
+        /// The zone Google and Outlook calendars read a time without an offset in: the Mac's.
         var timeZone: @Sendable () -> TimeZone = { .current }
         /// Where this Mac's Xcode keeps `mcpbridge` (`XcodeBridge.locate`); nil where there is no
         /// Xcode with one, and Xcode is then not offered.
@@ -203,12 +229,13 @@ final class ConnectorCenter: ConnectorToolProviding {
         var es256: (any ES256Signing)?
     }
 
-    /// One Google account and the services turned on for it, each a connector of its own that
-    /// shares the account's one sign-in.
-    struct GoogleAccount: Identifiable, Equatable {
+    /// One Google or Microsoft account and the services turned on for it, each a connector of its
+    /// own that shares the account's one sign-in.
+    struct ServiceAccount: Identifiable, Equatable {
         /// The secure-store item of the account's sign-in (`ConnectorRecord.credentialID`).
         var id: UUID
-        /// Its address once Google has said whose it is.
+        var provider: ConnectorAccountProvider
+        /// Its address once the provider has said whose it is.
         var address: String?
         /// Its services' connectors, in the directory's order.
         var services: [ConnectorRecord]
@@ -262,6 +289,25 @@ final class ConnectorCenter: ConnectorToolProviding {
     /// Whether a Google account can sign in: with the person's app, or else the built-in one.
     var canSignInWithGoogle: Bool { googleAppClientID != nil || googleBuiltInApp != nil }
 
+    /// The Microsoft Entra app the person registered for Outlook, OneDrive, and Teams; nil until
+    /// one is saved.
+    private(set) var microsoftApp: MicrosoftOAuth.App? {
+        didSet { environment.repository.saveMicrosoftApp(microsoftApp) }
+    }
+
+    /// The Microsoft Entra app this build carries, used when the person saved none of their own.
+    var microsoftBuiltInApp: MicrosoftOAuth.BuiltInApp? { environment.microsoftBuiltInApp }
+
+    /// Whether a Microsoft account can sign in: with the person's app, or else the built-in one.
+    var canSignInWithMicrosoft: Bool { microsoftApp != nil || microsoftBuiltInApp != nil }
+
+    func canSignIn(with provider: ConnectorAccountProvider) -> Bool {
+        switch provider {
+        case .google: canSignInWithGoogle
+        case .microsoft: canSignInWithMicrosoft
+        }
+    }
+
     /// The code GitHub's device page asks for, per connector, while its sign-in waits for it.
     private(set) var deviceCodes: [UUID: String] = [:]
 
@@ -279,7 +325,8 @@ final class ConnectorCenter: ConnectorToolProviding {
 
     @ObservationIgnored private var environment: Environment
     @ObservationIgnored private var sessions: [UUID: ConnectorSession] = [:]
-    @ObservationIgnored private var googleSessions: [UUID: GoogleAPISession] = [:]
+    /// One session per Google or Microsoft account, which its services share.
+    @ObservationIgnored private var accountSessions: [UUID: OAuthAPISession] = [:]
     @ObservationIgnored private var appStoreSessions: [UUID: AppStoreConnectSession] = [:]
     /// Servers Yardlet runs as child processes: Xcode's bridge and program connectors.
     @ObservationIgnored private var stdioClients: [UUID: MCPStdioClient] = [:]
@@ -295,6 +342,7 @@ final class ConnectorCenter: ConnectorToolProviding {
         connectors = environment.repository.load()
         offInTasks = environment.repository.loadTaskChoices()
         googleAppClientID = environment.repository.loadGoogleAppClientID()
+        microsoftApp = environment.repository.loadMicrosoftApp()
         ConnectorToolLabels.shared.update(connectors)
     }
 
@@ -396,71 +444,102 @@ final class ConnectorCenter: ConnectorToolProviding {
         googleAppClientID = nil
     }
 
+    /// Saves the Microsoft Entra app the person registered. A new app replaces the old; accounts
+    /// already signed in keep the client they signed in with until they sign in again.
+    func saveMicrosoftApp(clientID: String, tenant: String?) {
+        guard let id = Self.trimmed(clientID) else { return }
+        microsoftApp = MicrosoftOAuth.App(clientID: id, tenant: tenant)
+    }
+
+    /// Forgets the saved Microsoft app; the built-in one, if any, signs in new accounts again.
+    func removeMicrosoftApp() {
+        microsoftApp = nil
+    }
+
     /// The Gmail accounts, in the order they were added.
     var gmailAccounts: [ConnectorRecord] {
         connectors.filter { $0.localService == .gmail }
     }
 
     /// The Google accounts, in the order they were added, each with its services.
-    var googleAccounts: [GoogleAccount] {
+    var googleAccounts: [ServiceAccount] { accounts(.google) }
+
+    /// The Microsoft accounts, in the order they were added, each with its services.
+    var microsoftAccounts: [ServiceAccount] { accounts(.microsoft) }
+
+    /// One provider's accounts, in the order they were added, each with its services.
+    func accounts(_ provider: ConnectorAccountProvider) -> [ServiceAccount] {
         var order: [UUID] = []
         var groups: [UUID: [ConnectorRecord]] = [:]
-        for record in connectors where record.isGoogle {
+        for record in connectors where record.localService?.accountProvider == provider {
             if groups[record.credentialID] == nil { order.append(record.credentialID) }
             groups[record.credentialID, default: []].append(record)
         }
         let rank = Dictionary(uniqueKeysWithValues: LocalConnectorService.allCases.enumerated().map { ($1, $0) })
         return order.map { id in
             let records = (groups[id] ?? []).sorted { rank[$0.localService!]! < rank[$1.localService!]! }
-            return GoogleAccount(id: id, address: records.compactMap(\.account).first, services: records)
+            return ServiceAccount(id: id, provider: provider, address: records.compactMap(\.account).first, services: records)
         }
     }
 
-    private func googleRecords(_ accountID: UUID) -> [ConnectorRecord] {
-        connectors.filter { $0.isGoogle && $0.credentialID == accountID }
+    private func account(_ accountID: UUID) -> ServiceAccount? {
+        ConnectorAccountProvider.allCases.lazy.compactMap { [self] in accounts($0).first { $0.id == accountID } }.first
     }
 
-    /// Adds a Gmail account and signs it in (`addGoogleAccount` with Gmail alone).
+    private func accountRecords(_ accountID: UUID) -> [ConnectorRecord] {
+        connectors.filter { $0.signsInPerAccount && $0.credentialID == accountID }
+    }
+
+    /// Adds a Gmail account and signs it in (`addAccount` with Gmail alone).
     @discardableResult
     func addGmailAccount() -> ConnectorRecord? {
-        addGoogleAccount(services: [.gmail])?.services.first
+        addAccount(services: [.gmail])?.services.first
     }
 
-    /// Adds a Google account with the services the person chose and signs it in once: the browser
-    /// opens Google's account chooser and asks for those services' scopes together. The account's
-    /// address names its connectors once Google says whose account it is.
+    /// Adds a Google or Microsoft account with the services the person chose, all of one
+    /// provider, and signs it in once: the browser opens the provider's account chooser and asks
+    /// for those services' permissions together. The account's address names its connectors once
+    /// the provider says whose account it is.
     @discardableResult
-    func addGoogleAccount(services: Set<LocalConnectorService>) -> GoogleAccount? {
-        let chosen = LocalConnectorService.google.filter(services.contains)
-        guard !chosen.isEmpty else { return nil }
+    func addAccount(services: Set<LocalConnectorService>) -> ServiceAccount? {
+        guard let provider = services.compactMap(\.accountProvider).first,
+              services.allSatisfy({ $0.accountProvider == provider }) else { return nil }
+        let chosen = provider.services.filter(services.contains)
         var accountID: UUID?
         for service in chosen {
             // The first service's own ID is the account's sign-in item, as a Gmail account's always was.
-            let record = makeGoogleRecord(service, address: nil, accountID: accountID)
+            let record = makeAccountRecord(service, address: nil, accountID: accountID)
             accountID = accountID ?? record.id
             connectors.append(record)
         }
         guard let accountID else { return nil }
         connect(accountID)
-        return googleAccounts.first { $0.id == accountID }
+        return accounts(provider).first { $0.id == accountID }
     }
 
-    /// Turns a service on or off for a Google account. On adds its connector, connected at once
-    /// when the account's sign-in already holds its scopes, or after one more Google consent for
-    /// them otherwise (incremental authorization). Off removes the connector; the sign-in stays
-    /// for the account's other services and goes with the last.
-    func setGoogleService(_ service: LocalConnectorService, on: Bool, account accountID: UUID) async {
-        guard let account = googleAccounts.first(where: { $0.id == accountID }) else { return }
+    /// Turns a service on or off for a Google or Microsoft account. On adds its connector,
+    /// connected at once when the account's sign-in already holds its permissions, or after one
+    /// more consent for them otherwise (incremental authorization). Off removes the connector; the
+    /// sign-in stays for the account's other services and goes with the last.
+    func setService(_ service: LocalConnectorService, on: Bool, account accountID: UUID) async {
+        guard let account = account(accountID), service.accountProvider == account.provider else { return }
         guard on else {
             if let record = account.record(service) { remove(record.id) }
             return
         }
         guard account.record(service) == nil else { return }
-        let record = makeGoogleRecord(service, address: account.address, accountID: accountID)
+        let record = makeAccountRecord(service, address: account.address, accountID: accountID)
         connectors.append(record)
         let stored = try? await store { try $0.load(accountID) }
-        if let stored, stored.kind == .oauth, stored.refreshToken != nil,
-           GoogleOAuth.grantedServices(stored.scope, of: [service]).contains(service), account.address != nil {
+        if var stored, stored.kind == .oauth, stored.refreshToken != nil,
+           granted(account.provider, stored.scope, of: [service]).contains(service), account.address != nil {
+            if account.provider == .microsoft {
+                // Microsoft issues a refreshed token for what the refresh names, so it names this service too.
+                stored.refreshScope = MicrosoftOAuth.scope(for: account.enabled.union([service]))
+                let updated = stored
+                try? await store { try $0.save(updated, for: accountID) }
+                accountSessions[accountID] = nil
+            }
             update(record.id) {
                 $0.status = .connected
                 $0.toolsUpdatedAt = environment.now()
@@ -470,15 +549,16 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
     }
 
-    /// Signs a Google account out of Yardlet: all its services' connectors and its sign-in.
-    func removeGoogleAccount(_ accountID: UUID) {
-        for record in googleRecords(accountID) { remove(record.id) }
+    /// Signs a Google or Microsoft account out of Yardlet: all its services' connectors and its
+    /// sign-in.
+    func removeAccount(_ accountID: UUID) {
+        for record in accountRecords(accountID) { remove(record.id) }
     }
 
-    /// A new connector for one service of a Google account. Its tools are named after the service
-    /// (`calendar_…`), or after the service and the account (`calendar_work_…`) when another
-    /// account has that name already.
-    private func makeGoogleRecord(_ service: LocalConnectorService, address: String?, accountID: UUID?) -> ConnectorRecord {
+    /// A new connector for one service of a Google or Microsoft account. Its tools are named
+    /// after the service (`calendar_…`), or after the service and the account
+    /// (`calendar_work_…`) when another account has that name already.
+    private func makeAccountRecord(_ service: LocalConnectorService, address: String?, accountID: UUID?) -> ConnectorRecord {
         let taken = Set(connectors.map(\.slug))
         let base = if let address, taken.contains(service.slugBase) {
             "\(service.slugBase) \(address.split(separator: "@").first.map(String.init) ?? address)"
@@ -488,14 +568,23 @@ final class ConnectorCenter: ConnectorToolProviding {
         return ConnectorRecord(
             name: service.name,
             slug: ConnectorToolNaming.slug(for: base, taken: taken),
-            serverURL: environment.google.base(for: service),
+            serverURL: service.isMicrosoft ? environment.microsoft.address(for: service) : environment.google.base(for: service),
             authorization: .oauth,
             presetID: service.presetID,
             scope: service.scopes.joined(separator: " "),
             localService: service,
             account: address,
-            googleAccountID: accountID
+            accountSignInID: accountID
         )
+    }
+
+    /// The services whose permissions a granted scope string holds, as the provider lists them.
+    private func granted(_ provider: ConnectorAccountProvider, _ scope: String?,
+                         of services: [LocalConnectorService]) -> Set<LocalConnectorService> {
+        switch provider {
+        case .google: GoogleOAuth.grantedServices(scope, of: services)
+        case .microsoft: MicrosoftOAuth.grantedServices(scope, of: services)
+        }
     }
 
     private func replaceCredential(_ credential: ConnectorCredential, for id: UUID) async throws {
@@ -508,7 +597,7 @@ final class ConnectorCenter: ConnectorToolProviding {
 
     /// Connects in the background: reads the tool list, signing in first when the server asks
     /// or when the connector signs in with a registered client, or always with `signingInAgain`.
-    /// A Google service connects its whole account, whose services share one sign-in.
+    /// A Google or Microsoft service connects its whole account, whose services share one sign-in.
     func connect(_ id: UUID, signingInAgain: Bool = false) {
         guard let record = record(id) else { return }
         let key = taskKey(id)
@@ -519,8 +608,8 @@ final class ConnectorCenter: ConnectorToolProviding {
                 return
             }
             switch record.localService {
-            case let service? where service.isGoogle:
-                await self?.performGoogleConnect(account: key, signingInAgain: signingInAgain)
+            case let service? where service.accountProvider != nil:
+                await self?.performAccountConnect(account: key, signingInAgain: signingInAgain)
             case let service?:
                 await self?.performLocalConnect(id, service: service)
             case nil:
@@ -529,16 +618,16 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
     }
 
-    /// The connection a connector's work runs under: its Google account's for a Google service.
+    /// The connection a connector's work runs under: its account's for a Google or Microsoft service.
     private func taskKey(_ id: UUID) -> UUID {
-        guard let record = record(id), record.isGoogle else { return id }
+        guard let record = record(id), record.signsInPerAccount else { return id }
         return record.credentialID
     }
 
     /// Signs in again even while the stored OAuth sign-in works. That sign-in stays until the new
     /// one is saved, so a sign-in the person cancels, or one that fails, leaves the connection and
     /// its tools as they were. A pasted token is kept, since only the user can replace it. A
-    /// Google service signs its account in again, for all the account's services.
+    /// Google or Microsoft service signs its account in again, for all the account's services.
     func reconnect(_ id: UUID) {
         guard let record = record(id) else { return }
         guard record.authorization == .oauth else { return connect(id) }
@@ -556,16 +645,16 @@ final class ConnectorCenter: ConnectorToolProviding {
     }
 
     /// Forgets the token. The connector and a client the user registered stay, and its tools
-    /// leave new sessions. A Google service's sign-in is its account's, so the account's other
-    /// services go with it.
+    /// leave new sessions. A Google or Microsoft service's sign-in is its account's, so the
+    /// account's other services go with it.
     func disconnect(_ id: UUID) {
         let key = taskKey(id)
         cancelConnect(id)
         forgetCredential(key, keepingClient: true)
         sessions[id] = nil
-        googleSessions[key] = nil
+        accountSessions[key] = nil
         closeLocalServer(id)
-        let affected = record(id)?.isGoogle == true ? googleRecords(key).map(\.id) : [id]
+        let affected = record(id)?.signsInPerAccount == true ? accountRecords(key).map(\.id) : [id]
         for other in affected {
             failures[other] = nil
             update(other) { $0.status = .notConnected }
@@ -574,13 +663,13 @@ final class ConnectorCenter: ConnectorToolProviding {
 
     func remove(_ id: UUID) {
         let key = taskKey(id)
-        // A Google service's sign-in stays while another service of its account uses it.
-        let shared = record(id)?.isGoogle == true
-            && connectors.contains { $0.id != id && $0.isGoogle && $0.credentialID == key }
+        // An account's sign-in stays while another service of the account uses it.
+        let shared = record(id)?.signsInPerAccount == true
+            && connectors.contains { $0.id != id && $0.signsInPerAccount && $0.credentialID == key }
         if !shared {
             cancelConnect(id)
             forgetCredential(key, keepingClient: false)
-            googleSessions[key] = nil
+            accountSessions[key] = nil
         }
         closeLocalServer(id)
         if record(id)?.program != nil {
@@ -760,119 +849,139 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
     }
 
-    // MARK: Google accounts (Yardlet's own servers)
+    // MARK: Google and Microsoft accounts (Yardlet's own servers)
 
-    /// Signs the account in when it has no lasting sign-in or lacks a turned-on service's scopes,
-    /// or always with `signingInAgain`, asking Google for every service of the account at once,
-    /// then asks Google whose account it is. A sign-in Google no longer accepts leaves its
-    /// services needing sign-in ("Reconnect").
-    private func performGoogleConnect(account accountID: UUID, signingInAgain: Bool) async {
+    /// Signs the account in when it has no lasting sign-in or lacks a turned-on service's
+    /// permissions, or always with `signingInAgain`, asking the provider for every service of the
+    /// account at once, then asks the provider whose account it is. A sign-in the provider no
+    /// longer accepts leaves its services needing sign-in ("Reconnect").
+    private func performAccountConnect(account accountID: UUID, signingInAgain: Bool) async {
         defer {
             connectTasks[accountID] = nil
-            for record in googleRecords(accountID) { activity[record.id] = nil }
+            for record in accountRecords(accountID) { activity[record.id] = nil }
         }
         // A disconnect just before must not leave its old credential for this connection to find.
         await pendingDeletion?.value
-        let records = googleRecords(accountID)
-        guard let first = records.first else { return }
+        let records = accountRecords(accountID)
+        guard let first = records.first, let provider = first.localService?.accountProvider else { return }
         let address = records.compactMap(\.account).first
         let services = records.compactMap(\.localService)
         for record in records {
             failures[record.id] = nil
             activity[record.id] = .connecting
         }
-        let session = googleSession(accountID)
+        let session = accountSession(accountID)
         do {
             var credential = try await store { try $0.load(accountID) }
             var signedIn: ConnectorCredential?
             if signingInAgain || credential?.kind != .oauth || credential?.refreshToken == nil
-                || GoogleOAuth.grantedServices(credential?.scope, of: services).count < Set(services).count {
-                signedIn = try await signInWithGoogle(account: accountID, address: address, services: services)
+                || granted(provider, credential?.scope, of: services).count < Set(services).count {
+                signedIn = try await signIn(provider, account: accountID, address: address, services: services)
                 credential = signedIn
             }
-            let granted = GoogleOAuth.grantedServices(credential?.scope, of: services)
-            guard !granted.isEmpty else { throw GoogleSignInError.scopeNotGranted(services) }
+            let granted = granted(provider, credential?.scope, of: services)
+            guard !granted.isEmpty else { throw Self.scopeNotGranted(provider, services) }
             // A new sign-in is read on a session of its own and replaces the stored one only once
             // it is the account's: until then the earlier sign-in serves the account's tools, and
             // one as another account leaves it as it was.
             var reading = session
             if let signedIn {
-                reading = GoogleAPISession(id: accountID, credentials: InMemoryConnectorCredentialStore(),
-                                           http: environment.http, now: environment.now)
+                reading = OAuthAPISession(id: accountID, credentials: InMemoryConnectorCredentialStore(),
+                                          http: environment.http, now: environment.now)
                 await reading.use(signedIn)
             }
-            let identity = try await googleAddress(session: reading, granted: granted)
+            let identity = try await accountAddress(provider, session: reading, granted: granted)
             if let address, address.lowercased() != identity.lowercased() {
-                let text = L10n.format("Google signed in %@, not %@. Reconnect and choose %@.", identity, address, address)
-                for record in googleRecords(accountID) { failures[record.id] = text }
+                let text = switch provider {
+                case .google: L10n.format("Google signed in %@, not %@. Reconnect and choose %@.", identity, address, address)
+                case .microsoft: L10n.format("Microsoft signed in %@, not %@. Reconnect and choose %@.", identity, address, address)
+                }
+                for record in accountRecords(accountID) { failures[record.id] = text }
                 return
             }
             if let signedIn {
                 try await store { try $0.save(signedIn, for: accountID) }
                 await session.use(signedIn)
             }
-            try await settleGoogleAccount(accountID, address: identity, scope: credential?.scope)
+            try await settleAccount(accountID, provider: provider, address: identity, scope: credential?.scope)
         } catch let error where Self.isCancellation(error) {
-            // A first sign-in the person cancelled, in Yardlet or on Google's page, leaves no
+            // A first sign-in the person cancelled, in Yardlet or on the provider's page, leaves no
             // account behind.
             if address == nil {
-                for record in googleRecords(accountID) where record.account == nil { remove(record.id) }
+                for record in accountRecords(accountID) where record.account == nil { remove(record.id) }
             }
             return
-        } catch GoogleAPISession.Failure.signInRequired {
+        } catch OAuthAPISession.Failure.signInRequired {
             if Task.isCancelled { return }
-            for record in googleRecords(accountID) { update(record.id) { $0.status = .signInRequired } }
+            for record in accountRecords(accountID) { update(record.id) { $0.status = .signInRequired } }
         } catch {
             if Task.isCancelled { return }
             let text = message(for: error, connector: first)
-            for record in googleRecords(accountID) { failures[record.id] = text }
+            for record in accountRecords(accountID) { failures[record.id] = text }
         }
     }
 
-    /// Whose account a sign-in is, from a service it can read: Gmail's profile, the primary
-    /// calendar's ID, or Drive's user.
-    private func googleAddress(session: GoogleAPISession, granted: Set<LocalConnectorService>) async throws -> String {
+    private static func scopeNotGranted(_ provider: ConnectorAccountProvider, _ services: [LocalConnectorService]) -> Error {
+        switch provider {
+        case .google: GoogleSignInError.scopeNotGranted(services)
+        case .microsoft: MicrosoftSignInError.scopeNotGranted(services)
+        }
+    }
+
+    /// Whose account a sign-in is. Google's: from a service it can read, Gmail's profile, the
+    /// primary calendar's ID, or Drive's user, and otherwise its OpenID user info. Microsoft's: the signed-in user's profile, whose
+    /// mail address a personal account may lack, so its sign-in name stands in.
+    private func accountAddress(_ provider: ConnectorAccountProvider, session: OAuthAPISession,
+                                granted: Set<LocalConnectorService>) async throws -> String {
         let address: String?
-        if granted.contains(.gmail) {
+        switch provider {
+        case .microsoft:
+            let me = try await GraphAPI(base: environment.microsoft.graph, session: session)
+                .get(["me"], [URLQueryItem(name: "$select", value: "mail,userPrincipalName")])
+            address = me["mail"]?.stringValue ?? me["userPrincipalName"]?.stringValue
+        case .google where granted.contains(.gmail):
             address = try await GmailAPI(base: environment.google.gmailAPI, session: session).profile()["emailAddress"]?.stringValue
-        } else if granted.contains(.googleCalendar) {
+        case .google where granted.contains(.googleCalendar):
             address = try await GoogleREST(base: environment.google.calendarAPI, session: session)
                 .get(["users", "me", "calendarList", "primary"])["id"]?.stringValue
-        } else {
+        case .google where granted.contains(.googleDrive):
             address = try await GoogleREST(base: environment.google.driveAPI, session: session)
                 .get(["about"], [URLQueryItem(name: "fields", value: "user(emailAddress)")])["user"]?["emailAddress"]?.stringValue
+        case .google:
+            // Analytics and Ads say nothing of whose account it is; their sign-in asks for the address.
+            address = try await GoogleREST(base: environment.google.userInfo, session: session).get([])["email"]?.stringValue
         }
         guard let address, !address.isEmpty else { throw GoogleREST.Failure.unreadableAnswer }
         return address
     }
 
     /// Names a new account by its address, or hands its services and sign-in to the account that
-    /// already has that address. Each service is connected when the sign-in holds its scopes, and
-    /// says so otherwise.
-    private func settleGoogleAccount(_ accountID: UUID, address: String, scope: String?) async throws {
-        let records = googleRecords(accountID)
+    /// already has that address. Each service is connected when the sign-in holds its
+    /// permissions, and says so otherwise.
+    private func settleAccount(_ accountID: UUID, provider: ConnectorAccountProvider, address: String, scope: String?) async throws {
+        let records = accountRecords(accountID)
         var target = accountID
         if records.allSatisfy({ $0.account == nil }),
-           let existing = googleAccounts.first(where: { $0.id != accountID && $0.address?.lowercased() == address.lowercased() }) {
+           let existing = accounts(provider).first(where: { $0.id != accountID && $0.address?.lowercased() == address.lowercased() }) {
             // The same account signed in twice: one account, with the newer sign-in, which holds what
-            // was granted before as well (`include_granted_scopes`).
+            // was granted before as well (Google's `include_granted_scopes`, Microsoft's consent).
             if let credential = try await store({ try $0.load(accountID) }) {
                 try await store { try $0.save(credential, for: existing.id) }
             }
             try await store { try $0.delete(accountID) }
-            googleSessions[accountID] = nil
-            googleSessions[existing.id] = nil
+            accountSessions[accountID] = nil
+            accountSessions[existing.id] = nil
             for record in records {
                 if let service = record.localService, existing.record(service) != nil {
                     connectors.removeAll { $0.id == record.id }
                 } else {
-                    update(record.id) { $0.googleAccountID = existing.id }
+                    update(record.id) { $0.accountSignInID = existing.id }
                 }
             }
             target = existing.id
         }
-        let granted = GoogleOAuth.grantedServices(scope, of: googleRecords(target).compactMap(\.localService))
-        for record in googleRecords(target) {
+        let granted = granted(provider, scope, of: accountRecords(target).compactMap(\.localService))
+        for record in accountRecords(target) {
             guard let service = record.localService else { continue }
             let firstSignIn = record.account == nil
             update(record.id) {
@@ -880,7 +989,8 @@ final class ConnectorCenter: ConnectorToolProviding {
                 $0.status = granted.contains(service) ? .connected : .signInRequired
                 if granted.contains(service) { $0.toolsUpdatedAt = environment.now() }
             }
-            failures[record.id] = granted.contains(service) ? nil : GoogleSignInError.scopeNotGranted([service]).errorDescription
+            failures[record.id] = granted.contains(service)
+                ? nil : (Self.scopeNotGranted(provider, [service]) as? LocalizedError)?.errorDescription
             // A second account's tools are named after it (`gmail_work_…`), the first keeps `gmail_…`.
             if firstSignIn, record.slug != service.slugBase {
                 let local = address.split(separator: "@").first.map(String.init) ?? address
@@ -891,20 +1001,37 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
     }
 
-    private func signInWithGoogle(account accountID: UUID, address: String?,
-                                  services: [LocalConnectorService]) async throws -> ConnectorCredential {
+    /// One sign-in in the browser for an account's services: the provider's app, the fixed
+    /// loopback redirect a registered app names, PKCE, then a lasting sign-in with at least one
+    /// service's permissions.
+    private func signIn(_ provider: ConnectorAccountProvider, account accountID: UUID, address: String?,
+                        services: [LocalConnectorService]) async throws -> ConnectorCredential {
         guard let userAgent = environment.userAgent else { throw ConnectorOAuthError.cannotOpenBrowser }
-        let saved = try await store { try $0.load(GoogleOAuth.appCredentialID) }
-        let app: (id: String, secret: String?)
-        if let id = saved?.clientID, !id.isEmpty {
-            app = (id, saved?.clientSecret)
-        } else if let builtIn = environment.googleBuiltInApp {
-            app = (builtIn.clientID, builtIn.clientSecret)
-        } else {
-            throw GoogleSignInError.noApp
+        let plan: OAuthPlan
+        let client: OAuthClient
+        let parameters: [String: String]
+        switch provider {
+        case .google:
+            let saved = try await store { try $0.load(GoogleOAuth.appCredentialID) }
+            let app: (id: String, secret: String?)
+            if let id = saved?.clientID, !id.isEmpty {
+                app = (id, saved?.clientSecret)
+            } else if let builtIn = environment.googleBuiltInApp {
+                app = (builtIn.clientID, builtIn.clientSecret)
+            } else {
+                throw GoogleSignInError.noApp
+            }
+            plan = GoogleOAuth.plan(scope: GoogleOAuth.scope(for: services), endpoints: environment.google)
+            client = ConnectorOAuth.registeredClient(id: app.id, secret: app.secret, server: plan.server)
+            parameters = GoogleOAuth.authorizationParameters(account: address)
+        case .microsoft:
+            let app = microsoftApp ?? environment.microsoftBuiltInApp.map { MicrosoftOAuth.App(clientID: $0.clientID, tenant: nil) }
+            guard let app else { throw MicrosoftSignInError.noApp }
+            plan = MicrosoftOAuth.plan(scope: MicrosoftOAuth.scope(for: services), endpoints: environment.microsoft,
+                                       tenant: app.tenant)
+            client = ConnectorOAuth.registeredClient(id: app.clientID, secret: nil, server: plan.server)
+            parameters = MicrosoftOAuth.authorizationParameters(account: address)
         }
-        let plan = GoogleOAuth.plan(scope: GoogleOAuth.scope(for: services), endpoints: environment.google)
-        let client = ConnectorOAuth.registeredClient(id: app.id, secret: app.secret, server: plan.server)
         let loopback = try await userAgent.startLoopback(port: ConnectorOAuth.registeredClientRedirectPort)
         defer { loopback.stop() }
         let verifier = ConnectorOAuth.randomToken()
@@ -915,35 +1042,40 @@ final class ConnectorCenter: ConnectorToolProviding {
             redirectURI: loopback.redirectURI,
             state: state,
             codeChallenge: ConnectorOAuth.codeChallenge(for: verifier, sha256: environment.sha256),
-            extraParameters: GoogleOAuth.authorizationParameters(account: address)
+            extraParameters: parameters
         )
-        for record in googleRecords(accountID) { activity[record.id] = .waitingForBrowser }
+        for record in accountRecords(accountID) { activity[record.id] = .waitingForBrowser }
         guard await userAgent.open(url) else { throw ConnectorOAuthError.cannotOpenBrowser }
         let callback = try await Self.withTimeout(environment.signInTimeout) { try await loopback.callback() }
-        for record in googleRecords(accountID) { activity[record.id] = .connecting }
+        for record in accountRecords(accountID) { activity[record.id] = .connecting }
         let code = try ConnectorOAuth.code(fromCallback: callback, expectedState: state)
-        let credential = try await ConnectorOAuth.exchange(
+        var credential = try await ConnectorOAuth.exchange(
             code: code, verifier: verifier, plan: plan, client: client,
             redirectURI: loopback.redirectURI, http: environment.http, now: environment.now()
         )
-        guard credential.refreshToken?.isEmpty == false else { throw GoogleSignInError.noRefreshToken }
-        guard !GoogleOAuth.grantedServices(credential.scope, of: services).isEmpty else {
-            throw GoogleSignInError.scopeNotGranted(services)
+        guard credential.refreshToken?.isEmpty == false else {
+            throw provider == .google ? GoogleSignInError.noRefreshToken : MicrosoftSignInError.noRefreshToken
+        }
+        // Microsoft issues a refreshed token for the permissions a refresh names, so it names the
+        // ones this sign-in asked for.
+        if provider == .microsoft { credential.refreshScope = plan.scope }
+        guard !granted(provider, credential.scope, of: services).isEmpty else {
+            throw Self.scopeNotGranted(provider, services)
         }
         return credential
     }
 
     /// The account's one session, so its services refresh its token one at a time.
-    private func googleSession(_ accountID: UUID) -> GoogleAPISession {
-        if let session = googleSessions[accountID] { return session }
-        let session = GoogleAPISession(id: accountID, credentials: environment.credentials, http: environment.http,
-                                       now: environment.now)
-        googleSessions[accountID] = session
+    private func accountSession(_ accountID: UUID) -> OAuthAPISession {
+        if let session = accountSessions[accountID] { return session }
+        let session = OAuthAPISession(id: accountID, credentials: environment.credentials, http: environment.http,
+                                      now: environment.now)
+        accountSessions[accountID] = session
         return session
     }
 
     private func callGoogleTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
-        let session = googleSession(record.credentialID)
+        let session = accountSession(record.credentialID)
         let google = environment.google
         do {
             switch record.localService {
@@ -959,17 +1091,53 @@ final class ConnectorCenter: ConnectorToolProviding {
                 guard GoogleEditorsToolCatalog.names.contains(tool) else { return try await drive.call(tool, arguments) }
                 return try await GoogleEditorsToolRunner(endpoints: google, session: session, drive: drive, http: environment.http)
                     .call(tool, arguments)
+            case .googleAnalytics?:
+                return try await GoogleAnalyticsToolRunner(admin: GoogleREST(base: google.analyticsAdminAPI, session: session),
+                                                           data: GoogleREST(base: google.analyticsDataAPI, session: session))
+                    .call(tool, arguments)
+            case .googleAds?:
+                return try await GoogleAdsToolRunner(base: google.adsAPI, session: session).call(tool, arguments)
             default:
                 return .error("Unknown tool: \(tool)")
             }
-        } catch GoogleAPISession.Failure.signInRequired {
-            for other in googleRecords(record.credentialID) { update(other.id) { $0.status = .signInRequired } }
+        } catch OAuthAPISession.Failure.signInRequired {
+            for other in accountRecords(record.credentialID) { update(other.id) { $0.status = .signInRequired } }
             return .error("\(record.displayName) needs the user to sign in again: Yardlet Settings → Connectors → "
                 + "\(record.name) → Reconnect.")
         } catch let failure as GmailAPI.Failure {
             return .error("\(record.name): \(failure.localizedDescription)")
         } catch let failure as GoogleREST.Failure {
             return .error("\(record.name): \(failure.localizedDescription)")
+        } catch {
+            return .error("Could not reach \(record.name): \(error.localizedDescription)")
+        }
+    }
+
+    private func callMicrosoftTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
+        let graph = GraphAPI(base: environment.microsoft.graph, session: accountSession(record.credentialID))
+        do {
+            switch record.localService {
+            case .outlookMail?:
+                return try await OutlookMailToolRunner(api: graph).call(tool, arguments)
+            case .outlookCalendar?:
+                return try await OutlookCalendarToolRunner(api: graph, account: record.account, timeZone: environment.timeZone(),
+                                                           now: environment.now)
+                    .call(tool, arguments)
+            case .oneDrive?:
+                return try await OneDriveToolRunner(api: graph, http: environment.http).call(tool, arguments)
+            case .teams?:
+                return try await TeamsToolRunner(api: graph).call(tool, arguments)
+            default:
+                return .error("Unknown tool: \(tool)")
+            }
+        } catch OAuthAPISession.Failure.signInRequired {
+            for other in accountRecords(record.credentialID) { update(other.id) { $0.status = .signInRequired } }
+            return .error("\(record.displayName) needs the user to sign in again: Yardlet Settings → Connectors → "
+                + "\(record.name) → Reconnect.")
+        } catch let failure as GraphAPI.Failure {
+            return .error("\(record.name): \(failure.localizedDescription)")
+        } catch let problem as ConnectorToolArguments.Problem {
+            return .error("\(record.name): \(problem.localizedDescription)")
         } catch {
             return .error("Could not reach \(record.name): \(error.localizedDescription)")
         }
@@ -1393,6 +1561,7 @@ final class ConnectorCenter: ConnectorToolProviding {
         if record.program != nil { return await callProgramTool(record, tool: toolName, arguments: arguments) }
         switch record.localService {
         case let service? where service.isGoogle: return await callGoogleTool(record, tool: toolName, arguments: arguments)
+        case let service? where service.isMicrosoft: return await callMicrosoftTool(record, tool: toolName, arguments: arguments)
         case .appStoreConnect?: return await callAppStoreConnectTool(record, tool: toolName, arguments: arguments)
         case .xcode?: return await callXcodeTool(record, tool: toolName, arguments: arguments)
         case let service?: return await callMacTool(record, service: service, tool: toolName, arguments: arguments)

@@ -19,6 +19,9 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
         /// Yardlet's own server for the service (`LocalConnectorService`), signed in to each
         /// Google account with the Google OAuth app the person registered once (Gmail).
         case googleAccount
+        /// Yardlet's own server on Microsoft Graph (Outlook, OneDrive, Teams), signed in to each
+        /// Microsoft account with one Microsoft Entra app.
+        case microsoftAccount
         /// Yardlet's own App Store Connect server, with an API key the person adds: the private
         /// key file App Store Connect gave them once, its key ID, and a team key's issuer ID.
         case appStoreConnectKey
@@ -52,6 +55,8 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
 
     var usesToken: Bool { signIn == .token }
     var needsRegisteredClient: Bool { signIn == .registeredClient }
+    /// One of Zoom's product servers, which share one Zoom app of the person's own.
+    var isZoom: Bool { id.hasPrefix("zoom-") }
 
     static func preset(id: String) -> ConnectorPreset? { all.first { $0.id == id } }
 
@@ -69,7 +74,7 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
     /// The service Yardlet serves itself: Google's, App Store Connect, the Mac's data, or Xcode.
     var localService: LocalConnectorService? {
         switch signIn {
-        case .googleAccount, .appStoreConnectKey, .macPermission, .localApp: LocalConnectorService(presetID: id)
+        case .googleAccount, .microsoftAccount, .appStoreConnectKey, .macPermission, .localApp: LocalConnectorService(presetID: id)
         case .oauth, .registeredClient, .token, .none: nil
         }
     }
@@ -117,6 +122,32 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         authorizationParameters: googleOffline, symbol: "externaldrive", setupURL: googleSetup,
                         note: "Yardlet's own Google Drive server, with the same Google OAuth app as Gmail.",
                         claudeAINames: ["claude.ai Google Drive"], codexPlugins: ["google-drive", "google_drive"]),
+        // Google Analytics 4 and Google Ads on the same Google sign-in (2026-10-27), read only: each
+        // account turns them on by itself, so their scopes are asked for only then.
+        ConnectorPreset(id: "google-analytics", name: "Google Analytics",
+                        serverURL: GoogleOAuth.Endpoints.live.analyticsAdminAPI, signIn: .googleAccount,
+                        scope: GoogleAnalyticsToolCatalog.scopes.joined(separator: " "),
+                        authorizationParameters: googleOffline, symbol: "chart.line.uptrend.xyaxis", setupURL: googleSetup,
+                        note: "Yardlet's own Google Analytics 4 server, read only, with the same Google OAuth app as Gmail."),
+        ConnectorPreset(id: "google-ads", name: "Google Ads",
+                        serverURL: GoogleOAuth.Endpoints.live.adsAPI, signIn: .googleAccount,
+                        scope: GoogleAdsToolCatalog.scopes.joined(separator: " "),
+                        authorizationParameters: googleOffline, symbol: "megaphone", setupURL: googleSetup,
+                        note: "Yardlet's own Google Ads server, read only, with the same Google OAuth app as Gmail."),
+        // Yardlet's own servers on Microsoft Graph (2026-10-27), all signed in with one Microsoft Entra
+        // app: Microsoft's own MCP servers (Work IQ) follow each tenant's Copilot licensing and policy.
+        ConnectorPreset(id: "outlook-mail", name: "Outlook Mail", serverURL: LocalConnectorService.outlookMail.address,
+                        signIn: .microsoftAccount, symbol: "envelope.badge",
+                        note: "Yardlet's own Outlook mail server on Microsoft Graph. Each Microsoft account signs in once."),
+        ConnectorPreset(id: "outlook-calendar", name: "Outlook Calendar", serverURL: LocalConnectorService.outlookCalendar.address,
+                        signIn: .microsoftAccount, symbol: "calendar.badge.clock",
+                        note: "Yardlet's own Outlook calendar server, with the same Microsoft app as Outlook Mail."),
+        ConnectorPreset(id: "onedrive", name: "OneDrive", serverURL: LocalConnectorService.oneDrive.address,
+                        signIn: .microsoftAccount, symbol: "cloud",
+                        note: "Yardlet's own OneDrive server, with the same Microsoft app as Outlook Mail."),
+        ConnectorPreset(id: "microsoft-teams", name: "Microsoft Teams", serverURL: LocalConnectorService.teams.address,
+                        signIn: .microsoftAccount, symbol: "person.3",
+                        note: "Yardlet's own Teams server, for work or school accounts, with the same Microsoft app as Outlook Mail."),
         // The Mac's own calendars, reminders, and contacts (2026-10-26): iCloud has no OAuth API, so
         // Yardlet reads what the Mac keeps in sync, through EventKit and Contacts, once macOS lets it.
         ConnectorPreset(id: "apple-calendar", name: "Apple Calendar", serverURL: LocalConnectorService.appleCalendar.address,
@@ -183,6 +214,28 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         signIn: .oauth, symbol: "mic"),
         ConnectorPreset(id: "gamma", name: "Gamma", serverURL: URL(string: "https://mcp.gamma.app/mcp")!,
                         signIn: .oauth, symbol: "rectangle.stack"),
+        // Zoom's own servers, one per product (developers.zoom.us/docs/mcp/servers, 2026-10-27): no
+        // dynamic registration, so a Zoom app of the person's own (General app, PKCE, its secret in
+        // Basic). Each asks only for the read scopes of its server's metadata (`scopes_supported`).
+        ConnectorPreset(id: "zoom-meetings", name: "Zoom Meetings", serverURL: URL(string: "https://mcp.zoom.us/mcp/meeting/streamable")!,
+                        signIn: .registeredClient,
+                        scope: "meeting:read:search meeting:read:assets cloud_recording:read:list_user_recordings cloud_recording:read:content",
+                        symbol: "video", setupURL: URL(string: "https://marketplace.zoom.us/develop/create")!,
+                        note: "Needs a Zoom app of your own. Yardlet asks only to read meetings, their summaries, and recordings."),
+        ConnectorPreset(id: "zoom-team-chat", name: "Zoom Team Chat", serverURL: URL(string: "https://mcp.zoom.us/mcp/chat/streamable")!,
+                        signIn: .registeredClient,
+                        scope: "team_chat:read:list_user_messages team_chat:read:list_user_sessions team_chat:read:channel "
+                            + "team_chat:read:list_contacts team_chat:read:list_user_channels team_chat:read:list_members "
+                            + "team_chat:read:list_user_files chat_channel:read",
+                        symbol: "bubble.left.and.text.bubble.right", setupURL: URL(string: "https://marketplace.zoom.us/develop/create")!,
+                        note: "Needs a Zoom app of your own. Yardlet asks only to read chats and channels."),
+        // Zoom names its file search scope `canvas:write:file_search`; it searches, it does not write.
+        ConnectorPreset(id: "zoom-docs", name: "Zoom Docs", serverURL: URL(string: "https://mcp.zoom.us/mcp/canvas/streamable")!,
+                        signIn: .registeredClient,
+                        scope: "docs:read:file docs:read:list_children docs:read:export docs:read:list_file_collaborators "
+                            + "docs:read:general_access canvas:read:data_table canvas:read:comment canvas:write:file_search",
+                        symbol: "doc.richtext", setupURL: URL(string: "https://marketplace.zoom.us/develop/create")!,
+                        note: "Needs a Zoom app of your own. Yardlet asks only to read and search docs."),
         // Building and running software
         // Xcode's own MCP server (Xcode 26.3 and later), which `mcpbridge` reaches; offered only on
         // a Mac with Xcode (`XcodeBridge.locate`).
@@ -257,7 +310,11 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
         ConnectorPreset(id: "aws-knowledge", name: "AWS Knowledge", serverURL: URL(string: "https://knowledge-mcp.global.api.aws")!,
                         signIn: .none, symbol: "cloud.fill"),
         ConnectorPreset(id: "cloudflare-docs", name: "Cloudflare Docs", serverURL: URL(string: "https://docs.mcp.cloudflare.com/mcp")!,
-                        signIn: .none, symbol: "doc.text.magnifyingglass")
+                        signIn: .none, symbol: "doc.text.magnifyingglass"),
+        // Twilio's public API documentation (twilio.com/docs/ai/mcp): no sign-in, and no account's
+        // messages or calls, which need Twilio's own API keys.
+        ConnectorPreset(id: "twilio-docs", name: "Twilio Docs", serverURL: URL(string: "https://mcp.twilio.com/docs")!,
+                        signIn: .none, symbol: "phone.bubble")
     ]
 }
 

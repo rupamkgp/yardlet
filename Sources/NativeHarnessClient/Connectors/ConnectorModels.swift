@@ -55,10 +55,11 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
     /// The account the connector is signed in to, once known (a Gmail address). Several
     /// connectors of one local service are told apart by it.
     var account: String?
-    /// For a Google service: the secure-store item of the Google account's one sign-in, which that
-    /// account's Gmail, Calendar, and Drive share. Nil when it is this record's own ID: the first
-    /// service of an account, and every Gmail account added before Calendar and Drive.
-    var googleAccountID: UUID?
+    /// For a service signed in per account (Google's, Microsoft's): the secure-store item of the
+    /// account's one sign-in, which that account's services share. Nil when it is this record's own
+    /// ID: the first service of an account, and every Gmail account added before Calendar and Drive.
+    /// Saved as `googleAccountID`, its name from when only Google accounts had one.
+    var accountSignInID: UUID?
     /// The icons the server gave for itself when Yardlet last connected (`serverInfo.icons`), for
     /// its picture. Absent in files from before and for a server that gives none.
     var serverIcons: [MCPServerIcon]?
@@ -85,7 +86,7 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
         tokenQueryParameter: String? = nil,
         localService: LocalConnectorService? = nil,
         account: String? = nil,
-        googleAccountID: UUID? = nil,
+        accountSignInID: UUID? = nil,
         serverIcons: [MCPServerIcon]? = nil,
         tokenHeader: String? = nil,
         program: ConnectorProgram? = nil
@@ -105,15 +106,21 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
         self.tokenQueryParameter = tokenQueryParameter
         self.localService = localService
         self.account = account
-        self.googleAccountID = googleAccountID
+        self.accountSignInID = accountSignInID
         self.serverIcons = serverIcons
         self.tokenHeader = tokenHeader
         self.program = program
     }
 
-    /// The secure-store item this connector's sign-in is under: its Google account's for a Google
-    /// service, its own otherwise.
-    var credentialID: UUID { googleAccountID ?? id }
+    enum CodingKeys: String, CodingKey {
+        case id, name, slug, serverURL, authorization, status, tools, toolsUpdatedAt, presetID, oauthClientID, scope
+        case authorizationParameters, tokenQueryParameter, localService, account, serverIcons, tokenHeader, program
+        case accountSignInID = "googleAccountID"
+    }
+
+    /// The secure-store item this connector's sign-in is under: its account's for a service signed
+    /// in per account (Google's, Microsoft's), its own otherwise.
+    var credentialID: UUID { accountSignInID ?? id }
 
     /// The directory entry. A local service's entry belongs only to a record of that service: a
     /// remote server once added under the same ID stays a plain remote server.
@@ -124,6 +131,10 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
 
     /// A Google service, whose sign-in is its Google account's.
     var isGoogle: Bool { localService?.isGoogle == true }
+
+    /// A service whose sign-in is its account's, shared with the account's other services:
+    /// Google's and Microsoft's.
+    var signsInPerAccount: Bool { localService?.accountProvider != nil }
 
     /// The tools it offers: a local service's own catalog, which comes with the app, or the
     /// server's list as it last gave it (a remote server's, or Xcode's).
@@ -144,11 +155,36 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Who signs in the accounts of services Yardlet serves itself: one sign-in per account carries
+/// the scopes of every service turned on for that account (docs/CONNECTORS.md, "Google" and
+/// "Microsoft 365").
+enum ConnectorAccountProvider: String, Sendable, CaseIterable {
+    case google
+    case microsoft
+
+    var name: String {
+        switch self {
+        case .google: "Google"
+        case .microsoft: "Microsoft"
+        }
+    }
+
+    /// Its services, in the directory's order.
+    var services: [LocalConnectorService] {
+        switch self {
+        case .google: LocalConnectorService.google
+        case .microsoft: LocalConnectorService.microsoft
+        }
+    }
+}
+
 /// A service whose MCP server Yardlet runs itself, inside the app, instead of a remote MCP
 /// server. Its tools reach harnesses through the Yardlet MCP server like any connector's
-/// (docs/CONNECTORS.md, "Google" and "Apple"):
+/// (docs/CONNECTORS.md, "Google", "Microsoft 365" and "Apple"):
 /// - Google's three call Google's public APIs, signed in with the one Google OAuth app: one sign-in
 ///   per Google account carries the scopes of the services turned on for it.
+/// - Microsoft's four (Outlook mail and calendar, OneDrive, Teams) call Microsoft Graph, signed in
+///   the same way per Microsoft account with one Microsoft Entra app.
 /// - App Store Connect calls Apple's REST API with tokens Yardlet signs with the person's API key.
 /// - The Mac's calendars, reminders, and contacts are read and written through EventKit and
 ///   Contacts once macOS lets Yardlet.
@@ -161,6 +197,18 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
     case googleCalendar = "google-calendar"
     /// Google Drive through the Drive API v3.
     case googleDrive = "google-drive"
+    /// Google Analytics 4 through the Analytics Admin and Data APIs, read only.
+    case googleAnalytics = "google-analytics"
+    /// Google Ads through the Google Ads API, read only.
+    case googleAds = "google-ads"
+    /// Outlook mail through Microsoft Graph.
+    case outlookMail = "outlook-mail"
+    /// Outlook calendars through Microsoft Graph.
+    case outlookCalendar = "outlook-calendar"
+    /// OneDrive through Microsoft Graph.
+    case oneDrive = "onedrive"
+    /// Microsoft Teams chats and channels through Microsoft Graph.
+    case teams = "microsoft-teams"
     /// App Store Connect through the App Store Connect API.
     case appStoreConnect = "app-store-connect"
     /// The Mac's calendars through EventKit.
@@ -173,11 +221,24 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
     case xcode
 
     /// Google's, signed in per Google account with one Google OAuth app.
-    static let google: [LocalConnectorService] = [.gmail, .googleCalendar, .googleDrive]
+    static let google: [LocalConnectorService] = [.gmail, .googleCalendar, .googleDrive, .googleAnalytics, .googleAds]
+    /// What a new Google account signs in with unless the person picks otherwise: Analytics and
+    /// Ads ask for more, so each is turned on only when wanted.
+    static let googleDefaults: [LocalConnectorService] = [.gmail, .googleCalendar, .googleDrive]
+    /// Microsoft's, signed in per Microsoft account with one Microsoft Entra app.
+    static let microsoft: [LocalConnectorService] = [.outlookMail, .outlookCalendar, .oneDrive, .teams]
     /// The Mac's own data, which macOS lets Yardlet reach once the person allows it.
     static let mac: [LocalConnectorService] = [.appleCalendar, .appleReminders, .appleContacts]
 
     var isGoogle: Bool { Self.google.contains(self) }
+    var isMicrosoft: Bool { Self.microsoft.contains(self) }
+
+    /// Who signs its accounts in, for a service signed in per account; nil for the rest.
+    var accountProvider: ConnectorAccountProvider? {
+        if isGoogle { return .google }
+        if isMicrosoft { return .microsoft }
+        return nil
+    }
     var isMac: Bool { Self.mac.contains(self) }
 
     var id: String { rawValue }
@@ -190,6 +251,12 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
         case .gmail: "Gmail"
         case .googleCalendar: "Google Calendar"
         case .googleDrive: "Google Drive"
+        case .googleAnalytics: "Google Analytics"
+        case .googleAds: "Google Ads"
+        case .outlookMail: "Outlook Mail"
+        case .outlookCalendar: "Outlook Calendar"
+        case .oneDrive: "OneDrive"
+        case .teams: "Microsoft Teams"
         case .appStoreConnect: "App Store Connect"
         case .appleCalendar: "Apple Calendar"
         case .appleReminders: "Apple Reminders"
@@ -204,6 +271,12 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
         case .gmail: "gmail"
         case .googleCalendar: "calendar"
         case .googleDrive: "drive"
+        case .googleAnalytics: "analytics"
+        case .googleAds: "google_ads"
+        case .outlookMail: "outlook"
+        case .outlookCalendar: "outlook_calendar"
+        case .oneDrive: "onedrive"
+        case .teams: "teams"
         case .appStoreConnect: "app_store_connect"
         case .appleCalendar: "apple_calendar"
         case .appleReminders: "apple_reminders"
@@ -213,12 +286,16 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
     }
 
     /// Where its requests go, or what it reads: the API's base, or the Mac app whose data it is.
-    /// Google's come from `GoogleOAuth.Endpoints`, which tests replace.
+    /// Google's come from `GoogleOAuth.Endpoints` and Microsoft's from `MicrosoftOAuth.Endpoints`,
+    /// which tests replace.
     var address: URL {
         switch self {
         case .gmail: GoogleOAuth.Endpoints.live.gmailAPI
         case .googleCalendar: GoogleOAuth.Endpoints.live.calendarAPI
         case .googleDrive: GoogleOAuth.Endpoints.live.driveAPI
+        case .googleAnalytics: GoogleOAuth.Endpoints.live.analyticsAdminAPI
+        case .googleAds: GoogleOAuth.Endpoints.live.adsAPI
+        case .outlookMail, .outlookCalendar, .oneDrive, .teams: MicrosoftOAuth.Endpoints.live.address(for: self)
         case .appStoreConnect: AppStoreConnectAPI.liveBase
         case .appleCalendar: URL(filePath: "/System/Applications/Calendar.app", directoryHint: .isDirectory)
         case .appleReminders: URL(filePath: "/System/Applications/Reminders.app", directoryHint: .isDirectory)
@@ -227,13 +304,19 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
         }
     }
 
-    /// The Google scopes its tools need, all asked for in the account's one sign-in; none for a
-    /// service that is not Google's.
+    /// The scopes its tools need, all asked for in the account's one sign-in: Google's, or
+    /// Microsoft Graph's permissions; none for a service not signed in per account.
     var scopes: [String] {
         switch self {
         case .gmail: [GmailToolCatalog.scope]
         case .googleCalendar: GoogleCalendarToolCatalog.scopes
         case .googleDrive: GoogleDriveToolCatalog.scopes
+        case .googleAnalytics: GoogleAnalyticsToolCatalog.scopes
+        case .googleAds: GoogleAdsToolCatalog.scopes
+        case .outlookMail: OutlookMailToolCatalog.scopes
+        case .outlookCalendar: OutlookCalendarToolCatalog.scopes
+        case .oneDrive: OneDriveToolCatalog.scopes
+        case .teams: TeamsToolCatalog.scopes
         default: []
         }
     }
@@ -244,6 +327,12 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
         case .gmail: GmailToolCatalog.tools
         case .googleCalendar: GoogleCalendarToolCatalog.tools
         case .googleDrive: GoogleDriveToolCatalog.tools
+        case .googleAnalytics: GoogleAnalyticsToolCatalog.tools
+        case .googleAds: GoogleAdsToolCatalog.tools
+        case .outlookMail: OutlookMailToolCatalog.tools
+        case .outlookCalendar: OutlookCalendarToolCatalog.tools
+        case .oneDrive: OneDriveToolCatalog.tools
+        case .teams: TeamsToolCatalog.tools
         case .appStoreConnect: AppStoreConnectToolCatalog.tools
         case .appleCalendar: MacCalendarToolCatalog.tools
         case .appleReminders: MacRemindersToolCatalog.tools
@@ -253,28 +342,34 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
     }
 
     /// Tools each harness asks the person about before every call: sending and changing labels,
-    /// writing events, creating and changing files, inviting testers, sending builds and review
-    /// replies, submitting for review, and changing the Mac's calendars and reminders. Xcode's
-    /// tools are asked about as the harness asks about any server's.
+    /// writing events, creating and changing files, sending Teams messages, inviting testers,
+    /// sending builds and review replies, submitting for review, and changing the Mac's calendars
+    /// and reminders. Xcode's tools are asked about as the harness asks about any server's.
     var approvalRequiredTools: Set<String> {
         switch self {
         case .gmail: GmailToolCatalog.approvalRequired
         case .googleCalendar: GoogleCalendarToolCatalog.approvalRequired
         case .googleDrive: GoogleDriveToolCatalog.approvalRequired
+        case .outlookMail: OutlookMailToolCatalog.approvalRequired
+        case .outlookCalendar: OutlookCalendarToolCatalog.approvalRequired
+        case .oneDrive: OneDriveToolCatalog.approvalRequired
+        case .teams: TeamsToolCatalog.approvalRequired
         case .appStoreConnect: AppStoreConnectToolCatalog.approvalRequired
         case .appleCalendar: MacCalendarToolCatalog.approvalRequired
         case .appleReminders: MacRemindersToolCatalog.approvalRequired
-        case .appleContacts, .xcode: []
+        case .googleAnalytics, .googleAds, .appleContacts, .xcode: []
         }
     }
 
-    /// The Google API that must be turned on in the person's Cloud project.
-    var apiID: String? {
+    /// The Google APIs that must be turned on in the Cloud project of the Google app.
+    var apiIDs: [String] {
         switch self {
-        case .gmail: "gmail.googleapis.com"
-        case .googleCalendar: "calendar-json.googleapis.com"
-        case .googleDrive: "drive.googleapis.com"
-        default: nil
+        case .gmail: ["gmail.googleapis.com"]
+        case .googleCalendar: ["calendar-json.googleapis.com"]
+        case .googleDrive: ["drive.googleapis.com"]
+        case .googleAnalytics: ["analyticsadmin.googleapis.com", "analyticsdata.googleapis.com"]
+        case .googleAds: ["googleads.googleapis.com"]
+        default: []
         }
     }
 
@@ -310,6 +405,9 @@ struct ConnectorCredential: Codable, Equatable, Sendable {
     var tokenEndpointAuthMethod: String?
     /// RFC 8707 resource indicator sent with every token request.
     var resource: String?
+    /// The scope a refresh names again, for an identity provider that issues a refreshed token for
+    /// what the refresh asks (Microsoft's); nil leaves it out, as most servers expect.
+    var refreshScope: String?
     /// A signing key's ID, its issuer (a team key's; nil for an individual key), and the private
     /// key itself in PEM. Absent in items from before.
     var keyID: String?

@@ -239,7 +239,7 @@ struct AppStoreConnectAPI: Sendable {
     static func segment(_ id: String) throws -> String {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
         guard !id.isEmpty, id.count <= 200, id.unicodeScalars.allSatisfy(allowed.contains) else {
-            throw GoogleToolArguments.Problem.invalid("Not an ID App Store Connect gives: \(id)")
+            throw ConnectorToolArguments.Problem.invalid("Not an ID App Store Connect gives: \(id)")
         }
         return id
     }

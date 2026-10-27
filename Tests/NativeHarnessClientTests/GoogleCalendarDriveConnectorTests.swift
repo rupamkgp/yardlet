@@ -30,15 +30,15 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
     /// A center with the Google app saved and one account signed in with `services`.
     private func signedIn(
         _ address: String = "person@example.test",
-        services: Set<LocalConnectorService> = Set(LocalConnectorService.allCases),
+        services: Set<LocalConnectorService> = Set(LocalConnectorService.googleDefaults),
         google: FakeGoogleWorkspace = FakeGoogleWorkspace(),
         agent: FakeUserAgent = FakeUserAgent(),
         credentials: InMemoryConnectorCredentialStore = InMemoryConnectorCredentialStore()
-    ) async throws -> (ConnectorCenter, ConnectorCenter.GoogleAccount) {
+    ) async throws -> (ConnectorCenter, ConnectorCenter.ServiceAccount) {
         let center = makeCenter(google: google, agent: agent, credentials: credentials)
         try await center.saveGoogleApp(clientID: FakeGoogle.clientID, secret: FakeGoogle.clientSecret)
         google.google.signInAs = address
-        let account = try XCTUnwrap(center.addGoogleAccount(services: services))
+        let account = try XCTUnwrap(center.addAccount(services: services))
         await center.waitForConnection(account.id)
         let settled = try XCTUnwrap(center.googleAccounts.first { $0.id == account.id })
         return (center, settled)
@@ -173,7 +173,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         let none = FakeGoogleWorkspace(granting: "openid")
         let empty = makeCenter(google: none)
         try await empty.saveGoogleApp(clientID: FakeGoogle.clientID, secret: FakeGoogle.clientSecret)
-        let lone = try XCTUnwrap(empty.addGoogleAccount(services: [.googleCalendar, .googleDrive]))
+        let lone = try XCTUnwrap(empty.addAccount(services: [.googleCalendar, .googleDrive]))
         await empty.waitForConnection(lone.id)
         XCTAssertEqual(empty.failures[lone.id],
                        GoogleSignInError.scopeNotGranted([.googleCalendar, .googleDrive]).errorDescription)
@@ -191,7 +191,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertEqual(query(agent.opened.first)["scope"], GmailToolCatalog.scope, "Gmail alone asks for Gmail alone")
 
         google.google.grantedScope = FakeGoogleWorkspace.allScopes
-        await center.setGoogleService(.googleCalendar, on: true, account: account.id)
+        await center.setService(.googleCalendar, on: true, account: account.id)
         let calendar = try XCTUnwrap(center.googleAccounts.first?.record(.googleCalendar))
         await center.waitForConnection(calendar.id)
         XCTAssertEqual(agent.opened.count, 2, "Calendar's scopes were not granted yet")
@@ -205,7 +205,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertEqual(center.record(account.id)?.status, .connected)
 
         // That sign-in granted Drive too, so turning Drive on needs no browser.
-        await center.setGoogleService(.googleDrive, on: true, account: account.id)
+        await center.setService(.googleDrive, on: true, account: account.id)
         let drive = try XCTUnwrap(center.googleAccounts.first?.record(.googleDrive))
         await center.waitForConnection(drive.id)
         XCTAssertEqual(agent.opened.count, 2)
@@ -214,7 +214,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         _ = try json(try await call(center, "drive_search_files", ["query": .string("plan")]))
 
         // Off: Calendar's connector goes, the sign-in stays for Gmail and Drive.
-        await center.setGoogleService(.googleCalendar, on: false, account: account.id)
+        await center.setService(.googleCalendar, on: false, account: account.id)
         await center.waitForPendingDeletions()
         XCTAssertNil(center.record(calendar.id))
         XCTAssertNotNil(try credentials.load(account.id))
@@ -225,12 +225,12 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertNil(gone, "No connector answers for Calendar any more")
 
         // Even Gmail's own connector, whose ID the sign-in is under, can go while Drive stays.
-        await center.setGoogleService(.gmail, on: false, account: account.id)
+        await center.setService(.gmail, on: false, account: account.id)
         await center.waitForPendingDeletions()
         XCTAssertNotNil(try credentials.load(account.id))
         _ = try json(try await call(center, "drive_list_recent_files"))
 
-        center.removeGoogleAccount(account.id)
+        center.removeAccount(account.id)
         await center.waitForPendingDeletions()
         XCTAssertTrue(center.googleAccounts.isEmpty)
         XCTAssertNil(try credentials.load(account.id))
@@ -559,10 +559,10 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
             let part = try json(try await call(center, "drive_read_doc", arguments))
             let items = try XCTUnwrap(part["content"]?.arrayValue)
             if let start { XCTAssertEqual(items.first?["startIndex"], .integer(Int64(start)), "Each part starts where the last stopped") }
-            XCTAssertLessThanOrEqual(GoogleToolArguments.text(.array(items)).count, 100_000)
+            XCTAssertLessThanOrEqual(ConnectorToolArguments.text(.array(items)).count, 100_000)
             paragraphs += items.count
             parts += 1
-            start = part["nextStartIndex"].flatMap { GoogleToolArguments.integer($0) }
+            start = part["nextStartIndex"].flatMap { ConnectorToolArguments.integer($0) }
             if let start { XCTAssertEqual(items.last?["endIndex"], .integer(Int64(start))) }
         } while start != nil && parts < 10
         XCTAssertEqual(paragraphs, 2_000)
@@ -592,7 +592,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertEqual(read.value("valueRenderOption"), "FORMULA")
         XCTAssertEqual(formulas["values"]?.arrayValue?.last, .array([.string("total"), .string("=SUM(B2:B2)")]))
         let big = try json(try await call(center, "drive_get_values", ["spreadsheetId": .string("sheet-1"), "range": .string("Data!A1:D3000")]))
-        let returned = try XCTUnwrap(big["rowsReturned"].flatMap { GoogleToolArguments.integer($0) })
+        let returned = try XCTUnwrap(big["rowsReturned"].flatMap { ConnectorToolArguments.integer($0) })
         XCTAssertLessThan(returned, 3_000)
         XCTAssertEqual(big["nextRange"], .string("Data!A\(1 + returned):D3000"))
         XCTAssertEqual(A1Range("'Q3 plan'!B2:F")?.rows(after: 5), "'Q3 plan'!B7:F")
@@ -663,7 +663,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertNil(elements[0]["size"], "Positions only for one slide")
         XCTAssertEqual(deck["slideCount"], .integer(2))
         let long = try json(try await call(center, "drive_read_presentation", ["presentationId": .string("deck-long")]))
-        let nextSlide = try XCTUnwrap(long["nextStartSlide"].flatMap { GoogleToolArguments.integer($0) })
+        let nextSlide = try XCTUnwrap(long["nextStartSlide"].flatMap { ConnectorToolArguments.integer($0) })
         XCTAssertEqual(long["slides"]?.arrayValue?.count, nextSlide)
         let rest = try json(try await call(center, "drive_read_presentation", ["presentationId": .string("deck-long"),
                                                                                "startSlide": .integer(Int64(nextSlide))]))
@@ -824,7 +824,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         let credentials = InMemoryConnectorCredentialStore()
         let (center, personal) = try await signedIn("person@example.test", google: google, credentials: credentials)
         google.google.signInAs = "developer@company.test"
-        let work = try XCTUnwrap(center.addGoogleAccount(services: [.googleCalendar, .googleDrive]))
+        let work = try XCTUnwrap(center.addAccount(services: [.googleCalendar, .googleDrive]))
         await center.waitForConnection(work.id)
         let settled = try XCTUnwrap(center.googleAccounts.first { $0.id == work.id })
         XCTAssertEqual(settled.address, "developer@company.test")
@@ -849,7 +849,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         XCTAssertTrue(inTask.contains("calendar_list_events"))
 
         // Turning Gmail on for the second account names it after the account too.
-        await center.setGoogleService(.gmail, on: true, account: work.id)
+        await center.setService(.gmail, on: true, account: work.id)
         let workGmail = try XCTUnwrap(center.googleAccounts.first { $0.id == work.id }?.record(.gmail))
         await center.waitForConnection(workGmail.id)
         XCTAssertEqual(center.record(workGmail.id)?.slug, "gmail_developer")
@@ -857,7 +857,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
 
         // Signing in to an account that is here already adds its services to that account.
         google.google.signInAs = "Person@example.test"
-        let again = try XCTUnwrap(center.addGoogleAccount(services: [.googleDrive]))
+        let again = try XCTUnwrap(center.addAccount(services: [.googleDrive]))
         await center.waitForConnection(again.id)
         XCTAssertEqual(center.googleAccounts.count, 2)
         XCTAssertNil(center.record(again.id), "Drive was on for that account already")

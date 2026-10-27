@@ -59,13 +59,14 @@ final class ConnectorDirectoryTests: XCTestCase {
     func testTheDirectoryHasEachServicesOfficialEndpointAndSignIn() throws {
         func preset(_ id: String) throws -> ConnectorPreset { try XCTUnwrap(ConnectorPreset.preset(id: id), id) }
         XCTAssertEqual(ConnectorPreset.all.map(\.id), [
-            "linear", "notion", "slack", "gmail", "google-calendar", "google-drive", "apple-calendar", "apple-reminders",
+            "linear", "notion", "slack", "gmail", "google-calendar", "google-drive", "google-analytics", "google-ads",
+            "outlook-mail", "outlook-calendar", "onedrive", "microsoft-teams", "apple-calendar", "apple-reminders",
             "apple-contacts", "github", "browserbase", "atlassian", "sentry", "asana", "clickup", "monday", "todoist", "airtable",
-            "miro", "dropbox", "intercom", "zapier", "pipedream", "composio", "make", "granola", "fireflies", "gamma", "xcode",
-            "app-store-connect", "gitlab",
+            "miro", "dropbox", "intercom", "zapier", "pipedream", "composio", "make", "granola", "fireflies", "gamma",
+            "zoom-meetings", "zoom-team-chat", "zoom-docs", "xcode", "app-store-connect", "gitlab",
             "supabase", "neon", "prisma", "netlify", "cloudflare", "posthog", "semgrep",
             "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow", "wix", "figma-desktop", "tavily", "exa", "huggingface",
-            "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs"
+            "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs", "twilio-docs"
         ])
         XCTAssertEqual(Set(ConnectorPreset.all.map(\.id)).count, ConnectorPreset.all.count)
         XCTAssertEqual(Set(ConnectorPreset.all.map { MCPServerAddress.canonical($0.serverURL) }).count, ConnectorPreset.all.count,
@@ -79,7 +80,8 @@ final class ConnectorDirectoryTests: XCTestCase {
                    "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow", "wix", "tavily"] {
             XCTAssertEqual(try preset(id).signIn, .oauth, "\(id) registers its client dynamically")
         }
-        for id in ["exa", "huggingface", "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs"] {
+        for id in ["exa", "huggingface", "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs",
+                   "twilio-docs"] {
             XCTAssertEqual(try preset(id).signIn, ConnectorPreset.SignIn.none, "\(id) answers without a sign-in")
         }
         XCTAssertFalse(ConnectorPreset.all.contains { $0.serverURL.host() == "mcp.vercel.com" || $0.serverURL.host() == "mcp.canva.com" },
@@ -89,6 +91,14 @@ final class ConnectorDirectoryTests: XCTestCase {
             XCTAssertNotNil(NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil), "\(item.id): \(item.symbol)")
         }
         XCTAssertEqual(try preset("slack").signIn, .registeredClient)
+        // Zoom's product servers register no client (2026-10-27): a Zoom app of the person's own,
+        // asked only for each server's read scopes.
+        for id in ["zoom-meetings", "zoom-team-chat", "zoom-docs"] {
+            let zoom = try preset(id)
+            XCTAssertEqual(zoom.signIn, .registeredClient, id)
+            XCTAssertEqual(zoom.serverURL.host(), "mcp.zoom.us", id)
+            XCTAssertTrue(zoom.scope?.split(separator: " ").allSatisfy { $0.contains(":read") || $0 == "canvas:write:file_search" } == true, id)
+        }
         XCTAssertEqual(try preset("slack").serverURL.absoluteString, "https://mcp.slack.com/mcp")
         // Gmail is Yardlet's own server on the public Gmail API (2026-10-17), with one scope.
         let gmail = try preset("gmail")

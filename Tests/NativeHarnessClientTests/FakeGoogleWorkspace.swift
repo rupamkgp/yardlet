@@ -19,7 +19,7 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
         slidesAPI: URL(string: "https://slides.google.test/v1/")!)
 
     static let holidays = "ko.south_korea#holiday@group.v.calendar.google.com"
-    static let allScopes = GoogleOAuth.scope(for: LocalConnectorService.allCases)
+    static let allScopes = GoogleOAuth.scope(for: LocalConnectorService.googleDefaults)
 
     /// One request as the fake saw it: method, path as sent (percent-encoded), query, and body.
     struct Seen {
@@ -308,7 +308,7 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
 
     static func paragraph(_ start: Int, _ parts: [ToolJSON], style: String = "NORMAL_TEXT",
                           bullet: String? = nil) -> ToolJSON {
-        let end = parts.compactMap { $0["endIndex"] }.last.flatMap { GoogleToolArguments.integer($0) } ?? start
+        let end = parts.compactMap { $0["endIndex"] }.last.flatMap { ConnectorToolArguments.integer($0) } ?? start
         var paragraph: [String: ToolJSON] = ["elements": .array(parts),
                                              "paragraphStyle": .object(["namedStyleType": .string(style)])]
         if let bullet { paragraph["bullet"] = .object(["listId": .string(bullet)]) }

@@ -104,6 +104,23 @@ else
 fi
 unset GOOGLE_CLIENT_SECRET
 
+# Yardlet's own Microsoft Entra app (a public client: no secret), so a person only signs in to
+# connect Outlook, OneDrive, and Teams (docs/CONNECTORS.md, "Microsoft 365"). The environment's
+# YARDLET_MICROSOFT_CLIENT_ID, or Packaging/MicrosoftOAuthClient.json ({"client_id": …}), which
+# stays out of git so that others build with their own. Without either the bundle carries no app,
+# and each person registers one.
+MICROSOFT_CLIENT_FILE="$PROJECT_ROOT/Packaging/MicrosoftOAuthClient.json"
+MICROSOFT_CLIENT_ID=${YARDLET_MICROSOFT_CLIENT_ID:-}
+if [[ -z "$MICROSOFT_CLIENT_ID" && -f "$MICROSOFT_CLIENT_FILE" ]]; then
+    MICROSOFT_CLIENT_ID=$(/usr/bin/plutil -extract client_id raw -o - "$MICROSOFT_CLIENT_FILE" 2>/dev/null || true)
+fi
+if [[ -n "$MICROSOFT_CLIENT_ID" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :YardletMicrosoftOAuthClientID string $MICROSOFT_CLIENT_ID" "$CONTENTS_DIR/Info.plist"
+    echo "Microsoft app: built in" >&2
+else
+    echo "Microsoft app: none built in (Packaging/MicrosoftOAuthClient.json is absent)" >&2
+fi
+
 # Sparkle updates (README "Updates") only in a bundle built with both the appcast's address and the
 # public EdDSA key, as scripts/release.sh builds it. Without them the bundle carries Sparkle's
 # framework unused: no Sparkle item, no update request, and Install Update… as before.

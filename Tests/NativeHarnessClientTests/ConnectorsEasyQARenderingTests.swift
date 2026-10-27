@@ -45,7 +45,7 @@ final class ConnectorsEasyQARenderingTests: XCTestCase {
         ConnectorRecord(id: id, name: service.name, slug: slug, serverURL: GoogleOAuth.Endpoints.live.base(for: service),
                         authorization: .oauth, status: status, presetID: service.presetID,
                         scope: service.scopes.joined(separator: " "), localService: service, account: address,
-                        googleAccountID: account)
+                        accountSignInID: account)
     }
 
     static let googleRecords: [ConnectorRecord] = [

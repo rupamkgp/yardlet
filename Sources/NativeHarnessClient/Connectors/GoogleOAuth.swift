@@ -51,6 +51,13 @@ enum GoogleOAuth {
         var docsAPI: URL = Endpoints.liveDocs
         var sheetsAPI: URL = Endpoints.liveSheets
         var slidesAPI: URL = Endpoints.liveSlides
+        /// The Analytics Admin and Data APIs' bases (v1beta), and the Google Ads API's (v26).
+        var analyticsAdminAPI: URL = Endpoints.liveAnalyticsAdmin
+        var analyticsDataAPI: URL = Endpoints.liveAnalyticsData
+        var adsAPI: URL = Endpoints.liveAds
+        /// The OpenID Connect user info endpoint, which names an account that has none of Gmail,
+        /// Calendar, and Drive.
+        var userInfo: URL = Endpoints.liveUserInfo
 
         private static let liveCalendar = URL(string: "https://www.googleapis.com/calendar/v3/")!
         private static let liveDrive = URL(string: "https://www.googleapis.com/drive/v3/")!
@@ -58,6 +65,10 @@ enum GoogleOAuth {
         private static let liveDocs = URL(string: "https://docs.googleapis.com/v1/")!
         private static let liveSheets = URL(string: "https://sheets.googleapis.com/v4/")!
         private static let liveSlides = URL(string: "https://slides.googleapis.com/v1/")!
+        private static let liveAnalyticsAdmin = URL(string: "https://analyticsadmin.googleapis.com/v1beta/")!
+        private static let liveAnalyticsData = URL(string: "https://analyticsdata.googleapis.com/v1beta/")!
+        private static let liveAds = URL(string: "https://googleads.googleapis.com/v26/")!
+        private static let liveUserInfo = URL(string: "https://openidconnect.googleapis.com/v1/userinfo")!
 
         /// developers.google.com/identity/protocols/oauth2/native-app and the Gmail, Calendar, and
         /// Drive API references.
@@ -73,6 +84,8 @@ enum GoogleOAuth {
             case .gmail: gmailAPI
             case .googleCalendar: calendarAPI
             case .googleDrive: driveAPI
+            case .googleAnalytics: analyticsAdminAPI
+            case .googleAds: adsAPI
             default: service.address
             }
         }
@@ -103,13 +116,23 @@ enum GoogleOAuth {
         Scope(url: GoogleCalendarToolCatalog.eventsScope, service: .googleCalendar, classification: .sensitive),
         Scope(url: GoogleCalendarToolCatalog.freeBusyScope, service: .googleCalendar, classification: .sensitive),
         Scope(url: GoogleDriveToolCatalog.readScope, service: .googleDrive, classification: .restricted),
-        Scope(url: GoogleDriveToolCatalog.fileScope, service: .googleDrive, classification: .nonSensitive)
+        Scope(url: GoogleDriveToolCatalog.fileScope, service: .googleDrive, classification: .nonSensitive),
+        // Google's sensitive list is not public; the Cloud console's Data Access page shows the class.
+        Scope(url: GoogleAnalyticsToolCatalog.readScope, service: .googleAnalytics, classification: .sensitive),
+        // developers.google.com/google-ads/api/docs/productionize/secure-credentials.
+        Scope(url: GoogleAdsToolCatalog.scope, service: .googleAds, classification: .restricted),
+        Scope(url: GoogleOAuth.emailScope, service: .googleAnalytics, classification: .nonSensitive)
     ]
 
-    /// The scopes for a set of services, in the directory's order, space-separated.
+    /// The account's address, which names an account that has none of Gmail, Calendar, and Drive.
+    static let emailScope = "https://www.googleapis.com/auth/userinfo.email"
+
+    /// The scopes for a set of Google services, in the directory's order, space-separated.
     static func scope(for services: some Sequence<LocalConnectorService>) -> String {
         let wanted = Set(services)
-        return LocalConnectorService.allCases.filter(wanted.contains).flatMap(\.scopes).joined(separator: " ")
+        var seen = Set<String>()
+        return LocalConnectorService.google.filter(wanted.contains).flatMap(\.scopes)
+            .filter { seen.insert($0).inserted }.joined(separator: " ")
     }
 
     /// The services whose every scope a granted scope string holds. Without one (a token from
@@ -186,96 +209,6 @@ enum GoogleSignInError: Error, Equatable, LocalizedError {
             L10n.format("Google did not grant access to %@. Connect again and allow it.", services)
         case .noRefreshToken:
             L10n.string("Google did not issue a lasting sign-in. Connect again.")
-        }
-    }
-}
-
-/// One Google account's access to a Google REST API: the bearer token from the secure store,
-/// refreshed a minute before it expires and once more if Google refuses it, one refresh at a
-/// time. A refresh Google refuses (`invalid_grant`: access revoked, the password changed, six
-/// months unused, or a 7-day token from an app still in Testing) ends in `signInRequired`; a
-/// network failure does not.
-actor GoogleAPISession {
-    enum Failure: Error, Equatable {
-        case signInRequired
-    }
-
-    private let id: UUID
-    private let credentials: any ConnectorCredentialStoring
-    private let http: any ConnectorHTTPTransport
-    private let now: @Sendable () -> Date
-    private var credential: ConnectorCredential?
-    private var loaded = false
-    private var refreshing: Task<Result<ConnectorCredential, Error>, Never>?
-
-    init(id: UUID, credentials: any ConnectorCredentialStoring, http: any ConnectorHTTPTransport,
-         now: @escaping @Sendable () -> Date) {
-        self.id = id
-        self.credentials = credentials
-        self.http = http
-        self.now = now
-    }
-
-    func use(_ credential: ConnectorCredential?) {
-        self.credential = credential
-        loaded = true
-    }
-
-    /// Sends a request with the account's bearer token. `make` builds it afresh for a retry.
-    func send(_ make: @Sendable () -> URLRequest) async throws -> (Data, HTTPURLResponse) {
-        if !loaded {
-            credential = try credentials.load(id)
-            loaded = true
-        }
-        guard let current = credential, current.kind == .oauth, !current.accessToken.isEmpty else {
-            throw Failure.signInRequired
-        }
-        if current.needsRefresh(at: now()) { try await refresh(from: current.accessToken) }
-        let used = credential?.accessToken
-        let first = try await http.send(authorized(make()))
-        guard first.1.statusCode == 401 else { return first }
-        try await refresh(from: used)
-        let second = try await http.send(authorized(make()))
-        if second.1.statusCode == 401 { throw Failure.signInRequired }
-        return second
-    }
-
-    private func authorized(_ request: URLRequest) -> URLRequest {
-        var request = request
-        if let token = credential?.accessToken { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        return request
-    }
-
-    /// Refreshes unless another call already replaced `staleToken`.
-    private func refresh(from staleToken: String?) async throws {
-        if let current = credential?.accessToken, current != staleToken { return }
-        let task: Task<Result<ConnectorCredential, Error>, Never>
-        if let refreshing {
-            task = refreshing
-        } else {
-            guard let current = credential, current.refreshToken != nil else { throw Failure.signInRequired }
-            let http = http
-            let now = now
-            task = Task {
-                do { return .success(try await ConnectorOAuth.refresh(current, http: http, now: now())) }
-                catch { return .failure(error) }
-            }
-            refreshing = task
-        }
-        let outcome = await task.value
-        if refreshing == task { refreshing = nil }
-        switch outcome {
-        case .success(let refreshed):
-            if credential?.accessToken != refreshed.accessToken {
-                credential = refreshed
-                try? credentials.save(refreshed, for: id)
-            }
-        case .failure(ConnectorOAuthError.invalidGrant):
-            throw Failure.signInRequired
-        case .failure(ConnectorOAuthError.tokenRequestFailed("no refresh token")):
-            throw Failure.signInRequired
-        case .failure(let error):
-            throw error
         }
     }
 }

@@ -24,11 +24,11 @@ struct GoogleEditorsToolRunner {
     var maximumCharacters = 100_000
     var maximumImage = 5 * 1_048_576
 
-    typealias Problem = GoogleToolArguments.Problem
-    private typealias Arguments = GoogleToolArguments
+    typealias Problem = ConnectorToolArguments.Problem
+    private typealias Arguments = ConnectorToolArguments
     private typealias Catalog = GoogleEditorsToolCatalog
 
-    init(endpoints: GoogleOAuth.Endpoints, session: GoogleAPISession, drive: GoogleDriveToolRunner,
+    init(endpoints: GoogleOAuth.Endpoints, session: OAuthAPISession, drive: GoogleDriveToolRunner,
          http: any ConnectorHTTPTransport) {
         docs = GoogleREST(base: endpoints.docsAPI, session: session)
         sheets = GoogleREST(base: endpoints.sheetsAPI, session: session)
@@ -168,7 +168,7 @@ struct GoogleEditorsToolRunner {
                         "text": .string(bodyText(content))
                     ])
                 })
-                let size = GoogleToolArguments.text(cells).count + 1
+                let size = ConnectorToolArguments.text(cells).count + 1
                 if !rows.isEmpty, used + size > budget { next = int(row["startIndex"]); break }
                 rows.append(cells)
                 used += size
@@ -250,13 +250,13 @@ struct GoogleEditorsToolRunner {
 
     /// A spreadsheet as `get_spreadsheet` gives it by default: its sheets in a line each.
     private static func spreadsheet(_ answer: ToolJSON) -> [String: ToolJSON] {
-        var result = GoogleToolArguments.pick(answer, ["spreadsheetId", "spreadsheetUrl", "namedRanges"])
-        result.merge(GoogleToolArguments.pick(answer["properties"], ["title", "locale", "timeZone"])) { first, _ in first }
+        var result = ConnectorToolArguments.pick(answer, ["spreadsheetId", "spreadsheetUrl", "namedRanges"])
+        result.merge(ConnectorToolArguments.pick(answer["properties"], ["title", "locale", "timeZone"])) { first, _ in first }
         result["sheets"] = .array((answer["sheets"]?.arrayValue ?? []).map { sheet in
             let properties = sheet["properties"]
-            var line = GoogleToolArguments.pick(properties, ["sheetId", "title", "index", "hidden"])
+            var line = ConnectorToolArguments.pick(properties, ["sheetId", "title", "index", "hidden"])
             if let type = properties?["sheetType"]?.stringValue, type != "GRID" { line["sheetType"] = .string(type) }
-            line.merge(GoogleToolArguments.pick(properties?["gridProperties"],
+            line.merge(ConnectorToolArguments.pick(properties?["gridProperties"],
                                                 ["rowCount", "columnCount", "frozenRowCount", "frozenColumnCount"])) { first, _ in first }
             return .object(line)
         })
@@ -401,7 +401,7 @@ struct GoogleEditorsToolRunner {
     /// A slide, layout, or master: its kind, layout, elements, and speaker notes; with `geometry`,
     /// each element's size and position too.
     private static func page(_ page: ToolJSON, geometry: Bool) -> [String: ToolJSON] {
-        var result = GoogleToolArguments.pick(page, ["objectId"])
+        var result = ConnectorToolArguments.pick(page, ["objectId"])
         if let type = page["pageType"]?.stringValue, type != "SLIDE" { result["pageType"] = .string(type) }
         let properties = page["slideProperties"]
         if let layout = properties?["layoutObjectId"] { result["layoutId"] = layout }
@@ -417,7 +417,7 @@ struct GoogleEditorsToolRunner {
     }
 
     private static func element(_ element: ToolJSON, geometry: Bool) -> ToolJSON {
-        var item = GoogleToolArguments.pick(element, ["objectId", "title"])
+        var item = ConnectorToolArguments.pick(element, ["objectId", "title"])
         if let shape = element["shape"] {
             item["kind"] = .string("shape")
             if let type = shape["shapeType"] { item["shapeType"] = type }
@@ -425,7 +425,7 @@ struct GoogleEditorsToolRunner {
             if shape["text"] != nil { item["text"] = .string(text(shape["text"])) }
         } else if let table = element["table"] {
             item["kind"] = .string("table")
-            item.merge(GoogleToolArguments.pick(table, ["rows", "columns"])) { first, _ in first }
+            item.merge(ConnectorToolArguments.pick(table, ["rows", "columns"])) { first, _ in first }
             item["cells"] = .array((table["tableRows"]?.arrayValue ?? []).map { row in
                 .array((row["tableCells"]?.arrayValue ?? []).map { .string(text($0["text"])) })
             })
@@ -434,7 +434,7 @@ struct GoogleEditorsToolRunner {
             item["children"] = .array((group["children"]?.arrayValue ?? []).map { Self.element($0, geometry: geometry) })
         } else if let chart = element["sheetsChart"] {
             item["kind"] = .string("sheetsChart")
-            item.merge(GoogleToolArguments.pick(chart, ["spreadsheetId", "chartId"])) { first, _ in first }
+            item.merge(ConnectorToolArguments.pick(chart, ["spreadsheetId", "chartId"])) { first, _ in first }
         } else if let art = element["wordArt"] {
             item["kind"] = .string("wordArt")
             if let rendered = art["renderedText"] { item["text"] = rendered }
@@ -442,7 +442,7 @@ struct GoogleEditorsToolRunner {
             let kinds = ["image", "video", "line", "speakerSpotlight"]
             item["kind"] = .string(kinds.first { element[$0] != nil } ?? "other")
         }
-        if geometry { item.merge(GoogleToolArguments.pick(element, ["size", "transform"])) { first, _ in first } }
+        if geometry { item.merge(ConnectorToolArguments.pick(element, ["size", "transform"])) { first, _ in first } }
         return .object(item)
     }
 
@@ -497,14 +497,14 @@ struct GoogleEditorsToolRunner {
 
     /// The file's ID as a path segment and as given. A link (`…/document/d/<id>/edit`) gives its ID.
     private static func fileID(_ arguments: [String: ToolJSON], _ key: String) throws -> (String, String) {
-        var value = try GoogleToolArguments.required(arguments, key)
+        var value = try ConnectorToolArguments.required(arguments, key)
         if let range = value.range(of: "/d/") {
             value = String(value[range.upperBound...].prefix { $0 != "/" && $0 != "?" && $0 != "#" })
         }
         return (try GoogleREST.segment(value), value)
     }
 
-    private static func int(_ value: ToolJSON?) -> Int { GoogleToolArguments.integer(value) ?? 0 }
+    private static func int(_ value: ToolJSON?) -> Int { ConnectorToolArguments.integer(value) ?? 0 }
 
     /// An answer that fits a tool's limit, or what to ask for instead.
     private func fitting(_ json: ToolJSON) throws -> ToolJSON {

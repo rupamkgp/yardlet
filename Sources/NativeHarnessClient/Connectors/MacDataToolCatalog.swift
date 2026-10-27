@@ -30,13 +30,13 @@ enum MacCalendarToolCatalog {
                 "endTime": string("Range end (ISO 8601), as startTime. Defaults to startTime plus 7 days."),
                 "timeZone": timeZone,
                 "query": string("Words matched against the title, location, and notes."),
-                "pageSize": GoogleToolSchema.integer("Events to return, 1 to 250. Defaults to 50.", 1...250)
+                "pageSize": ConnectorToolSchema.integer("Events to return, 1 to 250. Defaults to 50.", 1...250)
              ], readOnly: true),
         tool(searchEvents, "Search events",
              "Searches every calendar's events within a year either side of today by words in their title, location, or notes.",
              properties: [
                 "query": string("Words to search for."),
-                "pageSize": GoogleToolSchema.integer("Events to return, 1 to 250. Defaults to 25.", 1...250)
+                "pageSize": ConnectorToolSchema.integer("Events to return, 1 to 250. Defaults to 25.", 1...250)
              ], required: ["query"], readOnly: true),
         tool(getEvent, "Get event",
              "Gets one event with its notes, alerts, and attendees.",
@@ -59,7 +59,7 @@ enum MacCalendarToolCatalog {
     }
 
     private static var span: ToolJSON {
-        GoogleToolSchema.enumeration("For a recurring event: thisEvent (default) or futureEvents.", ["thisEvent", "futureEvents"])
+        ConnectorToolSchema.enumeration("For a recurring event: thisEvent (default) or futureEvents.", ["thisEvent", "futureEvents"])
     }
 
     private static func eventProperties(creating: Bool) -> [String: ToolJSON] {
@@ -71,7 +71,7 @@ enum MacCalendarToolCatalog {
                 ? "Start (ISO 8601, 2026-04-30T10:00:00). Local time without an offset is read in timeZone, or the Mac's time zone."
                 : "A new start (ISO 8601)."),
             "endTime": string(creating ? "End (ISO 8601), as startTime." : "A new end (ISO 8601)."),
-            "allDay": GoogleToolSchema.boolean("All-day: the dates of startTime and endTime are used, endTime's day included."),
+            "allDay": ConnectorToolSchema.boolean("All-day: the dates of startTime and endTime are used, endTime's day included."),
             "timeZone": timeZone,
             "location": string("The location."),
             "description": string("Notes."),
@@ -89,13 +89,13 @@ enum MacCalendarToolCatalog {
         return properties
     }
 
-    fileprivate static func string(_ description: String) -> ToolJSON { GoogleToolSchema.string(description) }
+    fileprivate static func string(_ description: String) -> ToolJSON { ConnectorToolSchema.string(description) }
 
     fileprivate static func tool(_ name: String, _ title: String, _ description: String,
                                  properties: [String: ToolJSON], required: [String] = [],
                                  readOnly: Bool, destructive: Bool = false) -> ToolJSON {
         // A change reaches the account's server (iCloud, Google, Exchange) as the Mac syncs it.
-        GoogleToolSchema.tool(name, title, description, properties: properties, required: required,
+        ConnectorToolSchema.tool(name, title, description, properties: properties, required: required,
                               readOnly: readOnly, destructive: destructive, openWorld: !readOnly)
     }
 }
@@ -121,13 +121,13 @@ enum MacRemindersToolCatalog {
                                         + "priority, and notes.",
                                     properties: [
                                         "listId": string("A list's ID, from list_reminder_lists. Defaults to every list."),
-                                        "status": GoogleToolSchema.enumeration("incomplete (default), completed, or all.",
+                                        "status": ConnectorToolSchema.enumeration("incomplete (default), completed, or all.",
                                                                                ["incomplete", "completed", "all"]),
                                         "dueBefore": string("Only those due (or, for completed ones, done) before this "
                                             + "time (ISO 8601)."),
                                         "dueAfter": string("Only those due (or done) after this time (ISO 8601)."),
                                         "query": string("Words matched against the title and notes."),
-                                        "pageSize": GoogleToolSchema.integer("Reminders to return, 1 to 250. Defaults to 50.", 1...250)
+                                        "pageSize": ConnectorToolSchema.integer("Reminders to return, 1 to 250. Defaults to 50.", 1...250)
                                     ], readOnly: true),
         MacCalendarToolCatalog.tool(createReminder, "Create reminder",
                                     "Adds a reminder to a list, with a due date, priority, and notes when given.",
@@ -137,17 +137,17 @@ enum MacRemindersToolCatalog {
                                         "notes": string("Notes."),
                                         "dueDate": string("When it is due: a date (2026-04-30) or a date and time "
                                             + "(2026-04-30T09:00:00), read in the Mac's time zone without an offset."),
-                                        "priority": GoogleToolSchema.enumeration("none (default), low, medium, or high.", priorities)
+                                        "priority": ConnectorToolSchema.enumeration("none (default), low, medium, or high.", priorities)
                                     ], required: ["title"], readOnly: false),
         MacCalendarToolCatalog.tool(completeReminder, "Complete reminder",
                                     "Marks a reminder done, or not done again with completed false.",
                                     properties: [
                                         "reminderId": string("The reminder's ID, from list_reminders."),
-                                        "completed": GoogleToolSchema.boolean("false to mark it not done. Defaults to true.")
+                                        "completed": ConnectorToolSchema.boolean("false to mark it not done. Defaults to true.")
                                     ], required: ["reminderId"], readOnly: false)
     ]
 
-    private static func string(_ description: String) -> ToolJSON { GoogleToolSchema.string(description) }
+    private static func string(_ description: String) -> ToolJSON { ConnectorToolSchema.string(description) }
 }
 
 /// Apple Contacts: the contacts on this Mac, read only.
@@ -160,12 +160,12 @@ enum MacContactsToolCatalog {
                                     "Finds contacts on this Mac by name, email address, or phone number, with their emails "
                                         + "and phone numbers.",
                                     properties: [
-                                        "query": GoogleToolSchema.string("A name, an email address, or a phone number."),
-                                        "pageSize": GoogleToolSchema.integer("Contacts to return, 1 to 100. Defaults to 20.", 1...100)
+                                        "query": ConnectorToolSchema.string("A name, an email address, or a phone number."),
+                                        "pageSize": ConnectorToolSchema.integer("Contacts to return, 1 to 100. Defaults to 20.", 1...100)
                                     ], required: ["query"], readOnly: true),
         MacCalendarToolCatalog.tool(getContact, "Get contact",
                                     "Gets one contact with every email, phone number, address, organization, and birthday.",
-                                    properties: ["contactId": GoogleToolSchema.string("The contact's ID, from search_contacts.")],
+                                    properties: ["contactId": ConnectorToolSchema.string("The contact's ID, from search_contacts.")],
                                     required: ["contactId"], readOnly: true)
     ]
 }

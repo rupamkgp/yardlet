@@ -5,12 +5,12 @@ import FoundationNetworking
 import YardletAgentTools
 
 /// The Gmail REST API (developers.google.com/workspace/gmail/api/reference/rest) for one account,
-/// JSON in and out, through the account's `GoogleAPISession`. Nothing here logs or keeps what a
+/// JSON in and out, through the account's `OAuthAPISession`. Nothing here logs or keeps what a
 /// mailbox holds; a failure carries Google's own error message, never a request or response body.
 struct GmailAPI: Sendable {
     /// `https://gmail.googleapis.com/gmail/v1/`.
     let base: URL
-    let session: GoogleAPISession
+    let session: OAuthAPISession
 
     enum Failure: Error, Equatable, LocalizedError {
         /// Google answered with an error: its HTTP status and its `error.message`.

@@ -74,7 +74,7 @@ enum GoogleEditorsToolCatalog {
              properties: [
                 "spreadsheetId": id("spreadsheet"),
                 "range": string("The range in A1 notation."),
-                "valueRenderOption": GoogleToolSchema.enumeration(
+                "valueRenderOption": ConnectorToolSchema.enumeration(
                     "FORMATTED_VALUE (default) as shown, UNFORMATTED_VALUE as numbers, or FORMULA.",
                     ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"])
              ], required: ["spreadsheetId", "range"], readOnly: true),
@@ -99,7 +99,7 @@ enum GoogleEditorsToolCatalog {
              properties: [
                 "spreadsheetId": id("spreadsheet"),
                 "sheetId": integer("The sheet's ID from get_spreadsheet (not its name).", 0...Int(Int32.max)),
-                "dimension": GoogleToolSchema.enumeration("ROWS or COLUMNS.", ["ROWS", "COLUMNS"]),
+                "dimension": ConnectorToolSchema.enumeration("ROWS or COLUMNS.", ["ROWS", "COLUMNS"]),
                 "startIndex": integer("The first new row or column, 0-based.", 0...Int(Int32.max)),
                 "endIndex": integer("One past the last new row or column.", 1...Int(Int32.max)),
                 "inheritFromBefore": boolean("Takes the format of the row or column before (true) or after (false).")
@@ -139,7 +139,7 @@ enum GoogleEditorsToolCatalog {
                 "thumbnailProperties": .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "thumbnailSize": GoogleToolSchema.enumeration(
+                        "thumbnailSize": ConnectorToolSchema.enumeration(
                             "SMALL (200 px wide), MEDIUM (800 px, the default), or LARGE (1600 px).",
                             ["SMALL", "MEDIUM", "LARGE"])
                     ]),
@@ -179,20 +179,20 @@ enum GoogleEditorsToolCatalog {
         .object(["type": .string("object"), "description": .string(description)])
     }
 
-    private static func string(_ description: String) -> ToolJSON { GoogleToolSchema.string(description) }
+    private static func string(_ description: String) -> ToolJSON { ConnectorToolSchema.string(description) }
 
-    private static func boolean(_ description: String) -> ToolJSON { GoogleToolSchema.boolean(description) }
+    private static func boolean(_ description: String) -> ToolJSON { ConnectorToolSchema.boolean(description) }
 
-    private static func stringArray(_ description: String) -> ToolJSON { GoogleToolSchema.stringArray(description) }
+    private static func stringArray(_ description: String) -> ToolJSON { ConnectorToolSchema.stringArray(description) }
 
     private static func integer(_ description: String, _ range: ClosedRange<Int>) -> ToolJSON {
-        GoogleToolSchema.integer(description, range)
+        ConnectorToolSchema.integer(description, range)
     }
 
     private static func tool(_ name: String, _ title: String, _ description: String,
                              properties: [String: ToolJSON], required: [String] = [],
                              readOnly: Bool, destructive: Bool = false, openWorld: Bool = false) -> ToolJSON {
-        GoogleToolSchema.tool(name, title, description, properties: properties, required: required,
+        ConnectorToolSchema.tool(name, title, description, properties: properties, required: required,
                               readOnly: readOnly, destructive: destructive, openWorld: openWorld)
     }
 }

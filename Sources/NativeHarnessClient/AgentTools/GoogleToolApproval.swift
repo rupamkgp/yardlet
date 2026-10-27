@@ -3,7 +3,8 @@ import YardletAgentTools
 
 /// What Claude Code's request card says for a Google tool that writes: a Gmail send or label change
 /// (`GmailToolApproval`), a Calendar event created, changed, deleted, or answered, or a Drive file
-/// created, copied, or changed; and for an Apple service's write (`AppleToolApproval`). It names the
+/// created, copied, or changed; and for a Microsoft or Apple service's write (`MicrosoftToolApproval`,
+/// `AppleToolApproval`). It names the
 /// account and what the call would do. Claude Code asks before each such call; the card offers no
 /// "always allow", as for a scheduled-task change.
 enum GoogleToolApproval {
@@ -16,6 +17,8 @@ enum GoogleToolApproval {
         switch service {
         case .googleCalendar: return calendar(label.tool, account: account, input: input)
         case .googleDrive: return drive(label.tool, account: account, input: input)
+        case let microsoft where microsoft.isMicrosoft:
+            return MicrosoftToolApproval.request(microsoft, tool: label.tool, account: label.account, input: input)
         default: return AppleToolApproval.request(service, tool: label.tool, account: label.account, input: input)
         }
     }

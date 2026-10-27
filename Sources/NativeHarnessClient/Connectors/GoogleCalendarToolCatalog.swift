@@ -187,24 +187,24 @@ enum GoogleCalendarToolCatalog {
         return properties
     }
 
-    private static func string(_ description: String) -> ToolJSON { GoogleToolSchema.string(description) }
+    private static func string(_ description: String) -> ToolJSON { ConnectorToolSchema.string(description) }
 
-    private static func boolean(_ description: String) -> ToolJSON { GoogleToolSchema.boolean(description) }
+    private static func boolean(_ description: String) -> ToolJSON { ConnectorToolSchema.boolean(description) }
 
     private static func enumeration(_ description: String, _ values: [String]) -> ToolJSON {
-        GoogleToolSchema.enumeration(description, values)
+        ConnectorToolSchema.enumeration(description, values)
     }
 
     private static func integer(_ description: String, _ range: ClosedRange<Int>) -> ToolJSON {
-        GoogleToolSchema.integer(description, range)
+        ConnectorToolSchema.integer(description, range)
     }
 
-    private static func stringArray(_ description: String) -> ToolJSON { GoogleToolSchema.stringArray(description) }
+    private static func stringArray(_ description: String) -> ToolJSON { ConnectorToolSchema.stringArray(description) }
 
     private static func tool(_ name: String, _ title: String, _ description: String,
                              properties: [String: ToolJSON], required: [String] = [],
                              readOnly: Bool, destructive: Bool = false, openWorld: Bool = false) -> ToolJSON {
-        GoogleToolSchema.tool(name, title, description, properties: properties, required: required,
+        ConnectorToolSchema.tool(name, title, description, properties: properties, required: required,
                               readOnly: readOnly, destructive: destructive, openWorld: openWorld)
     }
 }

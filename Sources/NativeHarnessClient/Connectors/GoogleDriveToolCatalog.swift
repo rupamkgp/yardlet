@@ -116,18 +116,18 @@ enum GoogleDriveToolCatalog {
         string("The file's ID, from search_files or list_recent_files, or in its Drive link.")
     }
 
-    private static func string(_ description: String) -> ToolJSON { GoogleToolSchema.string(description) }
+    private static func string(_ description: String) -> ToolJSON { ConnectorToolSchema.string(description) }
 
-    private static func boolean(_ description: String) -> ToolJSON { GoogleToolSchema.boolean(description) }
+    private static func boolean(_ description: String) -> ToolJSON { ConnectorToolSchema.boolean(description) }
 
     private static func integer(_ description: String, _ range: ClosedRange<Int>) -> ToolJSON {
-        GoogleToolSchema.integer(description, range)
+        ConnectorToolSchema.integer(description, range)
     }
 
     private static func tool(_ name: String, _ title: String, _ description: String,
                              properties: [String: ToolJSON], required: [String] = [],
                              readOnly: Bool, destructive: Bool = false, openWorld: Bool = false) -> ToolJSON {
-        GoogleToolSchema.tool(name, title, description, properties: properties, required: required,
+        ConnectorToolSchema.tool(name, title, description, properties: properties, required: required,
                               readOnly: readOnly, destructive: destructive, openWorld: openWorld)
     }
 }

@@ -298,12 +298,9 @@ enum ConnectorOAuth {
         guard let refreshToken = credential.refreshToken else {
             throw ConnectorOAuthError.tokenRequestFailed("no refresh token")
         }
-        return try await tokenRequest(
-            credential: credential,
-            fields: [("grant_type", "refresh_token"), ("refresh_token", refreshToken)],
-            http: http,
-            now: now
-        )
+        var fields = [("grant_type", "refresh_token"), ("refresh_token", refreshToken)]
+        if let scope = credential.refreshScope, !scope.isEmpty { fields.append(("scope", scope)) }
+        return try await tokenRequest(credential: credential, fields: fields, http: http, now: now)
     }
 
     private static func tokenRequest(

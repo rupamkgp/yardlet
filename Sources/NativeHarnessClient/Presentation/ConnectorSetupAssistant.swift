@@ -11,15 +11,21 @@ import Foundation
 struct ConnectorSetupAssistant: Equatable {
     enum Service: String, Equatable, Sendable {
         case google
+        case microsoft
         case slack
+        case zoom
         case appStoreConnect
     }
 
     enum StepID: String, CaseIterable, Sendable {
         // Google
         case project, apis, consent, publish, scopes, client, googleSignIn
+        // Microsoft
+        case msRegister, msRedirect, msPermissions, msClient, msSignIn
         // Slack
         case slackCreate, slackCredentials, slackSignIn
+        // Zoom
+        case zoomCreate, zoomScopes, zoomCredentials, zoomSignIn
         // App Store Connect
         case ascCreateKey, ascKeyFile, ascConnect
     }
@@ -59,7 +65,7 @@ struct ConnectorSetupAssistant: Equatable {
     /// tools call, in one confirmation.
     static var googleAPIs: URL {
         URL(string: "https://console.cloud.google.com/flows/enableapi?apiid="
-            + (LocalConnectorService.google.compactMap(\.apiID) + GoogleEditorsToolCatalog.apiIDs).joined(separator: ","))!
+            + (LocalConnectorService.google.flatMap(\.apiIDs) + GoogleEditorsToolCatalog.apiIDs).joined(separator: ","))!
     }
     static let googleOverview = URL(string: "https://console.cloud.google.com/auth/overview")!
     static let googleAudience = URL(string: "https://console.cloud.google.com/auth/audience")!
@@ -89,7 +95,7 @@ struct ConnectorSetupAssistant: Equatable {
                  detail: L10n.string("Any name. Or pick a project you have."),
                  link: Link(title: L10n.string("New project"), url: googleProject), isDone: done(.project)),
             Step(id: .apis, title: L10n.string("Turn on the Gmail, Calendar, and Drive APIs"),
-                 detail: L10n.string("One page turns them on, with the Docs, Sheets, and Slides APIs the Drive tools use; confirm the project and press Enable."),
+                 detail: L10n.string("One page turns them on, with the Docs, Sheets, and Slides APIs the Drive tools use and the Analytics and Ads APIs; confirm the project and press Enable."),
                  link: Link(title: L10n.string("Enable APIs"), url: googleAPIs), isDone: done(.apis)),
             Step(id: .consent, title: L10n.string("Set up Google Auth Platform"),
                  detail: L10n.string("App name, your email, then Audience: External for personal Gmail and other accounts, Internal for your Workspace organization's accounts only."),
@@ -99,7 +105,7 @@ struct ConnectorSetupAssistant: Equatable {
                  detail: L10n.string("Audience → Publish app, so its status is In production. In Testing, Google ends each sign-in after 7 days. No verification is needed for your own use."),
                  link: Link(title: L10n.string("Audience"), url: googleAudience), isDone: done(.publish)),
             Step(id: .scopes, title: L10n.string("Add the scopes"),
-                 detail: L10n.string("Data Access → Add or remove scopes → Manually add scopes: paste the six, then Update and Save."),
+                 detail: L10n.string("Data Access → Add or remove scopes → Manually add scopes: paste them all, then Update and Save. Analytics and Ads ask for theirs only on the accounts that turn them on."),
                  link: Link(title: L10n.string("Data Access"), url: googleDataAccess),
                  copies: [Copy(label: L10n.string("Scopes"), value: googleScopeList)], isDone: done(.scopes)),
             Step(id: .client, title: L10n.string("Create a client and paste it here"),
@@ -107,6 +113,52 @@ struct ConnectorSetupAssistant: Equatable {
                  link: Link(title: L10n.string("Create client"), url: googleClients),
                  copies: [Copy(label: L10n.string("App name"), value: appName),
                           Copy(label: L10n.string("Redirect URL"), value: redirect)],
+                 isDone: appSaved),
+            signIn
+        ])
+    }
+
+    // MARK: Microsoft
+
+    /// Microsoft Entra admin center → App registrations.
+    static let microsoftRegistrations = URL(string: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade")!
+
+    /// The manifest entry that makes Yardlet's loopback a redirect of a desktop (public) client.
+    /// Microsoft's redirect form does not take a `127.0.0.1` address, so it goes in the manifest
+    /// (learn.microsoft.com/entra/identity-platform/reply-url).
+    static var microsoftManifestEntry: String {
+        #"{ "url": "\#(ConnectorOAuth.registeredClientRedirectURI.absoluteString)", "type": "InstalledClient" }"#
+    }
+
+    /// Every Graph permission the four services use, one per line, as API permissions lists them.
+    static var microsoftPermissionList: String {
+        (MicrosoftOAuth.baseScopes + LocalConnectorService.microsoft.flatMap(\.scopes)).joined(separator: "\n")
+    }
+
+    /// - Parameter builtIn: the build carries Yardlet's own Microsoft app and the person is not
+    ///   setting up one of theirs, so signing in is the only step.
+    static func microsoft(opened: Set<StepID>, appSaved: Bool, connectedAccounts: Int,
+                          builtIn: Bool = false) -> ConnectorSetupAssistant {
+        func done(_ id: StepID) -> Bool { appSaved || opened.contains(id) }
+        let signIn = Step(id: .msSignIn, title: L10n.string("Sign in with each Microsoft account"),
+                          detail: L10n.string("Pick the services for the account, then sign in once. Teams needs a work or school account."),
+                          isDone: connectedAccounts > 0)
+        if builtIn { return ConnectorSetupAssistant(service: .microsoft, steps: [signIn]) }
+        return ConnectorSetupAssistant(service: .microsoft, steps: [
+            Step(id: .msRegister, title: L10n.string("Register an app in Microsoft Entra"),
+                 detail: L10n.string("App registrations → New registration, name Yardlet. Supported accounts: any organization and personal accounts, or only your organization's. Leave the redirect empty, then Register."),
+                 link: Link(title: L10n.string("App registrations"), url: microsoftRegistrations),
+                 copies: [Copy(label: L10n.string("App name"), value: appName)], isDone: done(.msRegister)),
+            Step(id: .msRedirect, title: L10n.string("Add Yardlet's redirect in the manifest"),
+                 detail: L10n.string("In the app, Manifest: add the redirect URL below to publicClient → redirectUris, or in the older AAD Graph manifest the entry below to replyUrlsWithType, then Save. The redirect form doesn't take this address."),
+                 copies: [Copy(label: L10n.string("Manifest entry"), value: microsoftManifestEntry),
+                          Copy(label: L10n.string("Redirect URL"), value: ConnectorOAuth.registeredClientRedirectURI.absoluteString)],
+                 isDone: done(.msRedirect)),
+            Step(id: .msPermissions, title: L10n.string("Add the Microsoft Graph permissions"),
+                 detail: L10n.string("API permissions → Add a permission → Microsoft Graph → Delegated permissions: add the ones below. An administrator can then grant consent for the whole organization."),
+                 copies: [Copy(label: L10n.string("Permissions"), value: microsoftPermissionList)], isDone: done(.msPermissions)),
+            Step(id: .msClient, title: L10n.string("Paste the application ID here"),
+                 detail: L10n.string("Overview → Application (client) ID. For an app only your organization's accounts use, also its Directory (tenant) ID."),
                  isDone: appSaved),
             signIn
         ])
@@ -129,6 +181,39 @@ struct ConnectorSetupAssistant: Equatable {
             Step(id: .slackSignIn, title: L10n.string("Sign in to Slack"),
                  detail: L10n.string("Slack asks to allow Yardlet in your workspace. If your workspace needs an admin's approval, ask for it there."),
                  isDone: connected)
+        ])
+    }
+
+    // MARK: Zoom
+
+    /// Zoom App Marketplace → Develop → Build App.
+    static let zoomCreate = URL(string: "https://marketplace.zoom.us/develop/create")!
+
+    /// The Zoom products in the directory, in its order.
+    static var zoomPresets: [ConnectorPreset] { ConnectorPreset.all.filter(\.isZoom) }
+
+    /// The scopes the chosen products ask for, one per line, as the app's Scopes page takes them.
+    static func zoomScopeList(_ products: [ConnectorPreset]) -> String {
+        products.flatMap { ($0.scope ?? "").split(separator: " ").map(String.init) }.joined(separator: "\n")
+    }
+
+    static func zoom(opened: Set<StepID>, products: [ConnectorPreset], clientEntered: Bool, connected: Bool) -> ConnectorSetupAssistant {
+        ConnectorSetupAssistant(service: .zoom, steps: [
+            Step(id: .zoomCreate, title: L10n.string("Create a Zoom app"),
+                 detail: L10n.string("Zoom App Marketplace → Develop → Build App → General App, user-managed. Under OAuth, add the redirect URL below to the redirect URL and the allow list."),
+                 link: Link(title: L10n.string("Build an app on Zoom"), url: zoomCreate),
+                 copies: [Copy(label: L10n.string("App name"), value: appName),
+                          Copy(label: L10n.string("Redirect URL"), value: ConnectorOAuth.registeredClientRedirectURI.absoluteString)],
+                 isDone: opened.contains(.zoomCreate) || clientEntered || connected),
+            Step(id: .zoomScopes, title: L10n.string("Add the scopes"),
+                 detail: L10n.string("Scopes → Add Scopes: the ones below for the products you connect. Yardlet asks Zoom only to read."),
+                 copies: [Copy(label: L10n.string("Scopes"), value: zoomScopeList(products))],
+                 isDone: opened.contains(.zoomScopes) || clientEntered || connected),
+            Step(id: .zoomCredentials, title: L10n.string("Paste the client ID and secret"),
+                 detail: L10n.string("App Credentials → Client ID and Client Secret. Your keychain keeps the secret."),
+                 isDone: clientEntered || connected),
+            Step(id: .zoomSignIn, title: L10n.string("Sign in to Zoom"),
+                 detail: L10n.string("Each product signs in once in your browser."), isDone: connected)
         ])
     }
 
@@ -226,6 +311,40 @@ struct ConnectorSetupAssistant: Equatable {
         guard !value.isEmpty else { return .empty }
         return UUID(uuidString: value) != nil ? .valid
             : .invalid(L10n.string("An issuer ID looks like 57246542-96fe-1a63-e053-0824d011072a."))
+    }
+
+    /// A Microsoft application (client) ID: a GUID.
+    static func validateMicrosoftClientID(_ text: String) -> Validation {
+        let value = trimmed(text)
+        guard !value.isEmpty else { return .empty }
+        return UUID(uuidString: value) != nil ? .valid
+            : .invalid(L10n.string("An application ID looks like 11111111-2222-3333-4444-555555555555."))
+    }
+
+    /// A Microsoft directory (tenant): empty for any organization and personal accounts, a GUID, or
+    /// a domain such as contoso.onmicrosoft.com.
+    static func validateMicrosoftTenant(_ text: String) -> Validation {
+        let value = trimmed(text)
+        guard !value.isEmpty else { return .empty }
+        let domain = value.contains(".") && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-") }
+        return UUID(uuidString: value) != nil || domain || ["common", "organizations", "consumers"].contains(value.lowercased())
+            ? .valid : .invalid(L10n.string("A directory ID is a GUID or a domain such as contoso.onmicrosoft.com."))
+    }
+
+    /// A Zoom client ID: letters, digits, `_` and `-`.
+    static func validateZoomClientID(_ text: String) -> Validation {
+        let value = trimmed(text)
+        guard !value.isEmpty else { return .empty }
+        return value.count >= 10 && value.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") })
+            ? .valid : .invalid(L10n.string("A Zoom client ID is letters and digits, such as aBcD1234EfGh5678."))
+    }
+
+    /// A Zoom client secret: no spaces, and not cut off.
+    static func validateZoomSecret(_ text: String) -> Validation {
+        let value = trimmed(text)
+        guard !value.isEmpty else { return .empty }
+        return value.count >= 16 && !value.contains(where: \.isWhitespace) ? .valid
+            : .invalid(L10n.string("The client secret looks cut off."))
     }
 
     /// A Slack client secret, only for an app without PKCE: 32 hexadecimal digits.

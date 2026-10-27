@@ -124,8 +124,8 @@ struct ConnectorSettingsView: View {
     }
 }
 
-/// "Set up in one go": the two services that need an app of the person's own, each opening its
-/// setup assistant, with how far along it is.
+/// "Set up in one go": the services that need an app of the person's own, or sign in per account
+/// (Google, Microsoft 365, Slack, Zoom), each opening its setup assistant, with how far along it is.
 struct ConnectorSetupTiles: View {
     let center: ConnectorCenter
     let onOpen: (ConnectorPreset) -> Void
@@ -137,11 +137,15 @@ struct ConnectorSetupTiles: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 tile(name: "Google", detail: L10n.string("Gmail · Calendar · Drive"), status: googleStatus,
                      done: center.canSignInWithGoogle && googleConnected > 0, preset: "gmail")
+                tile(name: "Microsoft 365", detail: L10n.string("Outlook · OneDrive · Teams"), status: microsoftStatus,
+                     done: center.canSignInWithMicrosoft && microsoftConnected > 0, preset: "outlook-mail")
                 tile(name: "Slack", detail: L10n.string("From Yardlet's manifest"), status: slackStatus,
                      done: slack?.status == .connected, preset: "slack")
+                tile(name: "Zoom", detail: L10n.string("Meetings · Chat · Docs"), status: zoomStatus,
+                     done: zoom.contains { $0.status == .connected }, preset: "zoom-meetings")
             }
             .padding(.top, 2)
         }
@@ -158,6 +162,25 @@ struct ConnectorSetupTiles: View {
         return center.googleAppClientID == nil ? L10n.string("Sign in to start") : L10n.string("App saved · no account yet")
     }
 
+    private var microsoftConnected: Int {
+        center.microsoftAccounts.filter { $0.services.contains { $0.status == .connected } }.count
+    }
+
+    private var microsoftStatus: String {
+        guard center.canSignInWithMicrosoft else { return L10n.string("Not set up") }
+        let count = center.microsoftAccounts.count
+        guard count == 0 else { return L10n.format("%lld Microsoft accounts", Int64(count)) }
+        return center.microsoftApp == nil ? L10n.string("Sign in to start") : L10n.string("App saved · no account yet")
+    }
+
+    private var zoom: [ConnectorRecord] {
+        center.connectors.filter { $0.preset?.isZoom == true }
+    }
+
+    private var zoomStatus: String {
+        zoom.isEmpty ? L10n.string("Not set up") : L10n.format("%lld products added", Int64(zoom.count))
+    }
+
     private var slack: ConnectorRecord? {
         center.connectors.first { $0.presetID == "slack" && $0.preset != nil }
     }
@@ -169,7 +192,7 @@ struct ConnectorSetupTiles: View {
 
     private func tile(name: String, detail: String, status: String, done: Bool, preset id: String) -> some View {
         HStack(spacing: 10) {
-            ConnectorIcon(name: name, presetID: id == "slack" ? id : nil, sources: id == "slack" ? nil : .google, size: 30)
+            ConnectorIcon(name: name, presetID: id == "gmail" ? nil : id, sources: id == "gmail" ? .google : nil, size: 30)
             VStack(alignment: .leading, spacing: 1) {
                 Text(name).font(.callout.weight(.medium))
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -388,7 +411,7 @@ private struct ConnectorRow: View {
     private var detail: String? {
         var parts: [String] = []
         switch record.localService {
-        case let service? where service.isGoogle:
+        case let service? where service.accountProvider != nil:
             parts.append(record.account ?? L10n.string("Not signed in yet"))
         case .appStoreConnect?:
             parts.append(L10n.format("Key %@", record.account ?? ""))
@@ -522,9 +545,9 @@ private struct ConnectorRow: View {
         }
     }
 
-    /// A Gmail account with no Google OAuth app saved: its page in Add connector comes first.
-    private var needsGoogleApp: Bool {
-        record.isGoogle && !center.canSignInWithGoogle
+    /// A Google or Microsoft account with no app to sign in with: its page in Add connector comes first.
+    private var needsAccountApp: Bool {
+        record.localService?.accountProvider.map { !center.canSignIn(with: $0) } ?? false
     }
 
     /// An App Store Connect key Apple refused: a new key is added on its page.
@@ -533,13 +556,13 @@ private struct ConnectorRow: View {
     }
 
     private var actionTitle: String {
-        if needsEntryFirst != nil || needsGoogleApp || needsNewKey { return L10n.string("Set up…") }
+        if needsEntryFirst != nil || needsAccountApp || needsNewKey { return L10n.string("Set up…") }
         if case .error = state { return L10n.string("Try again") }
         return record.status == .signInRequired ? L10n.string("Reconnect") : L10n.string("Connect")
     }
 
     private func signIn() {
-        if needsGoogleApp || needsNewKey, let preset = record.preset {
+        if needsAccountApp || needsNewKey, let preset = record.preset {
             onSetUp(preset)
         } else if let first = needsEntryFirst {
             entering = first
@@ -585,6 +608,9 @@ private struct ConnectorRow: View {
             if record.isGoogle, let preset = record.preset {
                 Button(L10n.string("Google accounts and services…")) { onSetUp(preset) }
             }
+            if record.localService?.isMicrosoft == true, let preset = record.preset {
+                Button(L10n.string("Microsoft accounts and services…")) { onSetUp(preset) }
+            }
             if record.localService == .appStoreConnect, let preset = record.preset {
                 Button(L10n.string("App Store Connect keys…")) { onSetUp(preset) }
             }
@@ -602,9 +628,15 @@ private struct ConnectorRow: View {
             }
             if record.isGoogle {
                 Button(L10n.string("Add another Google account")) {
-                    center.addGoogleAccount(services: Set(LocalConnectorService.google))
+                    center.addAccount(services: Set(LocalConnectorService.googleDefaults))
                 }
                 .disabled(!center.canSignInWithGoogle)
+            }
+            if record.localService?.isMicrosoft == true {
+                Button(L10n.string("Add another Microsoft account")) {
+                    center.addAccount(services: [.outlookMail, .outlookCalendar, .oneDrive])
+                }
+                .disabled(!center.canSignInWithMicrosoft)
             }
             if let setup = record.preset?.setupURL {
                 Button(L10n.string("Open the service's setup page")) { NSWorkspace.shared.open(setup) }

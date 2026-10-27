@@ -14,8 +14,8 @@ struct GoogleDriveToolRunner {
     var maximumCharacters = 100_000
     var maximumDownload = 5 * 1_048_576
 
-    typealias Problem = GoogleToolArguments.Problem
-    private typealias Arguments = GoogleToolArguments
+    typealias Problem = ConnectorToolArguments.Problem
+    private typealias Arguments = ConnectorToolArguments
     private typealias Catalog = GoogleDriveToolCatalog
 
     /// What a file's answer carries, by the Drive API's field names.
