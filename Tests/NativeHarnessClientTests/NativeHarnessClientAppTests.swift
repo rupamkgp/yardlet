@@ -1,0 +1,346 @@
+import AppKit
+import Foundation
+import SwiftTerm
+import XCTest
+@testable import NativeHarnessClient
+
+@MainActor
+final class NativeHarnessClientAppTests: XCTestCase {
+    func testQuitWarningCancelLeavesActiveWorkUntouched() {
+        let session = activeSession()
+        let model = AppModel(
+            store: SessionStore(
+                sessions: [session],
+                repository: InMemorySessionRepository(sessions: [session])
+            ),
+            runtimeSelections: RuntimeSelectionStore(),
+            restoresIndexOnLaunch: false
+        )
+        let delegate = NativeHarnessClientAppDelegate()
+        delegate.model = model
+        delegate.terminationPrompt = { _ in false }
+        let resource = TestNativeSurfaceResource()
+        NativeSurfaceResourceRegistry.shared.register(resource)
+        defer { NativeSurfaceResourceRegistry.shared.stopAll() }
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+
+        XCTAssertEqual(reply, .terminateCancel)
+        XCTAssertEqual(model.activeLocalSessions.map(\.id), [session.id])
+        XCTAssertEqual(resource.stopCount, 0)
+    }
+
+    func testQuitWarningConfirmationRunsModelShutdown() async throws {
+        let session = activeSession()
+        let model = AppModel(
+            store: SessionStore(
+                sessions: [session],
+                repository: InMemorySessionRepository(sessions: [session])
+            ),
+            runtimeSelections: RuntimeSelectionStore(),
+            initialCodexPresentation: [session.id: .empty],
+            restoresIndexOnLaunch: false
+        )
+        let delegate = NativeHarnessClientAppDelegate()
+        delegate.model = model
+        delegate.terminationPrompt = { _ in true }
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+
+        XCTAssertEqual(reply, .terminateLater)
+        for _ in 0..<30 where !model.codexPresentationBySessionID.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.codexPresentationBySessionID.isEmpty)
+    }
+
+    func testConfirmedQuitStopsMountedNativeSurfaceResources() async throws {
+        let session = activeSession()
+        let model = AppModel(
+            store: SessionStore(
+                sessions: [session],
+                repository: InMemorySessionRepository(sessions: [session])
+            ),
+            runtimeSelections: RuntimeSelectionStore(),
+            initialCodexPresentation: [session.id: .empty],
+            restoresIndexOnLaunch: false
+        )
+        let resource = TestNativeSurfaceResource()
+        NativeSurfaceResourceRegistry.shared.register(resource)
+        defer { NativeSurfaceResourceRegistry.shared.stopAll() }
+
+        let delegate = NativeHarnessClientAppDelegate()
+        delegate.model = model
+        delegate.terminationPrompt = { _ in true }
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+
+        XCTAssertEqual(reply, .terminateLater)
+        for _ in 0..<30 where resource.stopCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(resource.stopCount, 1)
+        XCTAssertTrue(model.codexPresentationBySessionID.isEmpty)
+    }
+
+    func testWillTerminateStopsMountedNativeSurfaceResources() {
+        let delegate = NativeHarnessClientAppDelegate()
+        let resource = TestNativeSurfaceResource()
+        NativeSurfaceResourceRegistry.shared.register(resource)
+        defer { NativeSurfaceResourceRegistry.shared.stopAll() }
+
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        XCTAssertEqual(resource.stopCount, 1)
+    }
+
+    func testWillTerminateStopsInteractiveAccountConsole() async throws {
+        let controller = AccountLoginController()
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/sh"),
+                arguments: ["-c", "sleep 120 & wait"],
+                initialInput: nil
+            )
+        )
+        let terminal = attachLoginTerminal(to: controller)
+        defer { _ = terminal }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !controller.isRunning, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(controller.isRunning)
+
+        let processID = try XCTUnwrap(controller.processIdentifier)
+        var descendants: [pid_t] = []
+        let childDeadline = ContinuousClock.now + .seconds(2)
+        while descendants.isEmpty, ContinuousClock.now < childDeadline {
+            descendants = NativeProcessTree.descendantProcessIDs(of: processID)
+            if descendants.isEmpty {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        XCTAssertFalse(descendants.isEmpty)
+
+        let delegate = NativeHarnessClientAppDelegate()
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        XCTAssertFalse(controller.isRunning)
+        let drainDeadline = ContinuousClock.now + .seconds(2)
+        while descendants.contains(where: { Darwin.kill($0, 0) == 0 }), ContinuousClock.now < drainDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(descendants.allSatisfy { Darwin.kill($0, 0) == -1 })
+    }
+
+    func testInteractiveAccountConsoleSendsInitialInputThroughPTY() async throws {
+        let controller = AccountLoginController()
+        defer { controller.stop() }
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "printf 'YARDLET_LOGIN_PROMPT\\n'; "
+                        + "IFS= read -r answer; "
+                        + "printf 'YARDLET_LOGIN_INPUT_OK\\n'"
+                ],
+                initialInput: "\r",
+                initialInputTrigger: "YARDLET_LOGIN_PROMPT",
+                usesPseudoTerminal: true
+            )
+        )
+        let terminal = attachLoginTerminal(to: controller)
+        defer { _ = terminal }
+
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !controller.output.contains("YARDLET_LOGIN_INPUT_OK"),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertTrue(controller.output.contains("YARDLET_LOGIN_PROMPT"), controller.output)
+        XCTAssertTrue(controller.output.contains("YARDLET_LOGIN_INPUT_OK"), controller.output)
+    }
+
+    func testInteractiveAccountConsoleSendsManualInputThroughPTY() async throws {
+        let controller = AccountLoginController()
+        defer { controller.stop() }
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "printf 'YARDLET_AUTH_CODE_PROMPT\\n'; "
+                        + "IFS= read -r answer; "
+                        + "if [ \"$answer\" = 'yardlet-one-time-code' ]; then "
+                        + "printf 'YARDLET_MANUAL_INPUT_OK\\n'; fi"
+                ],
+                initialInput: nil,
+                usesPseudoTerminal: true
+            )
+        )
+        let terminal = attachLoginTerminal(to: controller)
+        defer { _ = terminal }
+
+        let promptDeadline = ContinuousClock.now + .seconds(4)
+        while !controller.output.contains("YARDLET_AUTH_CODE_PROMPT"),
+              ContinuousClock.now < promptDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertTrue(controller.output.contains("YARDLET_AUTH_CODE_PROMPT"), controller.output)
+        XCTAssertTrue(controller.submitInput("  yardlet-one-time-code\n"))
+
+        let resultDeadline = ContinuousClock.now + .seconds(4)
+        while !controller.output.contains("YARDLET_MANUAL_INPUT_OK"),
+              ContinuousClock.now < resultDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertTrue(controller.output.contains("YARDLET_MANUAL_INPUT_OK"), controller.output)
+        XCTAssertFalse(controller.submitInput("   \n"))
+    }
+
+    func testGuidedAccountConnectionProjectsBrowserAndVerificationCode() async throws {
+        let controller = AccountLoginController()
+        defer { controller.stop() }
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "printf 'Open https://auth.example.test/device\\n'; "
+                        + "printf 'Verification code: ABCD-EFGH\\n'; /bin/sleep 120"
+                ],
+                initialInput: nil
+            )
+        )
+        let terminal = attachLoginTerminal(to: controller)
+        defer { _ = terminal }
+
+        let deadline = ContinuousClock.now + .seconds(4)
+        while (controller.detectedURL == nil || controller.detectedCode == nil),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertEqual(controller.phase, .browserHandoff)
+        XCTAssertEqual(controller.detectedURL?.absoluteString, "https://auth.example.test/device")
+        XCTAssertEqual(controller.detectedCode, "ABCD-EFGH")
+    }
+
+    func testRuntimeOwnedPickerProjectsInputRequiredBeforeTerminalAttach() {
+        let controller = AccountLoginController()
+        defer { controller.stop() }
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/true"),
+                arguments: [],
+                initialInput: nil,
+                interaction: .terminalRequired
+            )
+        )
+
+        XCTAssertEqual(controller.phase, .inputRequired)
+    }
+
+    func testUnexpectedRuntimePickerEscapesGuidedPreparingState() async throws {
+        let controller = AccountLoginController()
+        defer { controller.stop() }
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "printf 'Login method\\n● Browser\\n○ API Key\\n'; /bin/sleep 120"
+                ],
+                initialInput: nil
+            )
+        )
+        let terminal = attachLoginTerminal(to: controller)
+        defer { _ = terminal }
+
+        let deadline = ContinuousClock.now + .seconds(4)
+        while controller.phase == .preparing, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertEqual(controller.phase, .inputRequired)
+    }
+
+    func testInteractiveAccountConsoleCancelDrainsPseudoTerminalProcessTree() async throws {
+        let controller = AccountLoginController()
+        defer { controller.stop() }
+        controller.start(
+            AccountInteractiveCommand(
+                executableURL: URL(filePath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "trap '' INT; /bin/sh -c 'trap \"\" INT; sleep 120' & wait"
+                ],
+                initialInput: nil,
+                usesPseudoTerminal: true
+            )
+        )
+        let terminal = attachLoginTerminal(to: controller)
+        defer { _ = terminal }
+
+        let processDeadline = ContinuousClock.now + .seconds(2)
+        while !controller.isRunning, ContinuousClock.now < processDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(controller.isRunning)
+        let processID = try XCTUnwrap(controller.processIdentifier)
+
+        var descendants: [pid_t] = []
+        let descendantDeadline = ContinuousClock.now + .seconds(2)
+        while descendants.isEmpty, ContinuousClock.now < descendantDeadline {
+            descendants = NativeProcessTree.descendantProcessIDs(of: processID)
+            if descendants.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        XCTAssertFalse(descendants.isEmpty)
+
+        controller.cancel()
+        XCTAssertFalse(controller.isRunning)
+        let drainDeadline = ContinuousClock.now + .seconds(2)
+        while ([processID] + descendants).contains(where: { Darwin.kill($0, 0) == 0 }),
+              ContinuousClock.now < drainDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(([processID] + descendants).allSatisfy { Darwin.kill($0, 0) == -1 })
+    }
+
+    private func attachLoginTerminal(
+        to controller: AccountLoginController
+    ) -> LocalProcessTerminalView {
+        let view = LocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 900, height: 500),
+            font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 200)
+        )
+        controller.attach(view)
+        return view
+    }
+
+    private func activeSession() -> SessionRecord {
+        SessionRecord(
+            harness: .codex,
+            workspaceURL: URL(filePath: "/tmp/quit-warning"),
+            runtimeExecutableURL: URL(filePath: "/tmp/codex"),
+            title: "Active Codex task",
+            status: .running
+        )
+    }
+
+    @MainActor
+    private final class TestNativeSurfaceResource: NativeSurfaceResource {
+        private(set) var stopCount = 0
+
+        func stop() {
+            stopCount += 1
+        }
+
+        func terminateForApplicationShutdown() {
+            stop()
+        }
+    }
+}

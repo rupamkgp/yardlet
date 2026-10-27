@@ -1,0 +1,212 @@
+import XCTest
+@testable import NativeHarnessClient
+
+/// The new-task screen's terminal, browser and side panel, and the task it starts taking them over
+/// as they are (the Codex app's thread takes over its draft's tabs).
+@MainActor
+final class DraftToolsTests: XCTestCase {
+    private final class FakeConnection: BrowserHostConnection {
+        var eventHandler: ((BrowserHostEvent) -> Void)?
+        var sent: [BrowserHostCommand] = []
+        func send(_ command: BrowserHostCommand) { sent.append(command) }
+        func terminate() {}
+    }
+
+    // MARK: - Browser tabs
+
+    func testABrowserTabMovesToAnotherTaskWithItsPage() throws {
+        let connection = FakeConnection()
+        let client = BrowserHostClient(idleGrace: .seconds(60), agentVisibleWindow: .milliseconds(80)) { connection }
+        let draft = UUID()
+        let task = UUID()
+        let first = try client.openTab(forSession: draft, url: "https://a.test", viewport: .offscreenDefault)
+        let second = try client.newTab(forSession: draft, url: "https://b.test", viewport: .offscreenDefault, select: true)
+        let third = try client.newTab(forSession: draft, url: "https://c.test", viewport: .offscreenDefault, select: false)
+        connection.eventHandler?(.address(tab: first.id, url: "https://a.test/page"))
+        let sentBefore = connection.sent.count
+        var draftChanges = 0
+        var taskChanges = 0
+        _ = client.addTabsObserver(forSession: draft) { draftChanges += 1 }
+        _ = client.addTabsObserver(forSession: task) { taskChanges += 1 }
+
+        // One tab: it leaves the draft's strip and joins the task's, page and all.
+        try client.move(first, toSession: task, select: false)
+        XCTAssertEqual(first.session, task)
+        XCTAssertEqual(client.tabs(forSession: draft).map(\.id), [second.id, third.id])
+        XCTAssertTrue(client.tab(forSession: task) === first, "a task with no tab in front fronts the one it gets")
+        XCTAssertTrue(client.tab(forSession: draft) === second, "the draft keeps its own front")
+        XCTAssertEqual(connection.sent.count, sentBefore, "nothing reaches the host: the page goes on")
+        XCTAssertNil(try client.reopenClosedTab(forSession: draft, viewport: .offscreenDefault),
+                     "a moved tab was not closed, so it is not on the reopen list")
+        XCTAssertGreaterThan(draftChanges, 0)
+        XCTAssertGreaterThan(taskChanges, 0)
+
+        // The rest in strip order, the draft's front still in front.
+        client.moveTabs(fromSession: draft, toSession: task)
+        XCTAssertEqual(client.tabs(forSession: task).map(\.id), [first.id, second.id, third.id])
+        XCTAssertTrue(client.tab(forSession: task) === second, "the draft's front is the task's front")
+        XCTAssertTrue(client.tabs(forSession: draft).isEmpty)
+        XCTAssertFalse(connection.sent.contains { if case .close = $0 { true } else { false } }, "no tab closed")
+        XCTAssertEqual(connection.sent.count, sentBefore)
+
+        // A task that already has as many tabs as one can keep does not take another.
+        let full = UUID()
+        for index in 0..<BrowserHostClient.maxTabsPerSession {
+            _ = try client.newTab(forSession: full, url: "https://\(index).test", viewport: .offscreenDefault, select: false)
+        }
+        XCTAssertThrowsError(try client.move(first, toSession: full, select: true))
+        XCTAssertEqual(first.session, task)
+    }
+
+    // MARK: - Workspace state
+
+    func testTheTaskTakesOverTheNewTaskScreensPanelsAndShell() throws {
+        let store = TaskWorkspaceStore()
+        let draft = store.draft
+        let folder = FileManager.default.temporaryDirectory
+        let browserKey = try XCTUnwrap(draft.openBrowserTab(address: "https://example.test"))
+        draft.setPanels(TaskSurfaceNavigationProjection.showing(
+            "files", in: .init(isTerminalPresented: true, trailingTabs: draft.panels.trailingTabs)))
+        draft.terminalStartRequested = true
+        draft.files.preferences.selectedPath = "README.md"
+        let files = draft.files
+        let browser = draft.browserTabs
+        let shell = draft.terminal(in: folder, launch: .userLoginShell(), taskID: nil)
+        XCTAssertTrue(draft.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell,
+                      "the workspace keeps one shell")
+        let panels = draft.panels
+
+        let taskID = UUID()
+        store.handOffDraft(to: taskID)
+        let task = store.state(for: taskID)
+        XCTAssertEqual(task.panels, panels)
+        XCTAssertTrue(task.terminalStartRequested)
+        XCTAssertTrue(task.files === files, "the Files panel's state, unsaved edits included")
+        XCTAssertTrue(task.browserTabs === browser, "the browser tabs' pages, the WebKit pages among them")
+        XCTAssertTrue(task.terminal(in: URL(filePath: "/elsewhere"), launch: .userLoginShell(), taskID: taskID) === shell,
+                      "the same shell goes on")
+        XCTAssertEqual(shell.taskID, taskID, "it counts toward the task now")
+        XCTAssertEqual(task.snapshot.browser?.pages, [BrowserTabPage(key: browserKey, address: "https://example.test", title: "")])
+
+        // The new-task screen starts over empty, as the Codex app's does with a new draft.
+        XCTAssertEqual(draft.panels, .init())
+        XCTAssertFalse(draft.terminalStartRequested)
+        XCTAssertFalse(draft.files === files)
+        XCTAssertFalse(draft.browserTabs === browser)
+        XCTAssertNil(draft.browserTabs.tab(browserKey))
+        XCTAssertFalse(draft.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell)
+        XCTAssertFalse(shell.hasEnded)
+    }
+
+    func testAShellEndsOnceNoPanelShowsIt() async throws {
+        let workspace = TaskWorkspaceState()
+        let folder = FileManager.default.temporaryDirectory
+        let shell = workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil)
+        shell.panelAppeared()
+        // The task's panel goes and another shows the same shell in the same update.
+        shell.panelDisappeared()
+        shell.panelAppeared()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(shell.hasEnded, "a panel drawn again in the same update keeps the shell")
+        XCTAssertTrue(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell)
+
+        shell.panelDisappeared()
+        XCTAssertFalse(shell.hasEnded, "checked after the window's update")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(shell.hasEnded, "no panel shows it: it ends, as a task's terminal ends when the task leaves")
+        XCTAssertFalse(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell,
+                       "the next panel opens a new shell")
+
+        // "Restart in …" ends the shell and asks for the next one.
+        let next = workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil)
+        let revision = workspace.terminalRevision
+        workspace.terminalStartRequested = false
+        workspace.restartTerminal()
+        XCTAssertTrue(next.hasEnded)
+        XCTAssertTrue(workspace.terminalStartRequested)
+        XCTAssertGreaterThan(workspace.terminalRevision, revision)
+        XCTAssertFalse(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === next)
+    }
+
+    func testTheNewTaskScreenOffersTheTerminalBrowserAndFiles() {
+        XCTAssertEqual(TaskSidePanelTabs.draftChoices.map(\.id), ["terminal", "browser", "files"])
+        XCTAssertEqual(TaskSidePanelTabs.draftChoices.map(\.shortcut), ["⌘3", "⌘4", nil])
+        let folder = URL(filePath: "/tmp/project")
+        let context = TerminalFolderContext(folders: [folder, URL(filePath: "/tmp/other")], restart: {})
+        XCTAssertTrue(context.contains(URL(filePath: "/tmp/project/")))
+        XCTAssertTrue(context.contains(URL(filePath: "/tmp/other")))
+        XCTAssertFalse(context.contains(URL(filePath: "/tmp/project/worktree")))
+    }
+
+    // MARK: - Starting a task
+
+    func testATaskStartedFromTheNewTaskScreenTakesOverItsPanels() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "draft-tools-\(UUID().uuidString)")
+        let folder = root.appending(path: "project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let cli = root.appending(path: "claude")
+        try Data("#!/bin/sh\n".utf8).write(to: cli)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cli.path(percentEncoded: false))
+        let model = AppModel(store: SessionStore(repository: InMemorySessionRepository()),
+                             runtimeSelections: RuntimeSelectionStore(discoversRuntimes: false),
+                             registry: HarnessRegistry { _, _ in Recorder() }, restoresIndexOnLaunch: false)
+        addTeardownBlock { await model.shutdown() }
+        model.runtimeSelections.select(cli, for: .claudeCode)
+
+        let draftWorkspace = model.taskWorkspaces.draft
+        draftWorkspace.setPanels(TaskSurfaceNavigationProjection.showing(
+            TaskSurfaceNavigationProjection.browserTabID(UUID()), in: .init(isTerminalPresented: true)))
+        let shell = draftWorkspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil)
+        let panels = draftWorkspace.panels
+
+        // A start the new-task screen did not make (a schedule, a suggested task) leaves them alone.
+        let draft = NewTaskDraft()
+        draft.workspaceURL = folder
+        draft.prepare(defaultWorkspaceURL: folder, availableHarnesses: [.claudeCode])
+        draft.text = "Check the build"
+        let other = try XCTUnwrap(draft.beginSubmission(runtimeURL: cli))
+        let otherResult = try await model.createTask(other)
+        let otherTask = try XCTUnwrap(otherResult)
+        XCTAssertEqual(model.taskWorkspaces.state(for: otherTask.id).panels, .init())
+        XCTAssertEqual(draftWorkspace.panels, panels)
+        draft.complete(other, succeeded: true)
+
+        draft.text = "Fix the login page"
+        var submission = try XCTUnwrap(draft.beginSubmission(runtimeURL: cli))
+        submission.takesDraftWorkspace = true
+        let result = try await model.createTask(submission)
+        let created = try XCTUnwrap(result)
+        let task = model.taskWorkspaces.state(for: created.id)
+        XCTAssertEqual(task.panels, panels)
+        XCTAssertTrue(task.terminal(in: folder, launch: .userLoginShell(), taskID: created.id) === shell)
+        XCTAssertEqual(shell.taskID, created.id)
+        XCTAssertEqual(draftWorkspace.panels, .init(), "the new-task screen starts over")
+    }
+
+    /// A Claude adapter that starts sessions and sends nothing.
+    private actor Recorder: HarnessAdapter {
+        nonisolated let kind = HarnessKind.claudeCode
+        func probeRuntime() async throws -> HarnessRuntimeDescriptor {
+            HarnessRuntimeDescriptor(harness: kind, executableURL: URL(filePath: "/tmp/stub"), version: "stub",
+                                     capabilities: .unavailable, fingerprint: "stub")
+        }
+        func createSession(_ request: CreateHarnessSessionRequest) async throws -> HarnessSessionHandle {
+            HarnessSessionHandle(harness: kind, localSessionID: request.localSessionID,
+                                 providerSessionID: UUID().uuidString, workspaceURL: request.workspaceURL)
+        }
+        func resumeSession(providerSessionID: String, localSessionID: UUID, workspaceURL: URL) async throws
+            -> HarnessSessionHandle {
+            HarnessSessionHandle(harness: kind, localSessionID: localSessionID, providerSessionID: providerSessionID,
+                                 workspaceURL: workspaceURL)
+        }
+        func send(_ prompt: String, to session: HarnessSessionHandle) async throws {}
+        func interrupt(_ session: HarnessSessionHandle) async throws {}
+        func respond(to permissionRequestID: String, decision: PermissionDecision, in session: HarnessSessionHandle)
+            async throws {}
+        func events(for session: HarnessSessionHandle) async -> AsyncStream<HarnessEventEnvelope> {
+            AsyncStream { $0.finish() }
+        }
+        func close(_ session: HarnessSessionHandle) async {}
+    }
+}

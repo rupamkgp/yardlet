@@ -1,0 +1,117 @@
+import AppKit
+import SwiftUI
+import XCTest
+@testable import NativeHarnessClient
+
+/// The window's tab strip drawn in the whole main window, light and dark, into
+/// `.build/window-tabs-render/`: three tabs (a running task, a split view with an unread task, and
+/// the new-task screen), the split view's tab shown, and one tab, which draws no strip.
+@MainActor
+final class WindowTabStripRenderingTests: XCTestCase {
+    private static let folder = "window-tabs-render"
+    private static let size = NSSize(width: 1280, height: 760)
+
+    private struct Fixture {
+        let model: AppModel
+        let running: SessionRecord
+        let left: SessionRecord
+        let right: SessionRecord
+    }
+
+    private func makeFixture() throws -> Fixture {
+        let root = FileManager.default.temporaryDirectory.appending(path: "yardlet-tabs-\(UUID().uuidString)")
+        let folder = root.appending(path: "yardlet")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let suite = testDefaultsSuite("WindowTabStripRendering")
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let cli = URL(filePath: "/usr/bin/true")
+        let running = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
+                                    title: "창 위 작업 탭 줄 만들기", status: .running)
+        let left = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
+                                 title: "분할 화면 점검", hasUnreadUpdate: true)
+        let right = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
+                                  title: "렌더 검사")
+        let sessions = [running, left, right]
+        let model = AppModel(
+            store: SessionStore(sessions: sessions, repository: InMemorySessionRepository(sessions: sessions)),
+            runtimeSelections: RuntimeSelectionStore(defaults: defaults, discoversRuntimes: false),
+            codexQueueRepository: UserDefaultsCodexQueueRepository(defaults: defaults, keyPrefix: "queue."),
+            preferences: defaults,
+            codexPendingRequestRepository: UserDefaultsCodexPendingServerRequestRepository(defaults: defaults),
+            codexTimelineItemRepository: UserDefaultsCodexTimelineItemRepository(defaults: defaults),
+            codexHistorySelectionRepository: UserDefaultsCodexHistorySelectionRepository(defaults: defaults,
+                                                                                         keyPrefix: "history."),
+            transcriptRepository: FileTranscriptRepository(directoryURL: root.appending(path: "transcripts")),
+            sessionTitleResolver: { _ in nil },
+            sessionTitleRetryCount: 0,
+            restoresIndexOnLaunch: false
+        )
+        addTeardownBlock { await model.shutdown() }
+        return Fixture(model: model, running: running, left: left, right: right)
+    }
+
+    private func window(_ model: AppModel, _ appearance: WindowlessRender.Appearance) -> some View {
+        MainWindow(model: model)
+            .frame(width: Self.size.width, height: Self.size.height)
+            .environment(\.colorScheme, appearance.colorScheme)
+    }
+
+    func testThreeTabsTheSplitViewsTabAndOneTab() throws {
+        let directory = try WindowlessRender.directory(Self.folder)
+        let fixture = try makeFixture()
+        let splits = fixture.model.splits
+        splits.activate(.session(fixture.running.id))
+        splits.openInNewTab(.session(fixture.left.id))
+        splits.combine(fixture.right.id, with: fixture.left.id)
+        let split = try XCTUnwrap(splits.activeSplit)
+        splits.newTab()
+        splits.selectTab(.session(fixture.running.id))
+        XCTAssertEqual(splits.tabs, [.session(fixture.running.id), .split(split.id), .home])
+
+        for appearance in WindowlessRender.Appearance.allCases {
+            let host = WindowlessRender.Host(window(fixture.model, appearance), size: Self.size, appearance: appearance)
+            host.settle(passes: 20, interval: 0.03)
+            try WindowlessRender.writePNG(host.capture().bitmap,
+                                          to: directory.appending(path: "three-tabs-\(appearance.suffix).png"))
+            let elements = host.accessibilityElements()
+            let labels = Set(elements.map(\.label))
+            XCTAssertTrue(labels.contains(L10n.string("New Tab")), "the strip's new-tab button")
+            for title in ["창 위 작업 탭 줄 만들기", "분할 화면 점검 + 렌더 검사", L10n.string("New task")] {
+                XCTAssertTrue(labels.contains(title), "tab \(title)")
+            }
+            XCTAssertTrue(labels.contains(L10n.format("Close tab %@", "창 위 작업 탭 줄 만들기")),
+                          "the active tab shows its close button")
+
+            splits.selectTab(.split(split.id))
+            host.settle(passes: 20, interval: 0.03)
+            try WindowlessRender.writePNG(host.capture().bitmap,
+                                          to: directory.appending(path: "split-tab-\(appearance.suffix).png"))
+            XCTAssertEqual(fixture.model.store.selectedSessionID, fixture.right.id,
+                           "the split's focused pane is the selected task")
+            splits.selectTab(.session(fixture.running.id))
+            host.close()
+        }
+
+        splits.closeOtherTabs()
+        for appearance in WindowlessRender.Appearance.allCases {
+            let host = WindowlessRender.Host(window(fixture.model, appearance), size: Self.size, appearance: appearance)
+            host.settle(passes: 20, interval: 0.03)
+            try WindowlessRender.writePNG(host.capture().bitmap,
+                                          to: directory.appending(path: "one-tab-\(appearance.suffix).png"))
+            XCTAssertFalse(host.accessibilityElements().map(\.label).contains(L10n.string("New Tab")),
+                           "one tab draws no strip")
+            host.close()
+        }
+    }
+
+    func testTabsShareTheWidthAndTheShownTabKeepsItsTitleWhenNarrow() {
+        XCTAssertEqual(WindowTabMetrics.widths(count: 2, available: 1000).shown, WindowTabMetrics.tabMaxWidth)
+        XCTAssertEqual(WindowTabMetrics.widths(count: 5, available: 900).other, (900 - 8 - 8) / 5)
+        // In a narrow title bar the shown tab keeps its title's room and the others give way, to their marks.
+        let narrow = WindowTabMetrics.widths(count: 4, available: 420)
+        XCTAssertGreaterThanOrEqual(narrow.shown, WindowTabMetrics.shownMinWidth)
+        XCTAssertLessThan(narrow.other, WindowTabMetrics.tabMinWidth)
+        XCTAssertEqual(WindowTabMetrics.widths(count: 12, available: 500).other, WindowTabMetrics.markWidth)
+    }
+}

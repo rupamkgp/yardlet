@@ -1,0 +1,8 @@
+/* The system's Bluetooth permission prompt for passkeys on a phone (WebAuthn hybrid). */
+"NSBluetoothAlwaysUsageDescription" = "Yardlet's built-in browser uses Bluetooth to sign in with a passkey from your phone or tablet.";
+"NSBluetoothPeripheralUsageDescription" = "Yardlet's built-in browser uses Bluetooth to sign in with a passkey from your phone or tablet.";
+/* Privacy prompts for commands Yardlet runs (harnesses, their tools, the terminal) and for its built-in browser's
+   browser host, which macOS attributes to Yardlet. */
+"NSAppleEventsUsageDescription" = "A command running in Yardlet, such as a harness's tool or a program in the terminal, wants to control another app.";
+"NSMicrophoneUsageDescription" = "Yardlet's built-in browser, when you allow a site to use the microphone, or a command running in Yardlet, such as a harness's voice dictation or a program in the terminal, wants to use the microphone.";
+"NSCameraUsageDescription" = "Yardlet's built-in browser, when you allow a site to use the camera, or a command running in Yardlet, such as a harness's tool or a program in the terminal, wants to use the camera.";

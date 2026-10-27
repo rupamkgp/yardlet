@@ -1,0 +1,154 @@
+// The renderer's side of a page's password fields (docs/BROWSER_HOST.md §4). CEF 154's windowless view
+// tells the browser process nothing about the focused field's type (OnVirtualKeyboardRequested carries
+// only `inputmode`, and only when an input method may show), so each renderer reports a focus change in
+// its frames, whether the newly focused element is an <input type=password>, and answers the browser
+// host's question about a frame's focused field after a new document commits (a page from the
+// back-forward cache keeps its focused field and reports no change). Yardlet's panel turns on secure
+// keyboard entry and Roman input sources while that field has the keyboard, as Safari and Chrome do.
+
+#include "FocusedField.h"
+
+#include <dlfcn.h>
+#include <string.h>
+
+#include "include/capi/cef_app_capi.h"
+#include "include/capi/cef_browser_capi.h"
+#include "include/capi/cef_dom_capi.h"
+#include "include/capi/cef_frame_capi.h"
+#include "include/capi/cef_process_message_capi.h"
+#include "include/capi/cef_render_process_handler_capi.h"
+#include "include/capi/cef_values_capi.h"
+
+// The browser host (YardletCEFBridge.c) names the same two messages.
+static const char kFocusedFieldMessage[] = "YardletFocusedField";
+static const char kFocusedFieldQuery[] = "YardletFocusedFieldQuery";
+
+static __typeof__(&cef_process_message_create) p_cef_process_message_create;
+static __typeof__(&cef_string_utf8_to_utf16) p_cef_string_utf8_to_utf16;
+static __typeof__(&cef_string_utf16_clear) p_cef_string_utf16_clear;
+static __typeof__(&cef_string_userfree_utf16_free) p_cef_string_userfree_utf16_free;
+
+#define RELEASE(object)                                           \
+    do {                                                          \
+        if (object) (object)->base.release(&(object)->base);      \
+    } while (0)
+
+// Every handler here is a process-lifetime static: CEF may add and release references, but they are
+// never freed.
+static void CEF_CALLBACK static_add_ref(cef_base_ref_counted_t *self) { (void)self; }
+static int CEF_CALLBACK static_release(cef_base_ref_counted_t *self) { (void)self; return 0; }
+static int CEF_CALLBACK static_has_one_ref(cef_base_ref_counted_t *self) { (void)self; return 1; }
+static int CEF_CALLBACK static_has_at_least_one_ref(cef_base_ref_counted_t *self) { (void)self; return 1; }
+
+static void init_base(cef_base_ref_counted_t *base, size_t size) {
+    base->size = size;
+    base->add_ref = static_add_ref;
+    base->release = static_release;
+    base->has_one_ref = static_has_one_ref;
+    base->has_at_least_one_ref = static_has_at_least_one_ref;
+}
+
+/// Takes the node's reference.
+static int is_password_field(cef_domnode_t *node) {
+    int password = node != NULL && node->is_form_control_element(node)
+        && node->get_form_control_element_type(node) == DOM_FORM_CONTROL_TYPE_INPUT_PASSWORD;
+    RELEASE(node);
+    return password;
+}
+
+/// Sends the frame's focused field to the browser process. Borrows the frame's reference.
+static void report(cef_frame_t *frame, int password) {
+    if (frame == NULL) return;
+    cef_string_t name = {0};
+    p_cef_string_utf8_to_utf16(kFocusedFieldMessage, strlen(kFocusedFieldMessage), &name);
+    cef_process_message_t *message = p_cef_process_message_create(&name);
+    p_cef_string_utf16_clear(&name);
+    if (message == NULL) return;
+    cef_list_value_t *arguments = message->get_argument_list(message);
+    if (arguments) arguments->set_bool(arguments, 0, password);
+    RELEASE(arguments);
+    // Passing the message gives the frame our reference.
+    frame->send_process_message(frame, PID_BROWSER, message);
+}
+
+static void CEF_CALLBACK render_on_focused_node_changed(cef_render_process_handler_t *self, cef_browser_t *browser,
+                                                        cef_frame_t *frame, cef_domnode_t *node) {
+    (void)self;
+    report(frame, is_password_field(node));
+    RELEASE(frame);
+    RELEASE(browser);
+}
+
+// cef_frame_t.visit_dom calls the visitor before it returns.
+static int g_visited_password;
+
+static void CEF_CALLBACK visit_focused_field(cef_domvisitor_t *self, cef_domdocument_t *document) {
+    (void)self;
+    g_visited_password = document ? is_password_field(document->get_focused_node(document)) : 0;
+    RELEASE(document);
+}
+
+static cef_domvisitor_t g_visitor;
+
+static int message_is(cef_process_message_t *message, const char *expected) {
+    cef_string_userfree_t name = message->get_name(message);
+    cef_string_t wanted = {0};
+    p_cef_string_utf8_to_utf16(expected, strlen(expected), &wanted);
+    int same = name != NULL && name->length == wanted.length
+        && memcmp(name->str, wanted.str, wanted.length * sizeof(*wanted.str)) == 0;
+    p_cef_string_utf16_clear(&wanted);
+    if (name) p_cef_string_userfree_utf16_free(name);
+    return same;
+}
+
+static int CEF_CALLBACK render_on_process_message_received(cef_render_process_handler_t *self, cef_browser_t *browser,
+                                                           cef_frame_t *frame, cef_process_id_t source_process,
+                                                           cef_process_message_t *message) {
+    (void)self;
+    int handled = 0;
+    if (source_process == PID_BROWSER && frame != NULL && message != NULL && message_is(message, kFocusedFieldQuery)) {
+        handled = 1;
+        g_visited_password = 0;
+        // Passing the visitor gives up a reference, which a static ignores.
+        frame->visit_dom(frame, &g_visitor);
+        report(frame, g_visited_password);
+    }
+    RELEASE(message);
+    RELEASE(frame);
+    RELEASE(browser);
+    return handled;
+}
+
+static cef_render_process_handler_t g_render_process_handler;
+static cef_app_t g_app;
+
+static cef_render_process_handler_t *CEF_CALLBACK app_get_render_process_handler(cef_app_t *self) {
+    (void)self;
+    return &g_render_process_handler;
+}
+
+cef_app_t *yardlet_helper_app(void *framework) {
+    p_cef_process_message_create = (__typeof__(p_cef_process_message_create))dlsym(framework, "cef_process_message_create");
+    p_cef_string_utf8_to_utf16 = (__typeof__(p_cef_string_utf8_to_utf16))dlsym(framework, "cef_string_utf8_to_utf16");
+    p_cef_string_utf16_clear = (__typeof__(p_cef_string_utf16_clear))dlsym(framework, "cef_string_utf16_clear");
+    p_cef_string_userfree_utf16_free =
+        (__typeof__(p_cef_string_userfree_utf16_free))dlsym(framework, "cef_string_userfree_utf16_free");
+    // Without them the renderer reports nothing and the panel never turns secure input on.
+    if (!p_cef_process_message_create || !p_cef_string_utf8_to_utf16 || !p_cef_string_utf16_clear
+        || !p_cef_string_userfree_utf16_free) {
+        return NULL;
+    }
+    memset(&g_visitor, 0, sizeof(g_visitor));
+    init_base(&g_visitor.base, sizeof(g_visitor));
+    g_visitor.visit = visit_focused_field;
+
+    memset(&g_render_process_handler, 0, sizeof(g_render_process_handler));
+    init_base(&g_render_process_handler.base, sizeof(g_render_process_handler));
+    g_render_process_handler.on_focused_node_changed = render_on_focused_node_changed;
+    g_render_process_handler.on_process_message_received = render_on_process_message_received;
+
+    memset(&g_app, 0, sizeof(g_app));
+    init_base(&g_app.base, sizeof(g_app));
+    g_app.get_render_process_handler = app_get_render_process_handler;
+    return &g_app;
+}

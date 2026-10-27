@@ -1,0 +1,268 @@
+import XCTest
+@testable import NativeHarnessClient
+
+/// A task keeps several browser tabs in strip order with one fronted, as the Claude app's Browser
+/// pane and the Codex app's in-app browser do.
+@MainActor
+final class BrowserSessionTabsTests: XCTestCase {
+    private final class FakeConnection: BrowserHostConnection {
+        var eventHandler: ((BrowserHostEvent) -> Void)?
+        var sent: [BrowserHostCommand] = []
+        func send(_ command: BrowserHostCommand) { sent.append(command) }
+        func terminate() {}
+    }
+
+    private let connection = FakeConnection()
+
+    private func makeClient() -> BrowserHostClient {
+        BrowserHostClient(idleGrace: .seconds(60), agentVisibleWindow: .milliseconds(80)) { [unowned self] in self.connection }
+    }
+
+    private func opened() -> [String] {
+        connection.sent.compactMap { if case .open(_, let url, _, _) = $0 { url } else { nil } }
+    }
+
+    /// Every tab of a task opens in that task's profile; a tab of no task in the default one; tabs that
+    /// move to another task say so, so its profile can follow them (docs/BROWSER_SESSION_ISOLATION.md).
+    func testATasksTabsOpenInItsProfileAndMovedTabsAreTold() throws {
+        let client = makeClient()
+        let task = UUID(), other = UUID()
+        client.profileForSession = { BrowserTabProfile(key: $0.uuidString, seedFrom: nil) }
+        var moves: [(UUID, UUID)] = []
+        client.onTabsMoved = { moves.append(($0, $1)) }
+        let first = try client.openTab(forSession: task, url: "https://a.test", viewport: .offscreenDefault)
+        _ = try client.newTab(forSession: task, url: "https://b.test", viewport: .offscreenDefault, select: false)
+        _ = try client.openTab(url: "https://c.test", viewport: .offscreenDefault)
+        let profiles = connection.sent.compactMap { if case .open(_, _, _, let profile) = $0 { profile?.key ?? "default" } else { nil } }
+        XCTAssertEqual(profiles, [task.uuidString, task.uuidString, "default"])
+        try client.move(first, toSession: other, select: true)
+        XCTAssertEqual(moves.map(\.0), [task])
+        XCTAssertEqual(moves.map(\.1), [other])
+    }
+
+    func testNewTabsOpenBehindTheFrontedTabUnlessSelected() throws {
+        let client = makeClient()
+        let session = UUID()
+        let first = try client.openTab(forSession: session, url: "https://a.test", viewport: .offscreenDefault)
+        let second = try client.newTab(forSession: session, url: "https://b.test", viewport: .offscreenDefault, select: false)
+        XCTAssertTrue(client.tab(forSession: session) === first, "a background tab leaves the front alone")
+        let third = try client.newTab(forSession: session, url: "https://c.test", viewport: .offscreenDefault, select: true)
+        XCTAssertTrue(client.tab(forSession: session) === third)
+        XCTAssertEqual(client.tabs(forSession: session).map(\.id), [first.id, second.id, third.id], "new tabs go last")
+        second.select()
+        XCTAssertTrue(client.tab(forSession: session) === second)
+        XCTAssertTrue(try client.openTab(forSession: session, url: "https://d.test", viewport: .offscreenDefault) === second,
+                      "the task's tab is the fronted one; its page is not loaded again")
+        XCTAssertEqual(opened(), ["https://a.test", "https://b.test", "https://c.test"])
+        XCTAssertTrue(client.tabs(forSession: UUID()).isEmpty, "other tasks have their own tabs")
+    }
+
+    func testClosingTheFrontedTabFrontsItsNeighbourAndCanBeReopened() throws {
+        let client = makeClient()
+        let session = UUID()
+        let first = try client.openTab(forSession: session, url: "https://a.test", viewport: .offscreenDefault)
+        let second = try client.newTab(forSession: session, url: "https://b.test", viewport: .offscreenDefault, select: true)
+        let third = try client.newTab(forSession: session, url: "https://c.test", viewport: .offscreenDefault, select: false)
+        connection.eventHandler?(.address(tab: second.id, url: "https://b.test/page"))
+        second.close()
+        XCTAssertTrue(client.tab(forSession: session) === third, "the tab that took its place, as Chrome")
+        third.close()
+        XCTAssertTrue(client.tab(forSession: session) === first, "else the one before it")
+
+        let reopened = try XCTUnwrap(client.reopenClosedTab(forSession: session, viewport: .offscreenDefault))
+        XCTAssertTrue(client.tab(forSession: session) === reopened)
+        XCTAssertEqual(opened().last, "https://b.test/page", "the closed tab's page, not its first address")
+        XCTAssertNil(try client.reopenClosedTab(forSession: session, viewport: .offscreenDefault),
+                     "a tab that showed no page is not on the reopen list")
+    }
+
+    func testATaskKeepsAtMostNineTabs() throws {
+        let client = makeClient()
+        let session = UUID()
+        _ = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        for _ in 1..<BrowserHostClient.maxTabsPerSession {
+            _ = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        }
+        XCTAssertThrowsError(try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: true)) {
+            XCTAssertEqual($0 as? BrowserTabLimitError, BrowserTabLimitError())
+        }
+        XCTAssertEqual(client.tabs(forSession: session).count, 9)
+        XCTAssertNoThrow(try client.newTab(forSession: UUID(), url: "about:blank", viewport: .offscreenDefault, select: true),
+                         "the limit is per task")
+    }
+
+    func testTabsLostWithTheHostOpenAgainInOrderWithTheSameFront() throws {
+        let client = makeClient()
+        let session = UUID()
+        let first = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        let blank = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        let third = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: true)
+        connection.eventHandler?(.address(tab: first.id, url: "https://a.test/"))
+        connection.eventHandler?(.address(tab: third.id, url: "https://c.test/"))
+        connection.eventHandler?(.address(tab: blank.id, url: "about:blank"))
+        connection.eventHandler?(.terminated(reason: "crashed"))
+        XCTAssertTrue(client.tabs(forSession: session).isEmpty)
+        XCTAssertEqual(client.rememberedTabs(forSession: session),
+                       BrowserRememberedTabs(addresses: ["https://a.test/", "https://c.test/"], keys: [first.key, third.key],
+                                             fronted: 1),
+                       "tabs that showed no page are not kept")
+        XCTAssertEqual(client.lastAddress(forSession: session), "https://c.test/")
+
+        connection.sent = []
+        let fronted = try XCTUnwrap(client.restoreTabs(forSession: session, viewport: .offscreenDefault))
+        XCTAssertEqual(opened(), ["https://a.test/", "https://c.test/"])
+        XCTAssertTrue(client.tabs(forSession: session).last === fronted)
+        XCTAssertEqual(client.tabs(forSession: session).map(\.key), [first.key, third.key],
+                       "they are the same side-panel tabs")
+        XCTAssertNil(client.rememberedTabs(forSession: session))
+        XCTAssertNil(try client.restoreTabs(forSession: session, viewport: .offscreenDefault), "restored once")
+    }
+
+    func testObserversHearTabChangesButNotFrames() throws {
+        let client = makeClient()
+        let session = UUID()
+        var calls = 0
+        let token = client.addTabsObserver(forSession: session) { calls += 1 }
+        let tab = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        XCTAssertEqual(calls, 1)
+        connection.eventHandler?(.title(tab: tab.id, title: "Example"))
+        XCTAssertEqual(tab.title, "Example")
+        XCTAssertEqual(calls, 2)
+        connection.eventHandler?(.frame(tab: tab.id, frame: BrowserFrame(
+            layer: .view, surface: 1, pixelWidth: 2, pixelHeight: 2, sequence: 1, paintedAt: 0, source: "accelerated"
+        )))
+        XCTAssertEqual(calls, 2, "frames do not rebuild the panel's tabs")
+        connection.eventHandler?(.loading(tab: tab.id, isLoading: true, canGoBack: true, canGoForward: false))
+        XCTAssertEqual(calls, 3, "a page starting to load shows on its tab")
+        connection.eventHandler?(.loading(tab: tab.id, isLoading: true, canGoBack: true, canGoForward: true))
+        XCTAssertEqual(calls, 3, "the rest of the loading state does not")
+        XCTAssertTrue(tab.isLoading)
+        XCTAssertTrue(tab.canGoBack)
+        connection.eventHandler?(.favicon(tab: tab.id, url: "https://a.test/favicon.ico", png: Data([1, 2, 3])))
+        XCTAssertEqual(calls, 4, "the page's icon shows on its tab")
+        XCTAssertEqual(tab.favicon, Data([1, 2, 3]))
+        let other = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        other.select()
+        other.close()
+        XCTAssertEqual(calls, 7)
+        client.removeTabsObserver(token, forSession: session)
+        tab.close()
+        XCTAssertEqual(calls, 7)
+    }
+
+    func testClosingATasksTabsClosesThemAllAndForgetsThem() throws {
+        let client = makeClient()
+        let session = UUID()
+        let first = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        let second = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        connection.eventHandler?(.address(tab: first.id, url: "https://a.test/"))
+        client.closeTabs(forSession: session)
+        XCTAssertTrue(first.isClosed && second.isClosed)
+        XCTAssertTrue(client.tabs(forSession: session).isEmpty)
+        XCTAssertNil(try client.reopenClosedTab(forSession: session, viewport: .offscreenDefault), "nothing to reopen for an archived task")
+    }
+
+    func testAPageThatClosesItselfLeavesTheStrip() throws {
+        let client = makeClient()
+        let session = UUID()
+        let first = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        let second = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: true)
+        connection.eventHandler?(.closed(tab: second.id))
+        XCTAssertTrue(second.isClosed)
+        XCTAssertTrue(client.tab(forSession: session) === first)
+    }
+
+    func testABackgroundTabPaintsOnlyWhileTheAgentUsesIt() async throws {
+        let client = makeClient()
+        let session = UUID()
+        let shown = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        client.attachPanel(to: shown)
+        let background = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        try await Task.sleep(for: .milliseconds(250))
+        func visibility(_ tab: BrowserTab) -> [Bool] {
+            connection.sent.compactMap { if case .visibility(let id, let hidden) = $0, id == tab.id { hidden } else { nil } }
+        }
+        XCTAssertEqual(visibility(background), [true], "a tab nobody shows stops painting after the opening window")
+        background.noteAgentActivity()
+        XCTAssertEqual(visibility(background), [true, false], "the agent driving it in the background shows it to the engine")
+        XCTAssertEqual(visibility(shown), [false], "the panel's tab stays shown")
+    }
+
+    // MARK: New windows
+
+    func testANewWindowRequestOpensAnotherTabOfTheTask() throws {
+        let client = makeClient()
+        let session = UUID()
+        let opener = try client.openTab(forSession: session, url: "https://a.test/", viewport: .offscreenDefault)
+        var opened: [BrowserTabID?] = []
+        opener.addEventObserver { if case .openedTab(_, let newTab, _) = $0 { opened.append(newTab) } }
+        opener.send(.resize(tab: opener.id, viewport: BrowserViewport(width: 500, height: 400, scale: 2)))
+
+        connection.eventHandler?(.newWindow(tab: opener.id, url: "https://b.test/", background: false, userGesture: true))
+        let front = try XCTUnwrap(client.tab(forSession: session))
+        XCTAssertFalse(front === opener, "window.open and target=_blank open in front")
+        XCTAssertEqual(opened, [front.id])
+        guard case .open(_, let url, let viewport, _)? = connection.sent.last(where: { if case .open = $0 { true } else { false } }) else {
+            return XCTFail("no tab opened")
+        }
+        XCTAssertEqual(url, "https://b.test/")
+        XCTAssertEqual(viewport.width, 500, "at the opener's size")
+
+        connection.eventHandler?(.newWindow(tab: opener.id, url: "https://c.test/", background: true, userGesture: true))
+        XCTAssertTrue(client.tab(forSession: session) === front, "a background-tab click opens behind")
+        XCTAssertEqual(client.tabs(forSession: session).count, 3)
+
+        connection.eventHandler?(.newWindow(tab: opener.id, url: "https://ad.test/", background: false, userGesture: false))
+        XCTAssertEqual(client.tabs(forSession: session).count, 3, "no tab without a user gesture, as Chrome blocks those pop-ups")
+        XCTAssertFalse(connection.sent.contains(.navigate(tab: opener.id, url: "https://ad.test/")))
+
+        // The host made the new window itself, so it keeps window.opener: Yardlet shows that tab.
+        let sent = connection.sent.count
+        connection.eventHandler?(.popupOpened(tab: 1 << 30, opener: opener.id, url: "https://issuer.test/", background: false))
+        let popup = try XCTUnwrap(client.tab(forSession: session))
+        XCTAssertEqual(popup.id, 1 << 30, "the host's popup is the task's tab, in front")
+        XCTAssertEqual(client.tabs(forSession: session).last?.id, popup.id)
+        XCTAssertEqual(opened.last, popup.id)
+        XCTAssertFalse(connection.sent.dropFirst(sent).contains { if case .open = $0 { true } else { false } },
+                       "Yardlet opens nothing for it")
+        connection.eventHandler?(.closed(tab: popup.id))
+        XCTAssertNil(client.tabs(forSession: session).first { $0.id == popup.id }, "window.close() closes its tab")
+    }
+
+    func testANewWindowOutsideATaskOrPastTheLimitLoadsInPlace() throws {
+        let client = makeClient()
+        let loose = try client.openTab(url: "https://a.test/", viewport: .offscreenDefault)
+        connection.eventHandler?(.newWindow(tab: loose.id, url: "https://b.test/", background: false, userGesture: true))
+        XCTAssertEqual(connection.sent.last, .navigate(tab: loose.id, url: "https://b.test/"))
+
+        let session = UUID()
+        let opener = try client.openTab(forSession: session, url: "about:blank", viewport: .offscreenDefault)
+        for _ in 1..<BrowserHostClient.maxTabsPerSession {
+            _ = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        }
+        var opened: [BrowserTabID?] = []
+        opener.addEventObserver { if case .openedTab(_, let newTab, _) = $0 { opened.append(newTab) } }
+        connection.eventHandler?(.newWindow(tab: opener.id, url: "https://c.test/", background: false, userGesture: true))
+        XCTAssertEqual(connection.sent.last, .navigate(tab: opener.id, url: "https://c.test/"))
+        XCTAssertEqual(opened, [nil], "the page goes there itself and the agent is told")
+
+        // A new window the host made has nowhere to go either: it closes and the page goes there itself.
+        connection.eventHandler?(.popupOpened(tab: 1 << 30, opener: opener.id, url: "https://d.test/", background: false))
+        XCTAssertEqual(Array(connection.sent.suffix(2)), [.close(tab: 1 << 30), .navigate(tab: opener.id, url: "https://d.test/")])
+        XCTAssertEqual(client.tabs(forSession: session).count, BrowserHostClient.maxTabsPerSession)
+        connection.eventHandler?(.popupOpened(tab: (1 << 30) + 1, opener: loose.id, url: "https://e.test/", background: false))
+        XCTAssertEqual(Array(connection.sent.suffix(2)), [.close(tab: (1 << 30) + 1), .navigate(tab: loose.id, url: "https://e.test/")])
+    }
+
+    func testTabsSavedWithTheTaskOpenOnlyWhenItHasNone() throws {
+        let client = makeClient()
+        let session = UUID()
+        client.rememberTabs(BrowserRememberedTabs(addresses: ["https://a.test/", "https://b.test/"], fronted: 7), forSession: session)
+        XCTAssertEqual(client.rememberedTabs(forSession: session)?.fronted, 1, "an out-of-range front is clamped")
+        let fronted = try XCTUnwrap(client.restoreTabs(forSession: session, viewport: .offscreenDefault))
+        XCTAssertEqual(opened(), ["https://a.test/", "https://b.test/"])
+        XCTAssertTrue(client.tabs(forSession: session).last === fronted)
+        client.rememberTabs(BrowserRememberedTabs(addresses: ["https://c.test/"], fronted: 0), forSession: session)
+        XCTAssertNil(client.rememberedTabs(forSession: session), "a task with open tabs keeps them")
+    }
+}

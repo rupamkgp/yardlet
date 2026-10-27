@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Portable baseline conformance runner for Yardlet Harness Protocol v1."""
+
+import json
+import os
+import selectors
+import subprocess
+import sys
+import time
+import uuid
+
+
+VERSION = {"major": 1, "minor": 0}
+REQUIRED = {
+    "runtime.discovery",
+    "session.create",
+    "session.close",
+    "turn.send",
+    "timeline.streaming",
+    "session.resume",
+    "turn.interrupt",
+}
+
+
+class ConformanceFailure(Exception):
+    pass
+
+
+class Runner:
+    def __init__(self, command, timeout=2.0):
+        self.command = command
+        self.timeout = timeout
+        self.process = None
+        self.selector = selectors.DefaultSelector()
+        self.events = {}
+        self.next_request = 0
+
+    def start(self):
+        self.process = subprocess.Popen(
+            self.command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        self.selector.register(self.process.stdout, selectors.EVENT_READ)
+        hello = self.read_frame()
+        if hello.get("type") != "hello":
+            raise ConformanceFailure("adapter must send hello first")
+        manifest = hello.get("manifest", {})
+        versions = manifest.get("protocolVersions", [])
+        if VERSION not in versions:
+            raise ConformanceFailure("adapter does not advertise YHP 1.0")
+        missing = sorted(REQUIRED - set(manifest.get("capabilities", [])))
+        if missing:
+            raise ConformanceFailure("missing capabilities: " + ", ".join(missing))
+        if "sample.fixture" not in manifest.get("extensionNamespaces", []):
+            raise ConformanceFailure("sample.fixture extension namespace is not declared")
+        self.write_frame({"type": "ready", "version": VERSION})
+        return manifest
+
+    def write_frame(self, frame):
+        if self.process.poll() is not None:
+            raise ConformanceFailure("adapter exited before request")
+        data = (json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        self.process.stdin.write(data)
+        self.process.stdin.flush()
+
+    def read_frame(self):
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                stderr = self.process.stderr.read().decode(errors="replace").strip()
+                raise ConformanceFailure(
+                    "adapter exited with {}: {}".format(self.process.returncode, stderr)
+                )
+            ready = self.selector.select(max(0.0, deadline - time.monotonic()))
+            if not ready:
+                continue
+            line = self.process.stdout.readline()
+            if not line:
+                continue
+            try:
+                return json.loads(line.decode())
+            except json.JSONDecodeError as error:
+                raise ConformanceFailure("invalid JSONL frame: {}".format(error)) from error
+        raise ConformanceFailure("adapter frame deadline exceeded")
+
+    def accept_event(self, frame):
+        if frame.get("version") != VERSION:
+            raise ConformanceFailure("event version differs from negotiated version")
+        value = frame.get("event", {})
+        local_session_id = value.get("localSessionID")
+        if not local_session_id:
+            raise ConformanceFailure("event is missing localSessionID")
+        observed = self.events.setdefault(local_session_id, [])
+        expected_sequence = len(observed)
+        if value.get("sequence") != expected_sequence:
+            raise ConformanceFailure(
+                "event sequence gap for {}: expected {}, got {}".format(
+                    local_session_id, expected_sequence, value.get("sequence")
+                )
+            )
+        kind = value.get("payload", {}).get("kind")
+        if expected_sequence == 0 and kind != "session.started":
+            raise ConformanceFailure("first session event must be session.started")
+        if kind == "session.started":
+            descriptor_id = value.get("payload", {}).get("session", {}).get("localSessionID")
+            if descriptor_id != local_session_id:
+                raise ConformanceFailure("session.started identity mismatch")
+        observed.append(value)
+
+    def request(self, method, params):
+        self.next_request += 1
+        request_id = "conformance-{}".format(self.next_request)
+        self.write_frame(
+            {
+                "type": "request",
+                "version": VERSION,
+                "request": {"id": request_id, "method": method, "params": params},
+            }
+        )
+        while True:
+            frame = self.read_frame()
+            frame_type = frame.get("type")
+            if frame_type == "event":
+                self.accept_event(frame)
+                continue
+            if frame_type != "response" or frame.get("version") != VERSION:
+                raise ConformanceFailure("unexpected adapter-directed frame")
+            response = frame.get("response", {})
+            if response.get("id") != request_id:
+                raise ConformanceFailure("response correlation mismatch")
+            has_result = "result" in response
+            has_error = "error" in response
+            if has_result == has_error:
+                raise ConformanceFailure("response must contain exactly one of result or error")
+            if has_error:
+                raise ConformanceFailure(
+                    "adapter error {}: {}".format(
+                        response["error"].get("code"), response["error"].get("message")
+                    )
+                )
+            return response["result"]
+
+    def close(self):
+        if self.process is None:
+            return
+        try:
+            self.selector.unregister(self.process.stdout)
+        except Exception:
+            pass
+        if self.process.stdin:
+            try:
+                self.process.stdin.close()
+            except Exception:
+                pass
+        try:
+            self.process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=1.0)
+
+
+def session_config(workspace):
+    return {
+        "workspacePath": workspace,
+        "modelID": None,
+        "modeID": None,
+        "featureValues": {},
+        "extensionValues": {"sample.fixture.mode": "conformance"},
+    }
+
+
+def kinds(events):
+    return [event.get("payload", {}).get("kind") for event in events]
+
+
+def run(command):
+    runner = Runner(command)
+    try:
+        manifest = runner.start()
+        runtime = runner.request("runtime.probe", {})
+        if runtime.get("harness") != manifest.get("harness"):
+            raise ConformanceFailure("runtime harness differs from manifest")
+        extension = {"sample.fixture.trace": "preserved"}
+        if runner.request("sample.fixture.echo", extension) != extension:
+            raise ConformanceFailure("namespaced extension did not round-trip")
+
+        workspace = os.getcwd()
+        config = session_config(workspace)
+        created_id = str(uuid.uuid4())
+        created = runner.request(
+            "session.create",
+            {"localSessionID": created_id, "config": config, "initialPrompt": []},
+        )
+        runner.request(
+            "session.send",
+            {
+                "localSessionID": created_id,
+                "clientMessageID": "complete",
+                "content": [{"type": "text", "text": "hello"}],
+            },
+        )
+        runner.request(
+            "session.send",
+            {
+                "localSessionID": created_id,
+                "clientMessageID": "interrupt",
+                "content": [{"type": "text", "text": "hold"}],
+            },
+        )
+        runner.request("session.interrupt", {"localSessionID": created_id})
+        runner.request("session.close", {"localSessionID": created_id})
+
+        resumed_id = str(uuid.uuid4())
+        runner.request(
+            "session.resume",
+            {
+                "localSessionID": resumed_id,
+                "providerSessionID": created["providerSessionID"],
+                "config": config,
+            },
+        )
+        runner.request(
+            "session.send",
+            {
+                "localSessionID": resumed_id,
+                "clientMessageID": "resumed",
+                "content": [{"type": "text", "text": "resumed"}],
+            },
+        )
+        runner.request("session.close", {"localSessionID": resumed_id})
+
+        created_kinds = kinds(runner.events.get(created_id, []))
+        resumed_kinds = kinds(runner.events.get(resumed_id, []))
+        required_created = {
+            "session.started",
+            "extension",
+            "turn.started",
+            "message.assistant_delta",
+            "turn.completed",
+            "turn.canceled",
+        }
+        if not required_created.issubset(set(created_kinds)):
+            raise ConformanceFailure("created session lifecycle is incomplete")
+        if not {"session.started", "turn.started", "message.assistant_delta", "turn.completed"}.issubset(
+            set(resumed_kinds)
+        ):
+            raise ConformanceFailure("resumed session lifecycle is incomplete")
+        extension_events = [
+            event
+            for event in runner.events[created_id]
+            if event.get("payload", {}).get("kind") == "extension"
+        ]
+        preserved = extension_events[0]["payload"]["extensionEvent"]["payload"].get(
+            "sample.fixture.mode"
+        )
+        if preserved != "conformance":
+            raise ConformanceFailure("session extension value was not preserved")
+
+        return {
+            "adapterID": manifest["adapterID"],
+            "version": "1.0",
+            "createdSessionEvents": len(created_kinds),
+            "resumedSessionEvents": len(resumed_kinds),
+            "extensionRoundTrip": True,
+        }
+    finally:
+        runner.close()
+
+
+def main(argv):
+    if len(argv) < 2:
+        print("usage: yardlet-harness-conformance ADAPTER [ARG ...]", file=sys.stderr)
+        return 64
+    command = argv[1:]
+    if command[0].endswith(".py"):
+        command = [sys.executable] + command
+    try:
+        report = run(command)
+    except (ConformanceFailure, OSError, KeyError) as error:
+        print("YHP conformance failed: {}".format(error), file=sys.stderr)
+        return 1
+    print(json.dumps(report, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

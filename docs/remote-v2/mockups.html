@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yardlet 휴대폰 시안</title>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f2f2f4; --surface2: #e9e9ec; --text: #111214; --text2: #5f626a; --text3: #95989f;
+    --line: #e4e5e8; --primary: #111214; --onprimary: #ffffff; --sheet: #ffffff; --scrim: rgba(0,0,0,.28);
+    --green: #1f9d55; --orange: #e9821e; --blue: #2f74f0; --red: #e0484e; --gray: #9a9da4;
+    --page: #d9dade; --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
+  }
+  .dark {
+    --bg: #101113; --surface: #1d1e21; --surface2: #26272b; --text: #ecedef; --text2: #a2a5ac; --text3: #73767d;
+    --line: #2a2b30; --primary: #ecedef; --onprimary: #101113; --sheet: #18191c; --scrim: rgba(0,0,0,.5);
+    --green: #35b56a; --orange: #f0963a; --blue: #5a92f5; --red: #ef6267; --gray: #7c7f86;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #c9cace; font-family: "Roboto", "Noto Sans KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+         color: #1b1c1f; -webkit-font-smoothing: antialiased; word-break: keep-all; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
+  .intro { padding: 28px 32px 8px; max-width: 1200px; }
+  .intro p { margin: 0; color: #4a4c52; font-size: 14px; line-height: 1.5; }
+  .row { display: flex; flex-wrap: wrap; gap: 28px; padding: 20px 32px 36px; align-items: flex-start; }
+  .label { font-size: 13px; color: #45474d; margin: 0 0 8px 4px; font-weight: 600; }
+  .phone { width: 360px; height: 760px; border-radius: 34px; background: var(--bg); color: var(--text); position: relative;
+           overflow: hidden; box-shadow: 0 0 0 8px #0d0e10, 0 18px 40px rgba(0,0,0,.25); display: flex; flex-direction: column; }
+  .status { height: 30px; flex: none; display: flex; justify-content: space-between; align-items: center; padding: 0 22px;
+            font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .status .icons { display: flex; gap: 5px; align-items: center; }
+  .status .icons i { display: block; width: 14px; height: 10px; border-radius: 2px; background: var(--text); opacity: .85; }
+  .content { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+  .gesture { height: 18px; flex: none; display: flex; justify-content: center; align-items: center; }
+  .gesture i { width: 110px; height: 4px; border-radius: 2px; background: var(--text); opacity: .35; }
+  svg { display: block; }
+  .ic { width: 22px; height: 22px; stroke: var(--text); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Home */
+  .top { display: flex; align-items: center; padding: 8px 12px 6px 18px; gap: 6px; flex: none; }
+  .mac { flex: 1; min-width: 0; }
+  .mac .name { display: flex; align-items: center; gap: 4px; font-size: 21px; font-weight: 650; letter-spacing: -.2px; }
+  .mac .name svg { width: 18px; height: 18px; stroke: var(--text2); }
+  .mac .conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text2); margin-top: 2px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .iconbtn { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 20px; }
+  .list { flex: 1; overflow: hidden; padding-bottom: 6px; }
+  .section { font-size: 13px; font-weight: 600; color: var(--text2); padding: 16px 18px 6px; }
+  .task { display: flex; gap: 12px; padding: 9px 18px; align-items: center; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; flex: none; overflow: hidden; background: var(--surface); }
+  .logo img { width: 100%; height: 100%; display: block; }
+  .task .body { flex: 1; min-width: 0; }
+  .task .title { font-size: 15.5px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task .sub { font-size: 13px; color: var(--text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task .sub.mono { font-family: var(--mono); font-size: 12px; }
+  .task .end { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+  .task .time { font-size: 12px; color: var(--text3); }
+  .warn { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid var(--red); }
+  .pulse { box-shadow: 0 0 0 3px color-mix(in srgb, var(--gray) 30%, transparent); }
+  .newbar { margin: 4px 12px 8px; display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 26px;
+            padding: 12px 8px 12px 16px; flex: none; }
+  .newbar .ph { flex: 1; color: var(--text3); font-size: 15px; }
+  .chip { font-size: 12.5px; color: var(--text2); background: var(--bg); border-radius: 14px; padding: 5px 10px; display: flex; gap: 4px; align-items: center; }
+  .send { width: 36px; height: 36px; border-radius: 18px; background: var(--primary); display: grid; place-items: center; flex: none; }
+  .send svg { stroke: var(--onprimary); width: 18px; height: 18px; }
+  .send.off { background: var(--surface2); }
+  .send.off svg { stroke: var(--text3); }
+
+  /* Conversation */
+  .bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px 8px 6px; border-bottom: 1px solid var(--line); flex: none; }
+  .bar .t { flex: 1; min-width: 0; }
+  .bar .t b { display: block; font-size: 16px; font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar .t span { font-size: 12.5px; color: var(--text2); }
+  .conv { flex: 1; overflow: hidden; padding: 6px 16px 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; }
+  .bubble { align-self: flex-end; max-width: 82%; background: var(--surface); border-radius: 20px; padding: 10px 14px; font-size: 15px; line-height: 1.4; }
+  .answer { font-size: 15px; line-height: 1.5; }
+  .answer code { font-family: var(--mono); font-size: 13px; background: var(--surface); padding: 1px 5px; border-radius: 5px; }
+  .worked { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text2); }
+  .worked::after { content: ""; flex: 1; height: 1px; background: var(--line); margin-left: 6px; }
+  .step { display: flex; gap: 8px; align-items: center; font-size: 13.5px; color: var(--text2); }
+  .step .add { color: var(--green); font-size: 12px; } .step .del { color: var(--red); font-size: 12px; }
+  .dock { border-top: 1px solid var(--line); padding: 14px 16px 10px; background: var(--bg); flex: none;
+          box-shadow: 0 -8px 18px -12px rgba(0,0,0,.18); }
+  .dock .kind { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text2); margin-bottom: 6px; }
+  .dock h3 { font-size: 16px; font-weight: 620; margin: 0 0 8px; line-height: 1.35; }
+  .cmd { font-family: var(--mono); font-size: 12.5px; background: var(--surface); border-radius: 10px; padding: 10px 12px; line-height: 1.45;
+         white-space: pre-wrap; word-break: break-all; }
+  .desc { font-size: 13.5px; color: var(--text2); margin: 8px 0 12px; }
+  .btns { display: flex; gap: 10px; }
+  .btn { flex: 1; height: 46px; border-radius: 12px; display: grid; place-items: center; font-size: 15px; font-weight: 600; }
+  .btn.fill { background: var(--primary); color: var(--onprimary); }
+  .btn.line { border: 1px solid var(--line); color: var(--text); }
+  .btn.quiet { color: var(--text2); flex: 0 0 auto; padding: 0 14px; }
+  .more { font-size: 12.5px; color: var(--text3); margin-top: 9px; text-align: center; }
+  .opt { display: flex; gap: 12px; align-items: flex-start; padding: 9px 2px; border-bottom: 1px solid var(--line); }
+  .opt:last-of-type { border-bottom: 0; }
+  .radio { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--text3); flex: none; margin-top: 1px; display: grid; place-items: center; }
+  .radio.on { border-color: var(--text); } .radio.on::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--text); }
+  .opt b { font-weight: 560; font-size: 15px; display: block; } .opt span { font-size: 13px; color: var(--text2); }
+  .own { margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; font-size: 14.5px; color: var(--text3); }
+  .composer { display: flex; gap: 8px; align-items: center; padding: 8px 12px 6px; flex: none; }
+  .composer .field { flex: 1; background: var(--surface); border-radius: 22px; padding: 11px 16px; font-size: 15px; color: var(--text3); }
+  .stop { width: 40px; height: 40px; border-radius: 20px; background: var(--primary); display: grid; place-items: center; }
+  .stop i { width: 12px; height: 12px; border-radius: 2px; background: var(--onprimary); }
+
+  /* Sheets */
+  .scrim { position: absolute; inset: 0; background: var(--scrim); }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--sheet); border-radius: 22px 22px 0 0; padding: 8px 18px 18px; }
+  .handle { width: 36px; height: 4px; border-radius: 2px; background: var(--text3); opacity: .5; margin: 2px auto 12px; }
+  .sheet h2 { font-size: 18px; font-weight: 650; margin: 0 0 12px; }
+  .field2 { background: var(--surface); border-radius: 14px; padding: 12px 14px; font-size: 15px; }
+  .rowline { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+  .rowline .grow { flex: 1; min-width: 0; } .rowline small { display: block; color: var(--text2); font-size: 13px; margin-top: 2px; }
+  .rowline:last-child { border-bottom: 0; }
+  .switch { width: 40px; height: 24px; border-radius: 12px; background: var(--surface2); position: relative; flex: none; }
+  .switch::after { content: ""; position: absolute; width: 20px; height: 20px; border-radius: 50%; background: #fff; top: 2px; left: 2px; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+  .switch.on { background: var(--primary); } .switch.on::after { left: 18px; background: var(--onprimary); }
+  .danger { color: var(--red); }
+
+  /* Pairing */
+  .pair { flex: 1; display: flex; flex-direction: column; padding: 0 28px; }
+  .pair .mid { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 14px; }
+  .appicon { width: 76px; height: 76px; border-radius: 20px; background: #0f1b33; display: grid; place-items: center; }
+  .pair h2 { font-size: 24px; margin: 6px 0 0; font-weight: 650; }
+  .pair p { margin: 0; color: var(--text2); font-size: 15px; line-height: 1.5; }
+  .pair .foot { font-size: 12.5px; color: var(--text3); text-align: center; line-height: 1.5; padding: 14px 0 6px; }
+
+  /* Notification */
+  .lock { background: linear-gradient(180deg, #2b3446, #11151d); color: #fff; }
+  .clock { text-align: center; font-size: 64px; font-weight: 300; margin-top: 40px; letter-spacing: -1px; }
+  .date { text-align: center; font-size: 15px; opacity: .8; }
+  .notif { margin: 26px 12px 0; background: rgba(255,255,255,.14); backdrop-filter: blur(10px); border-radius: 20px; padding: 12px 14px; color: #fff; }
+  .notif .app { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; }
+  .notif .app i { width: 16px; height: 16px; border-radius: 4px; background: #0f1b33; display: block; border: 1px solid rgba(255,255,255,.3); }
+  .notif b { display: block; font-size: 14.5px; margin-top: 6px; } .notif span { font-size: 13.5px; opacity: .85; }
+
+  /* Mac settings */
+  .macwin { width: 640px; border-radius: 12px; background: #f6f6f7; box-shadow: 0 0 0 1px rgba(0,0,0,.12), 0 18px 40px rgba(0,0,0,.2);
+            font-family: -apple-system, "SF Pro Text", "Apple SD Gothic Neo", sans-serif; color: #1d1d1f; overflow: hidden; }
+  .macwin .tb { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #e3e3e6; font-size: 13px; font-weight: 600; }
+  .macwin .tb i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .pane { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: #fff; border-radius: 10px; box-shadow: 0 0 0 1px rgba(0,0,0,.06); padding: 0 14px; }
+  .mrow { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid #ececef; font-size: 13px; }
+  .mrow:last-child { border-bottom: 0; }
+  .mrow .mi { width: 28px; height: 28px; border-radius: 7px; background: #f0f0f2; display: grid; place-items: center; flex: none; }
+  .mrow .mi svg { width: 15px; height: 15px; stroke: #6b6d73; }
+  .mrow .grow { flex: 1; } .mrow small { display: block; color: #7a7c82; font-size: 11.5px; margin-top: 2px; line-height: 1.4; }
+  .mswitch { width: 32px; height: 19px; border-radius: 10px; background: #34c759; position: relative; flex: none; }
+  .mswitch::after { content: ""; position: absolute; width: 17px; height: 17px; border-radius: 50%; background: #fff; top: 1px; right: 1px; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .mbtn { font-size: 12px; padding: 3px 10px; border-radius: 6px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.14), 0 1px 1px rgba(0,0,0,.06); }
+  .qr { width: 132px; height: 132px; background: #fff; border-radius: 8px; padding: 8px; box-shadow: 0 0 0 1px #e0e0e3; }
+  .ok { color: #1f9d55; }
+</style>
+</head>
+<body>
+<div class="intro">
+  <h1>Yardlet 휴대폰 앱 v2 시안</h1>
+  <p>설계: docs/REMOTE_V2_DESIGN.md 8절. 위 줄은 밝게, 아래 줄은 어둡게. 기다리는 요청은 입력창 바로 위에 붙고, 새 작업은 홈 아래 입력 막대에서 시작한다.
+  상태 점은 Mac 사이드바와 같다: 초록 승인, 주황 질문, 회색 실행 중, 파랑 읽지 않음, 빨강 실패.</p>
+</div>
+
+<!-- Shared SVG symbols -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chev-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="right" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="wifi" viewBox="0 0 24 24"><path d="M2 8.5a15 15 0 0120 0M5 12a10 10 0 0114 0M8.5 15.5a5 5 0 017 0"/><circle cx="12" cy="19" r="1"/></symbol>
+  <symbol id="qr" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v.01M14 21h7v-4"/></symbol>
+  <symbol id="pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4z"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="net" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></symbol>
+  <symbol id="cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 00.5-7.97A6 6 0 006 11a3.5 3.5 0 001 7z"/></symbol>
+  <symbol id="yardlet" viewBox="0 0 48 48"><circle cx="24" cy="24" r="13" fill="none" stroke="#f3eee4" stroke-width="5"/><path d="M15 30c4-2 6-6 9-6s5 4 9 6" fill="none" stroke="#f3eee4" stroke-width="4" stroke-linecap="round"/><circle cx="32" cy="12" r="3" fill="#d6e93b"/></symbol>
+</svg>
+
+<template id="t-status"><div class="status"><span>9:41</span><span class="icons"><i></i><i></i><i style="width:20px"></i></span></div></template>
+
+<div class="row" id="light"></div>
+<div class="row dark-row" id="dark"></div>
+<div class="row" id="extra"></div>
+
+<script>
+const L = (h) => `../../Sources/NativeHarnessClient/Resources/HarnessLogos/${h}.png`;
+const status = () => document.getElementById('t-status').innerHTML;
+const icon = (id, cls = 'ic', style = '') => `<svg class="${cls}" style="${style}"><use href="#${id}"/></svg>`;
+const phone = (label, inner, extraClass = '') =>
+  `<div><p class="label">${label}</p><div class="phone ${extraClass}">${status()}<div class="content">${inner}</div><div class="gesture"><i></i></div></div></div>`;
+
+const task = (logo, title, sub, mark, time, mono = false) => `
+  <div class="task"><div class="logo"><img src="${L(logo)}" alt=""></div>
+    <div class="body"><div class="title">${title}</div><div class="sub${mono ? ' mono' : ''}">${sub}</div></div>
+    <div class="end"><span class="time">${time}</span>${mark}</div></div>`;
+const dot = (c, extra = '') => `<span class="dot ${extra}" style="background:var(--${c})"></span>`;
+
+const home = `
+  <div class="top"><div class="mac"><div class="name">MacBook Pro ${icon('chev-down')}</div>
+    <div class="conn">${dot('green')}연결됨</div></div>
+    <div class="iconbtn">${icon('search')}</div></div>
+  <div class="list">
+    <div class="section">기다리는 작업</div>
+    ${task('claude-code', 'Approve the index migration', 'Bash: swift test --filter Migration', dot('green'), '2분', true)}
+    ${task('claude-code', 'Pick the release name', '질문: Which release name should we use?', dot('orange'), '7분')}
+    <div class="section">Yardlet</div>
+    ${task('codex', 'Build the release bundle', 'Codex · 실행 중', dot('gray', 'pulse'), '방금')}
+    ${task('claude-code', 'Fix the footer links', 'Claude Code', '', '16분')}
+    ${task('claude-code', 'Check the footer on mobile', '↳ Fix the footer links', '', '18분')}
+    <div class="section">Website</div>
+    ${task('codex', 'Summarize the crash reports', 'Codex · 끝남', dot('blue'), '10분')}
+    ${task('claude-code', 'Regenerate the screenshots', 'Claude Code · 실패', '<span class="warn"></span>', '24분')}
+  </div>
+  <div class="newbar"><span class="ph">새 작업</span><span class="chip">Yardlet ${icon('chev-down', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</span>
+    <span class="send off">${icon('up')}</span></div>`;
+
+const convHead = (title, sub) => `
+  <div class="bar"><div class="iconbtn">${icon('back')}</div><div class="t"><b>${title}</b><span>${sub}</span></div></div>`;
+
+const approval = `
+  ${convHead('Approve the index migration', 'Claude Code · Yardlet')}
+  <div class="conv">
+    <div class="bubble">Migrate the index to the new schema and run the migration tests</div>
+    <div class="worked">2분 38초 동안 작업함 · 단계 4개 ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
+    <div class="answer">The migration is written. I'll run <code>swift test --filter Migration</code> to check it.</div>
+    <div class="step">${icon('pencil', 'ic', 'width:16px;height:16px;stroke:var(--text2)')} Edited SessionRepository.swift <span class="add">+4</span> <span class="del">−2</span></div>
+  </div>
+  <div class="dock">
+    <div class="kind">${dot('green')}승인 요청 · Bash</div>
+    <div class="cmd">swift test --filter Migration</div>
+    <div class="desc">Run the migration tests</div>
+    <div class="btns"><div class="btn line">거부</div><div class="btn fill">한 번만 허용</div></div>
+    <div class="more">다른 선택지는 Mac에서 고를 수 있습니다</div>
+  </div>
+  <div class="composer"><div class="field">메시지 보내기</div><div class="stop"><i></i></div></div>`;
+
+const question = `
+  ${convHead('Pick the release name', 'Claude Code · Yardlet')}
+  <div class="conv">
+    <div class="bubble">Name the 0.2 release</div>
+    <div class="worked">12초 동안 작업함 · 단계 1개 ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
+  </div>
+  <div class="dock">
+    <div class="kind">${dot('orange')}질문 · 1/2</div>
+    <h3>Which release name should we use?</h3>
+    <div class="opt"><span class="radio on"></span><div><b>Juniper</b><span>Short and easy to say</span></div></div>
+    <div class="opt"><span class="radio"></span><div><b>Larch</b><span>Keeps the tree names</span></div></div>
+    <div class="opt"><span class="radio"></span><div><b>Hornbeam</b></div></div>
+    <div class="own">직접 입력</div>
+    <div class="btns"><div class="btn quiet">건너뛰기</div><div class="btn fill">다음</div></div>
+  </div>
+  <div class="composer"><div class="field">메시지 보내기</div><div class="stop"><i></i></div></div>`;
+
+const plan = `
+  ${convHead('Plan the cache rewrite', 'Claude Code · Yardlet')}
+  <div class="conv">
+    <div class="bubble">Plan how to replace the session cache</div>
+    <div class="worked">1분 5초 동안 작업함 · 단계 6개 ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
+  </div>
+  <div class="dock">
+    <div class="kind">${dot('green')}계획 검토</div>
+    <div class="answer" style="font-size:14px">
+      <b>Replace the session cache</b><br>
+      1. Move reads behind <code>SessionStore.read</code><br>
+      2. Write through to SQLite, drop the JSON mirror<br>
+      3. Migrate on first launch, keep a backup<br>
+      <span style="color:var(--text2)">… 전체 보기</span>
+    </div>
+    <div class="btns" style="margin-top:12px"><div class="btn line">계속 계획</div><div class="btn fill">계획 승인</div></div>
+  </div>
+  <div class="composer"><div class="field">메시지 보내기</div><div class="stop"><i></i></div></div>`;
+
+const newTask = `
+  ${home}
+  <div class="scrim"></div>
+  <div class="sheet">
+    <div class="handle"></div>
+    <h2>새 작업</h2>
+    <div class="rowline"><span class="grow">프로젝트</span><span style="color:var(--text2)">Yardlet</span>${icon('chev-down', 'ic', 'width:16px;height:16px;stroke:var(--text2)')}</div>
+    <div class="field2" style="min-height:120px;margin-top:12px">Add a dark mode toggle to Settings › General and follow the system appearance by default</div>
+    <div style="font-size:13px;color:var(--text2);margin:10px 2px 14px">Mac의 새 작업 설정으로 시작 · Claude Code</div>
+    <div class="btn fill" style="width:100%">시작</div>
+  </div>`;
+
+const macSheet = `
+  ${home}
+  <div class="scrim"></div>
+  <div class="sheet">
+    <div class="handle"></div>
+    <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('wifi')}</div>
+      <div class="grow"><b style="font-weight:620">MacBook Pro</b><small>같은 Wi-Fi로 연결됨</small></div></div>
+    <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('cloud', 'ic', 'stroke:var(--text3)')}</div>
+      <div class="grow">Mac Studio<small>마지막 연결 3일 전</small></div></div>
+    <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('plus')}</div><div class="grow">다른 Mac 연결</div></div>
+    <div style="height:10px"></div>
+    <div class="rowline"><div class="grow">알림<small>승인·질문과 끝난 작업</small></div><span class="switch on"></span></div>
+    <div class="rowline"><div class="grow">화면 모드</div><span style="color:var(--text2)">시스템 설정</span></div>
+    <div class="rowline danger">이 Mac 연결 해제</div>
+  </div>`;
+
+const pairing = `
+  <div class="pair"><div class="mid">
+    <div class="appicon"><svg width="48" height="48"><use href="#yardlet"/></svg></div>
+    <h2>Mac과 연결</h2>
+    <p>Mac의 Yardlet에서 설정 › 원격 연결을 켜고<br>“휴대폰 연결”을 누른 뒤 QR 코드를 찍으세요.</p>
+  </div>
+  <div class="btn fill" style="flex:none;gap:8px;display:flex;justify-content:center;align-items:center">${icon('qr', 'ic', 'stroke:var(--onprimary)')} QR 코드 스캔</div>
+  <div class="foot">같은 Wi-Fi, Tailscale, Yardlet 서버 가운데 닿는 길로 연결합니다.<br>내용은 Mac과 이 휴대폰만 읽을 수 있습니다.</div></div>`;
+
+const offline = `
+  <div class="top"><div class="mac"><div class="name">MacBook Pro ${icon('chev-down')}</div>
+    <div class="conn">${dot('orange')}Mac에 닿지 않습니다 · 다시 연결하는 중</div></div>
+    <div class="iconbtn">${icon('search')}</div></div>
+  <div class="list" style="opacity:.55">
+    <div class="section">기다리는 작업</div>
+    ${task('claude-code', 'Approve the index migration', 'Bash: swift test --filter Migration', dot('green'), '2분', true)}
+    <div class="section">Yardlet</div>
+    ${task('codex', 'Build the release bundle', 'Codex', '', '1시간')}
+    ${task('claude-code', 'Fix the footer links', 'Claude Code', '', '2시간')}
+  </div>
+  <div style="padding:14px 18px 18px;font-size:13px;color:var(--text2);line-height:1.5">Mac이 잠자고 있거나 Yardlet이 꺼져 있을 수 있습니다. 마지막으로 받은 목록입니다.</div>`;
+
+const lock = `
+  <div class="clock">9:41</div><div class="date">10월 24일 금요일</div>
+  <div class="notif"><div class="app"><i></i>Yardlet · 지금</div><b>승인 요청</b><span>잠금을 풀면 내용을 볼 수 있습니다</span></div>
+  <div class="notif" style="margin-top:10px"><div class="app"><i></i>Yardlet · 3분 전</div><b>작업이 끝났습니다</b><span>잠금을 풀면 내용을 볼 수 있습니다</span></div>`;
+
+const unlocked = `
+  <div class="clock" style="font-size:44px;margin-top:24px">9:41</div>
+  <div class="notif"><div class="app"><i></i>Yardlet · MacBook Pro · 지금</div><b>Approve the index migration</b><span>승인 요청 · Bash: swift test --filter Migration</span></div>
+  <div class="notif" style="margin-top:10px"><div class="app"><i></i>Yardlet · MacBook Pro · 3분 전</div><b>Summarize the crash reports</b><span>끝났습니다</span></div>`;
+
+document.getElementById('light').innerHTML = [
+  phone('1 연결 전', pairing), phone('2 작업(홈)', home), phone('3 승인', approval), phone('4 질문', question),
+  phone('5 계획 검토', plan), phone('6 새 작업', newTask), phone('7 Mac 시트', macSheet), phone('8 Mac에 닿지 않을 때', offline)
+].join('');
+document.getElementById('dark').innerHTML = [
+  phone('9 작업(어둡게)', home, 'dark'), phone('10 승인(어둡게)', approval, 'dark'), phone('11 질문(어둡게)', question, 'dark'),
+  phone('12 새 작업(어둡게)', newTask, 'dark'), phone('13 잠금 화면 알림', lock, 'lock dark'), phone('14 잠금을 푼 뒤 알림', unlocked, 'lock dark')
+].join('');
+
+const mi = (id) => `<span class="mi"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#${id}"/></svg></span>`;
+const qrCells = (() => { let s = ''; let seed = 7; for (let y = 0; y < 25; y++) for (let x = 0; x < 25; x++) {
+  seed = (seed * 9301 + 49297) % 233280; const finder = (x < 7 && y < 7) || (x > 17 && y < 7) || (x < 7 && y > 17);
+  const on = finder ? ((x % 18 === 0 || x % 18 === 6 || y % 18 === 0 || y % 18 === 6 || ((x % 18) > 1 && (x % 18) < 5 && (y % 18) > 1 && (y % 18) < 5))) : seed / 233280 > .52;
+  if (on) s += `<rect x="${x}" y="${y}" width="1" height="1"/>`; } return s; })();
+document.getElementById('extra').innerHTML = `
+  <div><p class="label">15 Mac 설정 › 원격 연결</p>
+  <div class="macwin"><div class="tb"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span style="margin-left:8px">원격 연결</span></div>
+  <div class="pane">
+    <div class="card">
+      <div class="mrow">${mi('phone')}<div class="grow"><b>원격 연결 허용</b><small>휴대폰의 Yardlet으로 이 Mac의 작업을 보고 조작합니다.</small></div><span class="mswitch"></span></div>
+      <div class="mrow">${mi('cloud')}<div class="grow"><b>밖에서도 연결</b><small>Yardlet 서버를 거칩니다. 내용은 종단 간 암호화되어 서버가 읽을 수 없습니다.</small></div><span class="mswitch"></span></div>
+      <div class="mrow">${mi('net')}<div class="grow"><b>연결</b><small>같은 Wi-Fi · Tailscale · Yardlet 서버 <span class="ok">●</span></small></div></div>
+    </div>
+    <div class="card"><div class="mrow" style="align-items:flex-start;gap:18px;padding:14px 0">
+      <svg class="qr" viewBox="0 0 25 25" shape-rendering="crispEdges" fill="#111">${qrCells}</svg>
+      <div class="grow"><b style="font-size:13px">휴대폰의 Yardlet으로 이 QR 코드를 찍으세요.</b>
+        <small style="margin-top:8px">5분 동안 한 번 쓸 수 있습니다 · 4:51 남음</small>
+        <div style="margin-top:12px"><span class="mbtn">취소</span></div></div></div></div>
+    <div class="card">
+      <div class="mrow" style="font-weight:600">연결된 휴대폰</div>
+      <div class="mrow">${mi('phone')}<div class="grow">Pixel 9<small>연결됨 · 같은 Wi-Fi</small></div><span class="mbtn" style="color:#d33">제거</span></div>
+      <div class="mrow">${mi('phone')}<div class="grow">Galaxy S23+<small>이전 앱 · 마지막 연결 10월 16일</small></div><span class="mbtn" style="color:#d33">제거</span></div>
+    </div>
+  </div></div></div>`;
+const only = new URLSearchParams(location.search).get('only');
+if (only) for (const id of ['light', 'dark', 'extra']) if (id !== only) document.getElementById(id).style.display = 'none';
+if (only) document.querySelector('.intro').style.display = 'none';
+</script>
+</body>
+</html>

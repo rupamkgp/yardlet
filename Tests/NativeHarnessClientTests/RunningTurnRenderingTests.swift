@@ -1,0 +1,123 @@
+import AppKit
+import SwiftUI
+import XCTest
+@testable import NativeHarnessClient
+
+/// A running turn reads as its words, folded summaries and one live line (2026-10-16 user decision:
+/// "도구 줄이 너무 많이 쌓임", "진행 중 표시가 애매함", "현재 처리되고 있는 tool이라도 펼쳐서 보여주지 않으면
+/// 좋겠어"; `ConversationLiveWork`). Drawn without a provider into `.build/composer-stream-qa/`:
+/// `running-turn-{light,dark}.png` (a Claude Code turn running a command after reads, searches, an
+/// edit and commands), `running-turn-thinking-{light,dark}.png` and
+/// `running-turn-waiting-{light,dark}.png`.
+@MainActor
+final class RunningTurnRenderingTests: XCTestCase {
+    private static let start = Date(timeIntervalSince1970: 1_800_000_000)
+    private static let size = NSSize(width: 820, height: 560)
+
+    private static func tool(_ id: String, _ kind: String, _ title: String, detail: String? = nil,
+                             output: String? = nil) -> HarnessActivity {
+        HarnessActivity(id: id, kind: kind, title: title, detail: detail, input: detail, output: output)
+    }
+
+    private static func bash(_ id: String, _ command: String, _ description: String, output: String? = nil) -> HarnessActivity {
+        HarnessActivity(id: id, kind: "Bash", title: "Bash", detail: command,
+                        input: command + "\n\ndescription: " + description, output: output)
+    }
+
+    /// Reads, a search and an edit, then commands, the last still running.
+    static func mixedEntries(last: TranscriptEntryContent? = nil) -> [TranscriptEntry] {
+        var contents: [TranscriptEntryContent] = [
+            .user(text: "파서 테스트가 가끔 실패하는 이유를 찾아서 고쳐 줘"),
+            .activity(tool("toolu_read1", "Read", "Read", detail: "Sources/Parser/Parser.swift"), state: .completed),
+            .activity(tool("toolu_grep", "Grep", "Grep", detail: "pending"), state: .completed),
+            .activity(tool("toolu_read2", "Read", "Read", detail: "Tests/ParserTests.swift"), state: .completed),
+            .assistant(text: "The test reads a shared cache before the parser fills it. Fixing the order.",
+                       isStreaming: false),
+            .activity(tool("toolu_edit", "Edit", "Edit", detail: "Sources/Parser/Parser.swift"), state: .completed),
+            .activity(bash("toolu_status", "git status --short", "Show changed files", output: " M Parser.swift"),
+                      state: .completed),
+            .activity(bash("toolu_test", "swift test --filter ParserTests", "Run the parser tests",
+                           output: "Test Suite 'ParserTests' started"), state: .running)
+        ]
+        if let last { contents.append(last) }
+        return contents.enumerated().map { index, content in
+            TranscriptEntry(createdAt: start.addingTimeInterval(Double(index) * 3), content: content)
+        }
+    }
+
+    private func timeline(_ entries: [TranscriptEntry]) -> some View {
+        ConversationTimeline(source: .transcript(entries: entries, harness: .claudeCode, status: .running,
+                                                 latestTurnIsComplete: false),
+                             actions: ConversationActions(chooseOption: { _, _ in }, answer: { _, _ in }))
+    }
+
+    func testARunningTurnReadsAsFoldedSummariesAndOneLiveLine() throws {
+        let directory = try WindowlessRender.directory("composer-stream-qa")
+        let entries = Self.mixedEntries()
+        var light: [WindowlessRender.AccessibilityElement] = []
+        for appearance in WindowlessRender.Appearance.allCases {
+            let drawing = try ConversationDrawing.draw(timeline(entries), size: Self.size, appearance: appearance)
+            try WindowlessRender.writePNG(drawing.capture.bitmap,
+                                          to: directory.appending(path: "running-turn-\(appearance.suffix).png"))
+            if appearance == .light { light = drawing.elements }
+        }
+        let labels = light.map(\.label)
+        let texts = light.map { [$0.label, $0.value].joined(separator: " ") }.joined(separator: "\n")
+        // The running command is the live line's, with the turn's steps; it is not also listed above.
+        let running = ConversationLineWording.command(
+            ConversationCommand(command: "swift test --filter ParserTests", status: "",
+                                description: "Run the parser tests"), phase: .running, harness: .claudeCode)[0].text
+        XCTAssertTrue(labels.contains { $0.hasPrefix(running) && $0.contains(L10n.format("%lld steps", Int64(6))) },
+                      texts)
+        XCTAssertEqual(labels.filter { $0 == running }.count, 0, "Not listed above the live line: \(texts)")
+        // Nothing is open: no call's output or detail shows while the turn runs.
+        XCTAssertFalse(texts.contains("Test Suite 'ParserTests' started"), texts)
+        XCTAssertFalse(texts.contains(" M Parser.swift"), texts)
+        XCTAssertFalse(light.contains { $0.value == L10n.string("Expanded") }, texts)
+    }
+
+    func testTheLiveLineTellsThinkingFromWaitingOnThePerson() throws {
+        let directory = try WindowlessRender.directory("composer-stream-qa")
+        let thinking = Self.mixedEntries(last: nil).dropLast()
+            + [TranscriptEntry(createdAt: Self.start.addingTimeInterval(30),
+                               content: .reasoning(text: "The cache is filled lazily…", isStreaming: true))]
+        let waiting = Self.mixedEntries(last: .permission(
+            PermissionRequest(id: "clean", title: "Bash", detail: "Remove the build folder", command: "rm -rf .build",
+                              toolCallID: "toolu_clean"), state: .pending))
+        for (name, entries, expected) in [("thinking", Array(thinking), L10n.string("Thinking")),
+                                          ("waiting", waiting, L10n.string("Awaiting approval"))] {
+            var light: [WindowlessRender.AccessibilityElement] = []
+            for appearance in WindowlessRender.Appearance.allCases {
+                let drawing = try ConversationDrawing.draw(timeline(entries), size: Self.size, appearance: appearance)
+                try WindowlessRender.writePNG(drawing.capture.bitmap,
+                                              to: directory.appending(path: "running-turn-\(name)-\(appearance.suffix).png"))
+                if appearance == .light { light = drawing.elements }
+            }
+            XCTAssertTrue(light.contains { $0.label.hasPrefix(expected) }, "\(name): \(light.map(\.label))")
+        }
+    }
+
+    func testTheLiveWorkProjection() {
+        func item(_ id: String, _ kind: ConversationItemKind, _ phase: ConversationItemPhase) -> ConversationItem {
+            ConversationItem(id: id, kind: kind, phase: phase, source: .transcript(TranscriptEntry(content: .plan(""))))
+        }
+        let read = item("r", .tool(ConversationTool(kind: .activity("Read"), name: "Parser.swift")), .completed)
+        let test = item("t", .command(ConversationCommand(command: "swift test", status: "inProgress")), .running)
+        let answer = item("a", .commentary(text: "Checking.", isStreaming: false), .completed)
+        var turn = ConversationTurn(id: "turn", status: .running, timing: ConversationTurnTiming())
+        turn.work = [read, answer, read, test]
+        let live = ConversationLiveWork.make(turn, harness: .codex, workspaceURL: nil)
+        XCTAssertEqual(live?.items.map(\.id), ["r", "t"], "The last run, with the running call")
+        XCTAssertEqual(live?.steps, 3)
+        if case .running = live?.activity {} else { XCTFail("\(String(describing: live?.activity))") }
+        XCTAssertEqual(ConversationLiveWork.listedRuns(turn).count, 2, "The read and the words above it")
+
+        turn.work = [read, answer]
+        XCTAssertEqual(ConversationLiveWork.make(turn, harness: .codex, workspaceURL: nil)?.activity, .working)
+        XCTAssertEqual(ConversationLiveWork.listedRuns(turn).count, 2)
+
+        turn.status = .completed
+        XCTAssertNil(ConversationLiveWork.make(turn, harness: .codex, workspaceURL: nil), "No live line after the turn")
+        XCTAssertEqual(ConversationLiveWork.detail(steps: 1, elapsed: "12s"), L10n.string("1 step") + " · 12s")
+    }
+}

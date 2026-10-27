@@ -1,0 +1,423 @@
+import Foundation
+import YardletAgentTools
+
+/// A service Yardlet knows how to connect, checked against the service's live endpoint with
+/// unauthenticated requests only (docs/CONNECTORS.md, "디렉터리"). How it signs in decides what
+/// the user is asked for: nothing (dynamic client registration or no sign-in), an OAuth client
+/// they register with the service, or a token they paste.
+struct ConnectorPreset: Identifiable, Equatable, Sendable {
+    enum SignIn: Equatable, Sendable {
+        /// OAuth with dynamic client registration: the browser opens and that is all.
+        case oauth
+        /// OAuth with a client the user registers with the service, which has no dynamic
+        /// registration (Slack, Google).
+        case registeredClient
+        /// An access token or API key the user pastes.
+        case token
+        /// The server answers without credentials.
+        case none
+        /// Yardlet's own server for the service (`LocalConnectorService`), signed in to each
+        /// Google account with the Google OAuth app the person registered once (Gmail).
+        case googleAccount
+    }
+
+    var id: String
+    var name: String
+    var serverURL: URL
+    var signIn: SignIn
+    /// GitHub takes a token by default and an OAuth app of the user's own too.
+    var acceptsRegisteredClient = false
+    var tokenQueryParameter: String?
+    var scope: String?
+    var authorizationParameters: [String: String] = [:]
+    /// An SF Symbol standing for the service; not its logo.
+    var symbol: String
+    /// Where the user registers the client or creates the token.
+    var setupURL: URL?
+    /// What the user needs, in a sentence (a catalog key).
+    var note: String?
+    /// The names other harnesses give this service: claude.ai connectors ("claude.ai Linear"),
+    /// Codex plugins by the part before `@`, stdio packages.
+    var claudeAINames: [String] = []
+    var codexPlugins: [String] = []
+    var packages: [String] = []
+
+    var usesToken: Bool { signIn == .token }
+    var needsRegisteredClient: Bool { signIn == .registeredClient }
+
+    static func preset(id: String) -> ConnectorPreset? { all.first { $0.id == id } }
+
+    /// The preset for a server address, by canonical address and then by host.
+    static func preset(for url: URL) -> ConnectorPreset? {
+        let canonical = MCPServerAddress.canonical(url)
+        if let exact = all.first(where: { MCPServerAddress.canonical($0.serverURL) == canonical }) { return exact }
+        let host = url.host()?.lowercased()
+        return all.first { $0.serverURL.host()?.lowercased() == host && host != "127.0.0.1" }
+    }
+
+    private static let googleOffline = ["access_type": "offline", "prompt": "consent"]
+    private static let googleSetup = URL(string: "https://console.cloud.google.com/auth/clients")!
+
+    /// The Google services Yardlet serves itself, signed in with one Google OAuth app.
+    var localService: LocalConnectorService? {
+        signIn == .googleAccount ? LocalConnectorService(presetID: id) : nil
+    }
+
+    /// Whether a name another app gives a service stands for this one: the directory's name, a
+    /// claude.ai connector's name without its prefix, or a Codex plugin's, in any case.
+    func isNamed(_ name: String) -> Bool {
+        let wanted = name.lowercased().trimmingCharacters(in: .whitespaces)
+        let prefix = ClaudeNativeMCPConfig.claudeAIPrefix.lowercased()
+        return wanted == self.name.lowercased()
+            || claudeAINames.contains { $0.lowercased() == wanted || $0.lowercased().replacingOccurrences(of: prefix, with: "") == wanted }
+            || codexPlugins.contains(wanted)
+    }
+
+    static let all: [ConnectorPreset] = [
+        ConnectorPreset(id: "linear", name: "Linear", serverURL: URL(string: "https://mcp.linear.app/mcp")!,
+                        signIn: .oauth, symbol: "checklist",
+                        claudeAINames: ["claude.ai Linear"], codexPlugins: ["linear"]),
+        ConnectorPreset(id: "notion", name: "Notion", serverURL: URL(string: "https://mcp.notion.com/mcp")!,
+                        signIn: .oauth, symbol: "doc.text",
+                        claudeAINames: ["claude.ai Notion"], codexPlugins: ["notion"]),
+        // The Slack app the setup assistant creates from Yardlet's manifest (`SlackAppManifest`).
+        ConnectorPreset(id: "slack", name: "Slack", serverURL: URL(string: "https://mcp.slack.com/mcp")!,
+                        signIn: .registeredClient, symbol: "number",
+                        setupURL: URL(string: "https://api.slack.com/apps")!,
+                        note: "Needs a Slack app of your own, made from Yardlet's manifest in a few clicks. Enter its client ID.",
+                        claudeAINames: ["claude.ai Slack"], codexPlugins: ["slack"]),
+        // Yardlet's own Google servers on the public Gmail, Calendar, and Drive APIs (2026-10-17,
+        // 2026-10-19), all signed in with one Google OAuth app: Google's own MCP servers for them
+        // need the Workspace developer preview, which personal accounts cannot join.
+        ConnectorPreset(id: "gmail", name: "Gmail", serverURL: GoogleOAuth.Endpoints.live.gmailAPI,
+                        signIn: .googleAccount, scope: GmailToolCatalog.scope,
+                        authorizationParameters: googleOffline, symbol: "envelope", setupURL: googleSetup,
+                        note: "Yardlet's own Gmail server. Each Google account signs in once.",
+                        claudeAINames: ["claude.ai Gmail"], codexPlugins: ["gmail"]),
+        ConnectorPreset(id: "google-calendar", name: "Google Calendar",
+                        serverURL: GoogleOAuth.Endpoints.live.calendarAPI, signIn: .googleAccount,
+                        scope: GoogleCalendarToolCatalog.scopes.joined(separator: " "),
+                        authorizationParameters: googleOffline, symbol: "calendar", setupURL: googleSetup,
+                        note: "Yardlet's own Google Calendar server, with the same Google OAuth app as Gmail.",
+                        claudeAINames: ["claude.ai Google Calendar"], codexPlugins: ["google-calendar", "google_calendar"]),
+        ConnectorPreset(id: "google-drive", name: "Google Drive",
+                        serverURL: GoogleOAuth.Endpoints.live.driveAPI, signIn: .googleAccount,
+                        scope: GoogleDriveToolCatalog.scopes.joined(separator: " "),
+                        authorizationParameters: googleOffline, symbol: "externaldrive", setupURL: googleSetup,
+                        note: "Yardlet's own Google Drive server, with the same Google OAuth app as Gmail.",
+                        claudeAINames: ["claude.ai Google Drive"], codexPlugins: ["google-drive", "google_drive"]),
+        ConnectorPreset(id: "github", name: "GitHub", serverURL: URL(string: "https://api.githubcopilot.com/mcp/")!,
+                        signIn: .token, acceptsRegisteredClient: true, symbol: "chevron.left.forwardslash.chevron.right",
+                        setupURL: URL(string: "https://github.com/settings/personal-access-tokens/new")!,
+                        note: "Paste a personal access token, or use an OAuth app of your own.",
+                        claudeAINames: ["claude.ai GitHub"], codexPlugins: ["github"]),
+        ConnectorPreset(id: "browserbase", name: "Browserbase", serverURL: URL(string: "https://mcp.browserbase.com/mcp")!,
+                        signIn: .token, tokenQueryParameter: "browserbaseApiKey", symbol: "globe",
+                        setupURL: URL(string: "https://www.browserbase.com/settings")!,
+                        note: "Paste your Browserbase API key. Browserbase takes it in the server address; it stays in your keychain.",
+                        packages: ["@browserbasehq/mcp", "@browserbasehq/mcp-server-browserbase", "@browserbasehq/mcp-browserbase"]),
+        ConnectorPreset(id: "atlassian", name: "Atlassian", serverURL: URL(string: "https://mcp.atlassian.com/v1/mcp")!,
+                        signIn: .oauth, symbol: "square.stack.3d.up",
+                        claudeAINames: ["claude.ai Atlassian"], codexPlugins: ["atlassian"]),
+        ConnectorPreset(id: "sentry", name: "Sentry", serverURL: URL(string: "https://mcp.sentry.dev/mcp")!,
+                        signIn: .oauth, symbol: "ladybug",
+                        claudeAINames: ["claude.ai Sentry"], codexPlugins: ["sentry"]),
+        // The services' own remote servers, each answering an unauthenticated `initialize` with 401
+        // and OAuth metadata that has a registration endpoint (2026-10-21, docs/CONNECTORS.md, "디렉터리").
+        // Left out: Vercel and Canva admit only clients they approved; Box, HubSpot, and Asana's
+        // V2 server have no registration (an app of the person's own).
+        // Work and planning
+        ConnectorPreset(id: "asana", name: "Asana", serverURL: URL(string: "https://mcp.asana.com/mcp")!,
+                        signIn: .oauth, symbol: "checkmark.circle"),
+        ConnectorPreset(id: "clickup", name: "ClickUp", serverURL: URL(string: "https://mcp.clickup.com/mcp")!,
+                        signIn: .oauth, symbol: "checklist.checked"),
+        ConnectorPreset(id: "monday", name: "monday.com", serverURL: URL(string: "https://mcp.monday.com/mcp")!,
+                        signIn: .oauth, symbol: "calendar.day.timeline.left", claudeAINames: ["claude.ai monday.com", "claude.ai Monday"]),
+        ConnectorPreset(id: "todoist", name: "Todoist", serverURL: URL(string: "https://ai.todoist.net/mcp")!,
+                        signIn: .oauth, symbol: "checkmark.square"),
+        ConnectorPreset(id: "airtable", name: "Airtable", serverURL: URL(string: "https://mcp.airtable.com/mcp")!,
+                        signIn: .oauth, symbol: "tablecells"),
+        ConnectorPreset(id: "miro", name: "Miro", serverURL: URL(string: "https://mcp.miro.com/")!,
+                        signIn: .oauth, symbol: "rectangle.on.rectangle.angled"),
+        ConnectorPreset(id: "dropbox", name: "Dropbox", serverURL: URL(string: "https://mcp.dropbox.com/mcp")!,
+                        signIn: .oauth, symbol: "shippingbox"),
+        ConnectorPreset(id: "intercom", name: "Intercom", serverURL: URL(string: "https://mcp.intercom.com/mcp")!,
+                        signIn: .oauth, symbol: "bubble.left.and.bubble.right"),
+        ConnectorPreset(id: "zapier", name: "Zapier", serverURL: URL(string: "https://mcp.zapier.com/api/mcp/mcp")!,
+                        signIn: .oauth, symbol: "bolt"),
+        ConnectorPreset(id: "granola", name: "Granola", serverURL: URL(string: "https://mcp.granola.ai/mcp")!,
+                        signIn: .oauth, symbol: "note.text"),
+        ConnectorPreset(id: "fireflies", name: "Fireflies", serverURL: URL(string: "https://api.fireflies.ai/mcp")!,
+                        signIn: .oauth, symbol: "mic"),
+        ConnectorPreset(id: "gamma", name: "Gamma", serverURL: URL(string: "https://mcp.gamma.app/mcp")!,
+                        signIn: .oauth, symbol: "rectangle.stack"),
+        // Building and running software
+        ConnectorPreset(id: "gitlab", name: "GitLab", serverURL: URL(string: "https://gitlab.com/api/v4/mcp")!,
+                        signIn: .oauth, symbol: "arrow.triangle.branch"),
+        ConnectorPreset(id: "supabase", name: "Supabase", serverURL: URL(string: "https://mcp.supabase.com/mcp")!,
+                        signIn: .oauth, symbol: "server.rack"),
+        ConnectorPreset(id: "neon", name: "Neon", serverURL: URL(string: "https://mcp.neon.tech/mcp")!,
+                        signIn: .oauth, symbol: "cylinder.split.1x2"),
+        ConnectorPreset(id: "prisma", name: "Prisma Postgres", serverURL: URL(string: "https://mcp.prisma.io/mcp")!,
+                        signIn: .oauth, symbol: "cylinder", claudeAINames: ["claude.ai Prisma"]),
+        ConnectorPreset(id: "netlify", name: "Netlify", serverURL: URL(string: "https://netlify-mcp.netlify.app/mcp")!,
+                        signIn: .oauth, symbol: "globe.americas"),
+        ConnectorPreset(id: "cloudflare", name: "Cloudflare", serverURL: URL(string: "https://bindings.mcp.cloudflare.com/mcp")!,
+                        signIn: .oauth, symbol: "cloud", claudeAINames: ["claude.ai Cloudflare Developer Platform"]),
+        ConnectorPreset(id: "posthog", name: "PostHog", serverURL: URL(string: "https://mcp.posthog.com/mcp")!,
+                        signIn: .oauth, symbol: "chart.bar.xaxis"),
+        ConnectorPreset(id: "semgrep", name: "Semgrep", serverURL: URL(string: "https://mcp.semgrep.ai/mcp")!,
+                        signIn: .oauth, symbol: "lock.shield"),
+        ConnectorPreset(id: "postman", name: "Postman", serverURL: URL(string: "https://mcp.postman.com/mcp")!,
+                        signIn: .oauth, symbol: "paperplane"),
+        ConnectorPreset(id: "jam", name: "Jam", serverURL: URL(string: "https://mcp.jam.dev/mcp")!,
+                        signIn: .oauth, symbol: "record.circle"),
+        // Payments and sites
+        ConnectorPreset(id: "stripe", name: "Stripe", serverURL: URL(string: "https://mcp.stripe.com")!,
+                        signIn: .oauth, symbol: "dollarsign.circle"),
+        ConnectorPreset(id: "paypal", name: "PayPal", serverURL: URL(string: "https://mcp.paypal.com/mcp")!,
+                        signIn: .oauth, symbol: "creditcard"),
+        ConnectorPreset(id: "square", name: "Square", serverURL: URL(string: "https://mcp.squareup.com/mcp")!,
+                        signIn: .oauth, symbol: "square.grid.2x2"),
+        ConnectorPreset(id: "webflow", name: "Webflow", serverURL: URL(string: "https://mcp.webflow.com/mcp")!,
+                        signIn: .oauth, symbol: "macwindow"),
+        ConnectorPreset(id: "wix", name: "Wix", serverURL: URL(string: "https://mcp.wix.com/mcp")!,
+                        signIn: .oauth, symbol: "safari"),
+        // Figma's remote server (mcp.figma.com) admits only clients in Figma's catalog, so the
+        // desktop app's own server is the one Yardlet can use.
+        ConnectorPreset(id: "figma-desktop", name: "Figma", serverURL: URL(string: "http://127.0.0.1:3845/mcp")!,
+                        signIn: .none, symbol: "paintpalette",
+                        note: "The Figma desktop app's server (turn it on in Dev Mode). Figma's remote server admits only apps Figma approved.",
+                        claudeAINames: ["claude.ai Figma"], codexPlugins: ["figma"]),
+        // Search and documentation. These answer without a sign-in (Hugging Face, Exa, and Context7
+        // also take one for more, which Yardlet does not ask for); Tavily signs in.
+        ConnectorPreset(id: "tavily", name: "Tavily", serverURL: URL(string: "https://mcp.tavily.com/mcp/")!,
+                        signIn: .oauth, symbol: "magnifyingglass"),
+        ConnectorPreset(id: "exa", name: "Exa", serverURL: URL(string: "https://mcp.exa.ai/mcp")!,
+                        signIn: .none, symbol: "magnifyingglass.circle"),
+        ConnectorPreset(id: "huggingface", name: "Hugging Face", serverURL: URL(string: "https://huggingface.co/mcp")!,
+                        signIn: .none, symbol: "face.smiling"),
+        ConnectorPreset(id: "context7", name: "Context7", serverURL: URL(string: "https://mcp.context7.com/mcp")!,
+                        signIn: .none, symbol: "books.vertical"),
+        ConnectorPreset(id: "deepwiki", name: "DeepWiki", serverURL: URL(string: "https://mcp.deepwiki.com/mcp")!,
+                        signIn: .none, symbol: "book.pages"),
+        ConnectorPreset(id: "openai-docs", name: "OpenAI Docs", serverURL: URL(string: "https://developers.openai.com/mcp")!,
+                        signIn: .none, symbol: "book"),
+        ConnectorPreset(id: "microsoft-learn", name: "Microsoft Learn", serverURL: URL(string: "https://learn.microsoft.com/api/mcp")!,
+                        signIn: .none, symbol: "graduationcap"),
+        ConnectorPreset(id: "aws-knowledge", name: "AWS Knowledge", serverURL: URL(string: "https://knowledge-mcp.global.api.aws")!,
+                        signIn: .none, symbol: "cloud.fill"),
+        ConnectorPreset(id: "cloudflare-docs", name: "Cloudflare Docs", serverURL: URL(string: "https://docs.mcp.cloudflare.com/mcp")!,
+                        signIn: .none, symbol: "doc.text.magnifyingglass")
+    ]
+}
+
+/// A service found in another harness's own configuration, offered once for connecting through
+/// Yardlet (Settings → Connectors, "Import").
+struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
+    enum Target: Equatable, Sendable {
+        case preset(ConnectorPreset)
+        /// A remote server the directory does not know, by the name and address it was found under.
+        case custom(name: String, url: URL)
+    }
+
+    var target: Target
+    /// Where it was found ("Claude Code · developer@example.test", "Codex plugin"), deduplicated.
+    var foundIn: [String]
+
+    var id: String {
+        switch target {
+        case .preset(let preset): "preset|\(preset.id)"
+        case .custom(_, let url): "custom|\(MCPServerAddress.canonical(url))"
+        }
+    }
+
+    var name: String {
+        switch target {
+        case .preset(let preset): preset.name
+        case .custom(let name, _): name
+        }
+    }
+
+    var serverURL: URL {
+        switch target {
+        case .preset(let preset): preset.serverURL
+        case .custom(_, let url): url
+        }
+    }
+
+    /// Everything a sign-in needs comes from the server: one click adds and connects.
+    var connectsInOneClick: Bool {
+        switch target {
+        case .preset(let preset): preset.signIn == .oauth || preset.signIn == .none
+        case .custom: true
+        }
+    }
+    /// What each harness and account has that Yardlet could carry instead, less what is already
+    /// added, the Yardlet server itself, local programs no preset stands for, and claude.ai's own
+    /// connectors (Claude Docs, Claude Code Remote), which exist only in claude.ai.
+    static func suggestions(from inventory: [NativeMCPInventoryEntry], connected: [ConnectorRecord]) -> [ConnectorImportSuggestion] {
+        let added = Set(connected.map { MCPServerAddress.canonical($0.serverURL) })
+        var order: [String] = []
+        var byID: [String: ConnectorImportSuggestion] = [:]
+        func found(_ target: Target, _ place: String) {
+            let suggestion = ConnectorImportSuggestion(target: target, foundIn: [place])
+            guard !added.contains(MCPServerAddress.canonical(suggestion.serverURL)) else { return }
+            if var existing = byID[suggestion.id] {
+                if !existing.foundIn.contains(place) { existing.foundIn.append(place) }
+                byID[suggestion.id] = existing
+            } else {
+                order.append(suggestion.id)
+                byID[suggestion.id] = suggestion
+            }
+        }
+        for entry in inventory {
+            let place = Self.place(entry.home)
+            for server in entry.servers where server.name != AgentToolEnvironment.serverName {
+                if let url = server.url {
+                    if let preset = ConnectorPreset.preset(for: url) {
+                        found(.preset(preset), place)
+                    } else if url.scheme == "https" {
+                        found(.custom(name: server.name, url: url), place)
+                    }
+                } else if let package = server.package,
+                          let preset = ConnectorPreset.all.first(where: { $0.packages.contains { package.hasPrefix($0) } }) {
+                    found(.preset(preset), place)
+                }
+            }
+            for name in entry.accountConnectors {
+                switch entry.home.kind {
+                case .claude:
+                    if let preset = ConnectorPreset.all.first(where: { $0.claudeAINames.contains(name) }) {
+                        found(.preset(preset), L10n.format("claude.ai · %@", Self.account(entry.home)))
+                    }
+                case .codex:
+                    let base = String(name.split(separator: "@").first ?? "")
+                    if let preset = ConnectorPreset.all.first(where: { $0.codexPlugins.contains(base) }) {
+                        found(.preset(preset), L10n.string("Codex plugin"))
+                    }
+                case .antigravity:
+                    break
+                }
+            }
+            // The ChatGPT apps Codex connected (Gmail, Google Calendar, Slack…), by name.
+            for name in entry.apps {
+                if let preset = ConnectorPreset.all.first(where: { $0.isNamed(name) }) {
+                    found(.preset(preset), entry.home.account.map { L10n.format("Codex app · %@", $0) } ?? L10n.string("Codex app"))
+                }
+            }
+        }
+        // The directory's order, then the rest as found.
+        let presetOrder = ConnectorPreset.all.map { "preset|\($0.id)" }
+        return order.enumerated().compactMap { index, id in byID[id].map { (index, $0) } }
+            .sorted { lhs, rhs in
+                let left = presetOrder.firstIndex(of: lhs.1.id) ?? presetOrder.count
+                let right = presetOrder.firstIndex(of: rhs.1.id) ?? presetOrder.count
+                return left != right ? left < right : lhs.0 < rhs.0
+            }
+            .map(\.1)
+    }
+
+    static func account(_ home: NativeMCPHome) -> String {
+        home.account ?? L10n.string("Default login")
+    }
+
+    static func place(_ home: NativeMCPHome) -> String {
+        switch home.kind {
+        case .claude: "Claude Code · " + account(home)
+        case .codex: home.account.map { "Codex · \($0)" } ?? "Codex"
+        case .antigravity: "Antigravity"
+        }
+    }
+}
+
+/// Whether a connector reaches one task, and if not, why.
+enum ConnectorTaskState: Equatable, Sendable {
+    case on
+    /// The user turned it off for this task.
+    case off
+    /// The task's harness loads a server at the same address from its own configuration and
+    /// cannot be told to leave it out (or Yardlet's connector was not connected when the task
+    /// started), so Yardlet leaves its copy out rather than give the model the same tools twice.
+    case harnessHasIt
+    /// Antigravity tasks get no connectors.
+    case unsupportedHarness
+}
+
+/// What Yardlet knows about a task when it injects the Yardlet MCP server: its harness and the
+/// remote servers that harness loads itself (`NativeMCPInventory.loadedRemoteServers`).
+struct ConnectorTaskScope: Equatable, Sendable {
+    var harness: HarnessKind
+    var nativeServerURLs: Set<String> = []
+    /// The harness's own entries behind those addresses, by its names.
+    var nativeServers: [HarnessRemoteServer] = []
+    /// Addresses where Yardlet's connected connector stands in for the harness's own server in
+    /// this task: the harness is told to leave its copy out of this process, so the model gets
+    /// one, Yardlet's (`ConnectorCenter.withYardletStandIns`).
+    var yardletServedURLs: Set<String> = []
+
+    /// Antigravity's per-task route is going away, so its tasks get no connectors.
+    var carriesConnectors: Bool { harness != .antigravityCLI }
+
+    /// The harness's own servers left out of this task for Yardlet's connectors.
+    var leftOutNativeServers: [HarnessRemoteServer] {
+        nativeServers.filter { yardletServedURLs.contains($0.address) }
+    }
+
+    /// Only Claude Code takes a list of servers to leave out of one process (`deniedMcpServers` in
+    /// `--settings`, which merges from every settings source). Codex and ACP harnesses keep their
+    /// own server, and Yardlet's copy stays out of the task.
+    static func canLeaveOutNativeServers(_ harness: HarnessKind) -> Bool { harness == .claudeCode }
+}
+
+/// The connector behind a Yardlet tool name, for the conversation's tool rows ("Linear: create
+/// issue"). The center keeps it current; reading it needs no actor.
+final class ConnectorToolLabels: @unchecked Sendable {
+    struct Label: Equatable, Sendable {
+        var connector: String
+        var presetID: String?
+        /// The server's own name for the tool.
+        var tool: String
+        /// The account the connector acts in (a Gmail address), when it has one.
+        var account: String? = nil
+        /// The local service behind it, whose sending and changing tools ask every time.
+        var localService: LocalConnectorService? = nil
+        /// Where the connector's picture comes from.
+        var icons: ConnectorIconSources = .none
+    }
+
+    static let shared = ConnectorToolLabels()
+
+    private let lock = NSLock()
+    private var labels: [String: Label] = [:]
+
+    func update(_ records: [ConnectorRecord]) {
+        var next: [String: Label] = [:]
+        for record in records {
+            for tool in record.offeredTools {
+                guard let original = tool["name"]?.stringValue else { continue }
+                next[ConnectorToolNaming.name(slug: record.slug, tool: original)] =
+                    Label(connector: record.name, presetID: record.presetID, tool: original, account: record.account,
+                          localService: record.localService, icons: record.iconSources)
+            }
+        }
+        lock.withLock { labels = next }
+    }
+
+    /// The label for a tool of the Yardlet server, by its name there (`linear_create_issue`).
+    func label(forTool name: String) -> Label? {
+        lock.withLock { labels[name] }
+    }
+
+    /// The label for a Claude Code tool name (`mcp__yardlet__linear_create_issue`).
+    func label(forClaudeTool name: String) -> Label? {
+        let prefix = "mcp__\(AgentToolEnvironment.serverName)__"
+        guard name.hasPrefix(prefix) else { return nil }
+        return label(forTool: String(name.dropFirst(prefix.count)))
+    }
+
+    /// The tool's words: "create issue" for `create_issue`.
+    static func spaced(_ tool: String) -> String {
+        tool.replacingOccurrences(of: "[_-]+", with: " ", options: .regularExpression)
+    }
+}

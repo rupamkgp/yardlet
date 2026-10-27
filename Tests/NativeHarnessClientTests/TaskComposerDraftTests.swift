@@ -1,0 +1,134 @@
+import XCTest
+@testable import NativeHarnessClient
+
+@MainActor
+final class TaskComposerDraftTests: XCTestCase {
+    func testReturningToTaskPreservesUnsentTextAndTypedAttachments() {
+        let store = TaskComposerDraftStore()
+        let firstID = UUID(), secondID = UUID()
+        let text = "  한글 👩🏽‍💻\n  keep indentation\n"
+        let attachments: [CodexUserInput] = [
+            .localImage(URL(filePath: "/tmp/context.png")),
+            .mention(name: "Sources", path: URL(filePath: "/tmp/Sources")),
+            .skill(name: "verification", path: URL(filePath: "/tmp/SKILL.md"))
+        ]
+        let first = store.draft(for: firstID)
+        first.text = text
+        first.attachments = attachments
+        let second = store.draft(for: secondID)
+        XCTAssertTrue(second.submission.isEmpty)
+        second.text = "A separate task"
+
+        let returned = store.draft(for: firstID)
+        XCTAssertTrue(returned === first)
+        XCTAssertEqual(returned.text, text)
+        XCTAssertEqual(returned.attachments, attachments)
+        XCTAssertEqual(returned.submission.inputs, [.text("한글 👩🏽‍💻\n  keep indentation")] + attachments)
+        XCTAssertEqual(second.text, "A separate task")
+    }
+
+    func testRestoreAndClearOnlyAffectTheOwningTask() {
+        let store = TaskComposerDraftStore()
+        let firstID = UUID(), secondID = UUID()
+        let first = store.draft(for: firstID)
+        let second = store.draft(for: secondID)
+        second.text = "Keep the other task"
+        let input = CodexUserInput.audio(URL(string: "https://example.test/audio.mp3")!)
+        first.restore(CodexComposerDraft(inputs: [.text("Review this request"), input]))
+        XCTAssertEqual(first.text, "Review this request")
+        XCTAssertEqual(first.attachments, [input])
+        XCTAssertNil(first.notice)
+        first.clear()
+        XCTAssertTrue(store.draft(for: firstID).submission.isEmpty)
+        XCTAssertNil(first.notice)
+        XCTAssertEqual(store.draft(for: secondID).text, "Keep the other task")
+    }
+
+    func testRemovedTasksAreDiscardedWithoutClearingRetainedTasks() {
+        let store = TaskComposerDraftStore()
+        let removed = UUID(), retained = UUID()
+        store.draft(for: removed).text = "Removed task"
+        store.draft(for: retained).text = "Still here"
+        store.retainSessions([retained])
+        XCTAssertTrue(store.draft(for: removed).submission.isEmpty)
+        XCTAssertEqual(store.draft(for: retained).text, "Still here")
+        XCTAssertTrue(TaskComposerDraftStore().draft(for: retained).submission.isEmpty)
+    }
+
+    func testTaskReturnRestoresEachDraftsOwnUnicodeSelection() throws {
+        let store = TaskComposerDraftStore()
+        let firstID = UUID(), secondID = UUID()
+        let first = store.draft(for: firstID)
+        let second = store.draft(for: secondID)
+        let text = "  선택 한글 👩🏽‍💻\n  둘째 줄"
+        first.text = text
+        second.text = text
+        first.rememberSelection(NSRange(try XCTUnwrap(text.range(of: "선택")), in: text), in: text)
+        second.rememberSelection(NSRange(try XCTUnwrap(text.range(of: "👩🏽‍💻")), in: text), in: text)
+
+        let returned = store.draft(for: firstID)
+        let firstSelection = try XCTUnwrap(returned.selection)
+        XCTAssertEqual(String(returned.text[firstSelection]), "선택")
+        var edited = returned.text
+        edited.replaceSubrange(firstSelection, with: "복귀")
+        XCTAssertEqual(edited, "  복귀 한글 👩🏽‍💻\n  둘째 줄")
+        XCTAssertEqual(String(second.text[try XCTUnwrap(second.selection)]), "👩🏽‍💻")
+        XCTAssertEqual(second.text, text)
+    }
+
+    func testTextReplacementInvalidatesSelectionAndIgnoresLateEditorCallbacks() {
+        let draft = TaskComposerDraft()
+        let pastedText = "  긴 초안 👩🏽‍💻\n  둘째 줄"
+        let pastedCaret = NSRange(location: pastedText.utf16.count, length: 0)
+        draft.rememberSelection(pastedCaret, in: pastedText)
+        XCTAssertNil(draft.selection, "The native editor may publish before the text binding")
+        draft.text = pastedText
+        draft.rememberSelection(pastedCaret, in: pastedText)
+        XCTAssertEqual(draft.selection?.lowerBound, draft.text.endIndex)
+        draft.text = "Original draft"
+        draft.rememberSelection(NSRange(location: 4, length: 5), in: draft.text)
+        draft.text = "Short"
+        XCTAssertNil(draft.selection)
+        draft.rememberSelection(NSRange(location: 4, length: 5), in: "Original draft")
+        XCTAssertNil(draft.selection)
+        draft.rememberSelection(NSRange(location: 1, length: 0), in: draft.text)
+        XCTAssertEqual(draft.selection?.lowerBound, draft.text.index(after: draft.text.startIndex))
+        draft.rememberSelection(NSRange(location: 20, length: 1), in: draft.text)
+        XCTAssertEqual(draft.selection?.lowerBound, draft.text.index(after: draft.text.startIndex))
+
+        draft.text = "e\u{301}"
+        draft.rememberSelection(NSRange(location: 2, length: 0), in: draft.text)
+        draft.text = "é"
+        XCTAssertNil(draft.selection, "Canonically equal strings may have different UTF-16 offsets")
+    }
+
+    func testExplicitDraftReplacementClearsSelectionEvenForIdenticalText() {
+        let draft = TaskComposerDraft()
+        draft.text = "Same text"
+        draft.rememberSelection(NSRange(location: 0, length: 4), in: draft.text)
+        draft.restore(CodexComposerDraft(inputs: [.text(draft.text)]))
+        XCTAssertNil(draft.selection)
+        draft.rememberSelection(NSRange(location: 0, length: 4), in: draft.text)
+        draft.apply(draft.snapshot)
+        XCTAssertNil(draft.selection)
+        draft.rememberSelection(NSRange(location: 0, length: 4), in: draft.text)
+        draft.clear()
+        XCTAssertNil(draft.selection)
+        XCTAssertTrue(draft.submission.isEmpty)
+    }
+
+    func testSelectionIsTransientAndDoesNotScheduleDraftWrites() {
+        let draft = TaskComposerDraft()
+        draft.text = "A stored draft"
+        var changes = 0
+        draft.onChange = { changes += 1 }
+        let before = draft.snapshot
+        draft.rememberSelection(NSRange(location: 2, length: 6), in: draft.text)
+        XCTAssertEqual(changes, 0)
+        XCTAssertEqual(draft.snapshot, before)
+        let restored = TaskComposerDraft()
+        restored.apply(before)
+        XCTAssertEqual(restored.text, draft.text)
+        XCTAssertNil(restored.selection)
+    }
+}

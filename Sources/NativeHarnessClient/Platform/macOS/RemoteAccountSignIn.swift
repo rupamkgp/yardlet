@@ -1,0 +1,86 @@
+import AppKit
+import AuthenticationServices
+import Foundation
+import Security
+
+/// The browser sign-in sheet for the relay's accounts (docs/REMOTE_PROTOCOL.md §14.4), as apps sign in
+/// with a provider: the system's web authentication session, returning to `yardlet-remote://auth`.
+@MainActor
+final class RemoteAccountSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private var session: ASWebAuthenticationSession?
+
+    func signIn(at url: URL, callbackScheme: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: url, callback: .customScheme(callbackScheme)) { callback, error in
+                if let callback {
+                    continuation.resume(returning: callback)
+                } else {
+                    continuation.resume(throwing: error ?? CancellationError())
+                }
+            }
+            session.presentationContextProvider = self
+            self.session = session
+            if !session.start() { continuation.resume(throwing: CancellationError()) }
+        }
+    }
+
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated { NSApp.keyWindow ?? NSApp.windows.first ?? ASPresentationAnchor() }
+    }
+}
+
+/// A secret the remote keeps in the login keychain under its own service (`<bundle identifier>.remote`).
+protocol RemoteSecretStoring: Sendable {
+    func load() -> String?
+    func save(_ value: String)
+    func delete()
+}
+
+struct KeychainRemoteSecret: RemoteSecretStoring {
+    let service: String
+    let account: String
+
+    static func accountToken(bundleIdentifier: String = Bundle.main.bundleIdentifier ?? YardletProduct.bundleIdentifier) -> Self {
+        KeychainRemoteSecret(service: "\(bundleIdentifier).remote", account: "account-token")
+    }
+
+    private var query: [CFString: Any] {
+        [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account]
+    }
+
+    func load() -> String? {
+        var search = query
+        search[kSecReturnData] = true
+        search[kSecMatchLimit] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(search as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func save(_ value: String) {
+        let data = Data(value.utf8)
+        if SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary) == errSecItemNotFound {
+            var item = query
+            item[kSecValueData] = data
+            item[kSecAttrLabel] = "Yardlet remote account"
+            _ = SecItemAdd(item as CFDictionary, nil)
+        }
+    }
+
+    func delete() {
+        _ = SecItemDelete(query as CFDictionary)
+    }
+}
+
+final class RemoteMemorySecret: RemoteSecretStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+
+    init(_ value: String? = nil) {
+        self.value = value
+    }
+
+    func load() -> String? { lock.withLock { value } }
+    func save(_ value: String) { lock.withLock { self.value = value } }
+    func delete() { lock.withLock { value = nil } }
+}

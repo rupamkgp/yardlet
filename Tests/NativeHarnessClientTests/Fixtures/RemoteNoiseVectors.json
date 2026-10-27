@@ -1,0 +1,85 @@
+{
+  "about" : "Test vectors for docs/REMOTE_PROTOCOL.md section 17. 'noise' is the public-domain cacophony vector for Noise_IK_25519_ChaChaPoly_SHA256 (https://github.com/haskell-cryptography/cacophony, vectors/cacophony.txt); messages alternate initiator, responder, then transport messages in that order. 'yardlet' is made by the Mac implementation and checks this protocol's prologue, payloads, chunking, keys and push sealing.",
+  "noise" : [
+    {
+      "handshake_hash" : "0b0f68fb0c27e03ce9b97565995ed4838cc0581b762ef72b062f6a546419fad7",
+      "init_ephemeral" : "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+      "init_prologue" : "4a6f686e2047616c74",
+      "init_remote_static" : "31e0303fd6418d2f8c0e78b91f22e8caed0fbe48656dcf4767e4834f701b8f62",
+      "init_static" : "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+      "messages" : [
+        {
+          "ciphertext" : "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c7944718da798efbcd91528520204f904b9bd6c7413dccdc214d951e15253e39987f18146e8cd0873654207148333479d4d16c289f0294b29960a72f48e0b7bba2e89083169825e59642148d492020664ccf7",
+          "payload" : "4c756477696720766f6e204d69736573"
+        },
+        {
+          "ciphertext" : "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f1448088435361e70b2ed446e6c9ec387d1d6b3b840f194e373979d241b203c4acafccf5",
+          "payload" : "4d757272617920526f746862617264"
+        },
+        {
+          "ciphertext" : "050e9f3c8fac16b68dbce8f8c4bfbf6617c897f9ada4aa29aa19c8",
+          "payload" : "462e20412e20486179656b"
+        },
+        {
+          "ciphertext" : "344233a6cabb7141d80f3da2fedc311d9646bbb0f505afe403a667",
+          "payload" : "4361726c204d656e676572"
+        },
+        {
+          "ciphertext" : "62cdeeb172ad7ade7aa7d9e069da5790f12331bfa00177787a1d0810c67dc3b2b4",
+          "payload" : "4a65616e2d426170746973746520536179"
+        },
+        {
+          "ciphertext" : "029bead1b40992327044d409d9a1f3ad8f36c3c452775d557e18bbeb2e8dfcead32d514024",
+          "payload" : "457567656e2042f6686d20766f6e2042617765726b"
+        }
+      ],
+      "protocol_name" : "Noise_IK_25519_ChaChaPoly_SHA256",
+      "resp_ephemeral" : "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+      "resp_prologue" : "4a6f686e2047616c74",
+      "resp_static" : "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893"
+    }
+  ],
+  "yardlet" : {
+    "collapseKey" : "edac160aa4def522",
+    "collapseTaskId" : "4C1F",
+    "discoveryId" : "c9537c55a0e0d588",
+    "handshakeHash" : "609c94e2a00d6173ce4b9b61d672ed8ec03019073251bd4a4d78aef9bf82ad11",
+    "largeFrames" : [
+      {
+        "length" : 65535,
+        "sha256" : "7ca86f87c78651e8e7edb26db312bea1d55f284d62312063733277526c47b76d"
+      },
+      {
+        "length" : 4498,
+        "sha256" : "d6af497cb2d9ae210ea431631ac3638fad7d04665c3a872963739f83692fa0d5"
+      }
+    ],
+    "largeMessageLength" : 69999,
+    "largeMessageSHA256" : "7d1a01ac1afb73ac967d952e4a9c79d9de9b43d1f04ca4ae725dd0815909999c",
+    "linkCode" : "673658",
+    "macEphemeralPrivate" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "macStaticPrivate" : "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    "macStaticPublic" : "d89e3bad79437dbed9f843418304f460ff05c7fe81fe4a9577a804cb9367ff66",
+    "message1" : "23b7bb8c91ae008711fb12846780bcdf1e065f821bdfec49f57e7c7dcd4c48233a5bc86b78c00028570a7fd786f1ae096556a75f92812d9064b1be8bd43837494cffabe8e7aee8916322373deb18112556305c013d782d6d7a20faf83ede50ce69b64879ba5290fff54f852ffbbda3c5d31309828ebfff63b3fa23722d00892ffaacdf7a329b7b4a82ccdd0d31f69221574504e369f73ef7a34a4aecf7e31812a93d7992085d351b875b4ee3b236ac55e2be8d17d9c07b393437cd94fd9f7e3be19712fa23b1e47fd6afaf24b222317c8df0d758d653dd",
+    "message1Payload" : "{\"appVersion\":\"0.2.0\",\"name\":\"Pixel 9\",\"pair\":\"MzQ1Njc4OTo7PD0-P0BBQkNERUZHSElKS0xNTk9QUVI\",\"platform\":\"android\",\"v\":2}",
+    "message2" : "605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23caa999293826a82ab4f3fdfb9984e30126a0567b33458b3364b4ccd410430275939f1040bcf9fc609f92aafdd93634ff8f1a5b694469d2366b658806a937693a55e23d8fdc2d19f46f91969547b1cece70f26b803bc9d3f354f85b81dca3f93155d34fed707b4ec6132822e92ee9c4363a61b518653b5761479a3ed77395ccb159ffcfca842a0c482fd63497f2f29c15ea224088814887be29fc5ab3f8a806e414de950c4fe0c0931eddef3cc13d2e8b9f2ca3a7575d43acd17471d7eef5afd4ad7ed6277639ec2903fd41e4aad",
+    "message2Payload" : "{\"deviceId\":\"B0D2\",\"direct\":[\"192.168.1.20:47616\"],\"ok\":true,\"paired\":true,\"server\":{\"app\":\"Yardlet\",\"appVersion\":\"1.0\",\"name\":\"MacBook Pro\",\"protocolVersion\":2},\"serverTime\":1792158000000}",
+    "pairingURL" : "yardlet-remote://pair?v=2&k=2J47rXlDfb7Z-ENBgwT0YP8Fx_6B_kqVd6gEy5Nn_2Y&s=MzQ1Njc4OTo7PD0-P0BBQkNERUZHSElKS0xNTk9QUVI&n=MacBook%20Pro&h=192.168.1.20:47616&h=100.64.12.34:47616&r=wss://relay.example.test&i=qbos67he3b64fju44vur2bdekhx7fvkt",
+    "phoneEphemeralPrivate" : "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+    "phoneStaticPrivate" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "phoneStaticPublic" : "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a",
+    "prologue" : "796172646c65742d72656d6f74652f32",
+    "pushKey" : "55565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374",
+    "pushKeyId" : "1d1e94a864557a7c",
+    "pushNonce" : "000102030405060708090a0b",
+    "pushPlaintext" : "{\"event\":\"attention\",\"state\":\"waiting\",\"taskId\":\"4C1F\",\"title\":\"Approve the index migration\"}",
+    "pushSealed" : "AAECAwQFBgcICQoLMEH-KPNZU6zstD6zGQQ8nhVhEF3ke27DIGstoo3VjYboZ5miUp9xn3PR25jm4yUZ5NFYftUYbAHtcX0ldP8KguiICkU15A3V8FSfAxUR0R33GPL1XiXVWqEUc_4L9higMFee-lF2pceew2cGjg",
+    "relayPrivateKey" : "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+    "relayPublicKey" : "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
+    "request" : "{\"id\":\"1\",\"type\":\"snapshot\"}",
+    "requestFrames" : [
+      "a791c3c98f83a11a0b02bfa5e4f35f38c86ac5f303d9bd344a4bc8c97afd5cfbf79ea67ec10a1640c02c12b5a8"
+    ],
+    "room" : "qbos67he3b64fju44vur2bdekhx7fvkt"
+  }
+}

@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yardlet.dev/schemas/harness-protocol/v1.json",
+  "title": "Yardlet Harness Protocol v1 JSONL frame",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/ready" },
+    { "$ref": "#/$defs/requestFrame" },
+    { "$ref": "#/$defs/responseFrame" },
+    { "$ref": "#/$defs/eventFrame" }
+  ],
+  "$defs": {
+    "version": {
+      "type": "object",
+      "required": ["major", "minor"],
+      "properties": {
+        "major": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "minor": { "type": "integer", "minimum": 0, "maximum": 65535 }
+      },
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "adapterID",
+        "harness",
+        "displayName",
+        "protocolVersions",
+        "capabilities",
+        "extensionNamespaces"
+      ],
+      "properties": {
+        "adapterID": { "type": "string", "minLength": 1 },
+        "harness": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string", "minLength": 1 },
+        "protocolVersions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/version" }
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/namespacedID" },
+          "allOf": [
+            { "contains": { "const": "runtime.discovery" } },
+            { "contains": { "const": "session.create" } },
+            { "contains": { "const": "session.close" } },
+            { "contains": { "const": "turn.send" } },
+            { "contains": { "const": "timeline.streaming" } }
+          ]
+        },
+        "extensionNamespaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/namespacedID" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "namespacedID": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$"
+    },
+    "hello": {
+      "type": "object",
+      "required": ["type", "manifest"],
+      "properties": {
+        "type": { "const": "hello" },
+        "manifest": { "$ref": "#/$defs/manifest" }
+      },
+      "additionalProperties": false
+    },
+    "ready": {
+      "type": "object",
+      "required": ["type", "version"],
+      "properties": {
+        "type": { "const": "ready" },
+        "version": { "$ref": "#/$defs/version" }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "method": { "$ref": "#/$defs/namespacedID" },
+        "params": true
+      },
+      "additionalProperties": false
+    },
+    "requestFrame": {
+      "type": "object",
+      "required": ["type", "version", "request"],
+      "properties": {
+        "type": { "const": "request" },
+        "version": { "$ref": "#/$defs/version" },
+        "request": { "$ref": "#/$defs/request" }
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "result": { "not": { "type": "null" } },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string" },
+            "data": true
+          },
+          "additionalProperties": false
+        }
+      },
+      "oneOf": [
+        { "required": ["result"], "not": { "required": ["error"] } },
+        { "required": ["error"], "not": { "required": ["result"] } }
+      ],
+      "additionalProperties": false
+    },
+    "responseFrame": {
+      "type": "object",
+      "required": ["type", "version", "response"],
+      "properties": {
+        "type": { "const": "response" },
+        "version": { "$ref": "#/$defs/version" },
+        "response": { "$ref": "#/$defs/response" }
+      },
+      "additionalProperties": false
+    },
+    "eventPayload": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "session.started",
+            "session.status_changed",
+            "turn.started",
+            "message.assistant_delta",
+            "message.reasoning_delta",
+            "message.completed",
+            "tool.updated",
+            "permission.requested",
+            "permission.resolved",
+            "plan.updated",
+            "usage.updated",
+            "subagent.updated",
+            "turn.completed",
+            "turn.failed",
+            "turn.canceled",
+            "extension"
+          ]
+        },
+        "turnID": { "type": "string" },
+        "turn": true,
+        "messageID": { "type": "string" },
+        "text": { "type": "string" },
+        "session": true,
+        "status": { "enum": ["ready", "running", "waitingForApproval", "completed", "failed"] },
+        "message": true,
+        "toolCall": true,
+        "permission": true,
+        "permissionResolution": true,
+        "plan": true,
+        "usage": true,
+        "subagent": true,
+        "failure": true,
+        "reason": { "type": "string" },
+        "extensionEvent": true
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["id", "localSessionID", "timestamp", "sequence", "payload"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "localSessionID": { "type": "string", "format": "uuid" },
+        "timestamp": { "type": "number" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "payload": { "$ref": "#/$defs/eventPayload" },
+        "rawProviderEvent": { "type": "string", "contentEncoding": "base64" }
+      },
+      "additionalProperties": false
+    },
+    "eventFrame": {
+      "type": "object",
+      "required": ["type", "version", "event"],
+      "properties": {
+        "type": { "const": "event" },
+        "version": { "$ref": "#/$defs/version" },
+        "event": { "$ref": "#/$defs/event" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

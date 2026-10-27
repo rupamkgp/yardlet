@@ -1,0 +1,306 @@
+import Foundation
+import XCTest
+@testable import NativeHarnessClient
+
+/// Claude in Chrome is the CLI's own `--chrome` flag, offered as one session option. Yardlet
+/// never builds a browser of its own, and it never guesses whether the extension is there: the
+/// CLI's own refusal is what the task shows.
+@MainActor
+final class ClaudeChromeIntegrationTests: XCTestCase {
+    private let workspace = URL(filePath: "/tmp/claude-chrome-workspace")
+
+    func testTheChromeFlagIsPassedOnlyWhenTheSessionAskedForIt() throws {
+        let off = ClaudeProcessTransport.arguments(for: ClaudeLaunchConfiguration(
+            providerSessionID: "session-1",
+            workspaceURL: workspace,
+            resumesExistingSession: false
+        ))
+        XCTAssertFalse(off.contains("--chrome"))
+        XCTAssertFalse(
+            off.contains("--no-chrome"),
+            "Leaving the flag out keeps the CLI's own default instead of forcing it off"
+        )
+
+        let on = ClaudeProcessTransport.arguments(for: ClaudeLaunchConfiguration(
+            providerSessionID: "session-1",
+            workspaceURL: workspace,
+            resumesExistingSession: false,
+            chromeIntegration: true
+        ))
+        XCTAssertEqual(
+            on,
+            off + ["--chrome"],
+            "The existing launch arguments stay untouched"
+        )
+
+        let resumedWithRoots = ClaudeProcessTransport.arguments(for: ClaudeLaunchConfiguration(
+            providerSessionID: "session-1",
+            workspaceURL: workspace,
+            resumesExistingSession: true,
+            additionalRoots: [URL(filePath: "/tmp/claude-chrome-extra")],
+            chromeIntegration: true
+        ))
+        XCTAssertTrue(resumedWithRoots.contains("--resume=session-1"))
+        XCTAssertEqual(
+            resumedWithRoots.suffix(3),
+            ["--add-dir", "/tmp/claude-chrome-extra", "--chrome"],
+            "A project's extra roots keep their own argument pair"
+        )
+    }
+
+    func testTheChromeOptionIsOneOffOrOnSelectorThatStartsOff() async throws {
+        let transport = FakeClaudeTransport()
+        let adapter = ClaudeAdapter(
+            executableURL: URL(filePath: "/tmp/fake-claude"),
+            transportFactory: { _ in transport }
+        )
+        let handle = try await adapter.createSession(
+            CreateHarnessSessionRequest(
+                localSessionID: UUID(),
+                workspaceURL: workspace,
+                initialPrompt: nil
+            )
+        )
+
+        let state = try await adapter.providerCapabilities(for: handle)
+        let selector = try XCTUnwrap(
+            state.selectors.first { $0.id == ClaudeLaunchOption.chromeIntegration }
+        )
+        XCTAssertEqual(selector.choices.map(\.value), [ClaudeLaunchOption.off, ClaudeLaunchOption.on])
+        XCTAssertEqual(selector.currentValue, ClaudeLaunchOption.off)
+        let configuration = await transport.configuration
+        XCTAssertEqual(
+            configuration?.chromeIntegration,
+            false,
+            "A task that never asked for the integration launches exactly as before"
+        )
+        await adapter.close(handle)
+    }
+
+    func testTurningTheOptionOnAppliesToTheNextStartRatherThanTheRunningProcess() async throws {
+        let firstLocalID = UUID()
+        let resumedLocalID = UUID()
+        let firstTransport = FakeClaudeTransport()
+        let resumedTransport = FakeClaudeTransport()
+        let adapter = ClaudeAdapter(
+            executableURL: URL(filePath: "/tmp/fake-claude"),
+            transportFactory: { localID in
+                localID == firstLocalID ? firstTransport : resumedTransport
+            }
+        )
+        let handle = try await adapter.createSession(
+            CreateHarnessSessionRequest(
+                localSessionID: firstLocalID,
+                workspaceURL: workspace,
+                initialPrompt: nil
+            )
+        )
+
+        let updated = try await adapter.setProviderOption(
+            id: ClaudeLaunchOption.chromeIntegration,
+            value: ClaudeLaunchOption.on,
+            in: handle
+        )
+        XCTAssertEqual(
+            updated.selectors.first { $0.id == ClaudeLaunchOption.chromeIntegration }?.currentValue,
+            ClaudeLaunchOption.on
+        )
+        XCTAssertEqual(
+            updated.actionMessage,
+            L10n.string("Claude Code applies this setting the next time the task starts")
+        )
+        let firstSubtypes = await firstTransport.requestSubtypes
+        XCTAssertEqual(
+            firstSubtypes,
+            ["initialize"],
+            "A launch flag is not sent to the running CLI as a session setting"
+        )
+        let firstConfiguration = await firstTransport.configuration
+        XCTAssertEqual(firstConfiguration?.chromeIntegration, false)
+        await adapter.close(handle)
+
+        // The saved option is what the next start reads, exactly as the task stored it.
+        await adapter.setLaunchOptions(
+            [ClaudeLaunchOption.chromeIntegration: ClaudeLaunchOption.on],
+            for: resumedLocalID
+        )
+        let resumed = try await adapter.resumeSession(
+            providerSessionID: handle.providerSessionID,
+            localSessionID: resumedLocalID,
+            workspaceURL: workspace
+        )
+        let resumedConfiguration = await resumedTransport.configuration
+        XCTAssertEqual(resumedConfiguration?.chromeIntegration, true)
+        let resumedState = try await adapter.providerCapabilities(for: resumed)
+        XCTAssertEqual(
+            resumedState.selectors.first { $0.id == ClaudeLaunchOption.chromeIntegration }?.currentValue,
+            ClaudeLaunchOption.on
+        )
+        await adapter.close(resumed)
+    }
+
+    func testSavedOptionsRestoreAcrossRelaunchAndOffRemovesTheFlagAgain() async throws {
+        let repository = InMemorySessionRepository()
+        let store = SessionStore(repository: repository)
+        let session = try await store.createSession(
+            harness: .claudeCode,
+            workspaceURL: workspace,
+            runtimeExecutableURL: URL(filePath: "/tmp/fake-claude"),
+            title: "Chrome task"
+        )
+        try await store.updateProviderOption(
+            id: session.id,
+            optionID: ClaudeLaunchOption.chromeIntegration,
+            value: ClaudeLaunchOption.on
+        )
+        let persisted = try await repository.loadSessions()
+        let savedOptions = try XCTUnwrap(persisted.first?.providerOptions)
+        XCTAssertEqual(savedOptions[ClaudeLaunchOption.chromeIntegration], ClaudeLaunchOption.on)
+
+        let transport = FakeClaudeTransport()
+        let adapter = ClaudeAdapter(
+            executableURL: URL(filePath: "/tmp/fake-claude"),
+            transportFactory: { _ in transport }
+        )
+        await adapter.setLaunchOptions(savedOptions, for: session.id)
+        let handle = try await adapter.createSession(
+            CreateHarnessSessionRequest(
+                localSessionID: session.id,
+                workspaceURL: workspace,
+                initialPrompt: nil
+            )
+        )
+        let launched = await transport.configuration
+        XCTAssertEqual(launched?.chromeIntegration, true)
+
+        // Restoring the value this session already launched with announces no pending change.
+        let restored = try await adapter.setProviderOption(
+            id: ClaudeLaunchOption.chromeIntegration,
+            value: ClaudeLaunchOption.on,
+            in: handle
+        )
+        XCTAssertNotEqual(
+            restored.actionMessage,
+            L10n.string("Claude Code applies this setting the next time the task starts")
+        )
+
+        _ = try await adapter.setProviderOption(
+            id: ClaudeLaunchOption.chromeIntegration,
+            value: ClaudeLaunchOption.off,
+            in: handle
+        )
+        try await store.updateProviderOption(
+            id: session.id,
+            optionID: ClaudeLaunchOption.chromeIntegration,
+            value: ClaudeLaunchOption.off
+        )
+        await adapter.close(handle)
+
+        let offTransport = FakeClaudeTransport()
+        let offAdapter = ClaudeAdapter(
+            executableURL: URL(filePath: "/tmp/fake-claude"),
+            transportFactory: { _ in offTransport }
+        )
+        let offOptions = try XCTUnwrap(store.sessions.first?.providerOptions)
+        await offAdapter.setLaunchOptions(offOptions, for: session.id)
+        let offHandle = try await offAdapter.createSession(
+            CreateHarnessSessionRequest(
+                localSessionID: session.id,
+                workspaceURL: workspace,
+                initialPrompt: nil
+            )
+        )
+        let relaunched = await offTransport.configuration
+        XCTAssertEqual(relaunched?.chromeIntegration, false)
+        await offAdapter.close(offHandle)
+    }
+
+    func testTheProtocolRouteTheAppShipsStillCarriesTheLaunchFlag() async throws {
+        let transport = FakeClaudeTransport()
+        let claude = ClaudeAdapter(
+            executableURL: URL(filePath: "/tmp/fake-claude"),
+            transportFactory: { _ in transport }
+        )
+        let routed = YHPProviderCompatibilityAdapter(
+            adapter: claude,
+            manifest: HarnessProtocolCompatibilityManifest.claude()
+        )
+        let localSessionID = UUID()
+        let configurable = try XCTUnwrap(routed as (any HarnessLaunchOptionConfiguring)?)
+        await configurable.setLaunchOptions(
+            [ClaudeLaunchOption.chromeIntegration: ClaudeLaunchOption.on],
+            for: localSessionID
+        )
+        _ = try await routed.createSession(
+            CreateHarnessSessionRequest(
+                localSessionID: localSessionID,
+                workspaceURL: workspace,
+                initialPrompt: nil
+            )
+        )
+
+        let configuration = await transport.configuration
+        XCTAssertEqual(
+            configuration?.chromeIntegration,
+            true,
+            "The option has to survive the protocol adapter the app routes Claude through"
+        )
+    }
+
+    func testACLIThatRefusesTheFlagSurfacesItsOwnMessage() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "yardlet-claude-chrome-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appending(path: "fake-claude")
+        // Stands in for a CLI without the Chrome extension: it refuses the flag on stderr and
+        // exits, which is the only thing Yardlet knows about the failure.
+        let script = #"""
+        #!/bin/sh
+        for argument in "$@"; do
+          if [ "$argument" = "--chrome" ]; then
+            printf '%s\n' 'Error: Claude in Chrome requires the Claude extension in Chrome.' >&2
+            exit 2
+          fi
+        done
+        cat > /dev/null
+        """#
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+
+        let transport = ClaudeProcessTransport(
+            executableURL: executable,
+            requestTimeout: .seconds(5)
+        )
+        try await transport.start(ClaudeLaunchConfiguration(
+            providerSessionID: "session-1",
+            workspaceURL: root,
+            resumesExistingSession: false,
+            chromeIntegration: true
+        ))
+        // The refusal happens before any frame arrives; the stream ending is the CLI exiting.
+        for await _ in await transport.messages() {}
+        do {
+            _ = try await transport.request(
+                ClaudeProtocol.initialize(id: "initialize-1"),
+                id: "initialize-1"
+            )
+            XCTFail("A refused launch must not report a ready session")
+        } catch let error as HarnessAdapterError {
+            guard case let .processExited(code, message) = error else {
+                await transport.stop()
+                return XCTFail("The CLI's exit is what the task reports")
+            }
+            XCTAssertEqual(code, 2)
+            XCTAssertTrue(
+                message.contains("Claude in Chrome requires the Claude extension in Chrome."),
+                "The CLI's own words reach the task instead of a guess: \(message)"
+            )
+            XCTAssertTrue(error.localizedDescription.contains(message))
+        }
+        await transport.stop()
+    }
+}
