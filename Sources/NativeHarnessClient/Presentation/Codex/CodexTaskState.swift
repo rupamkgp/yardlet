@@ -19,6 +19,15 @@ extension CodexTaskState {
     var activeTurnID: String? {
         thread?.turns.last(where: { $0.status == .inProgress })?.id
     }
+
+    /// Whether this presentation can say which turn is active, given the turn the provider last
+    /// reported active. One without that turn predates it: a read sent before the turn started, an
+    /// event published before the start was answered, or any state from before `turn/started`
+    /// arrived. The reported turn stands until a presentation that has it shows it ended.
+    func knowsActiveTurn(_ reportedTurnID: String?) -> Bool {
+        guard let reportedTurnID else { return true }
+        return thread?.turns.contains { $0.id == reportedTurnID } == true
+    }
 }
 
 struct CodexThreadState: Equatable, Identifiable, Sendable {

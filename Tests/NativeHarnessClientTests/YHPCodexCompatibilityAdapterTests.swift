@@ -369,6 +369,58 @@ final class YHPCodexCompatibilityAdapterTests: XCTestCase {
         await routed.close(routedHandle)
     }
 
+    func testActiveTurnSurvivesPresentationThatPredatesItsStart() async throws {
+        let directTransport = FakeCodexTransport(responses: baseResponses())
+        let routedTransport = FakeCodexTransport(responses: baseResponses())
+        let direct = CodexAdapter(executableURL: URL(filePath: "/tmp/fake-codex"), transport: directTransport)
+        let routed = YHPCodexCompatibilityAdapter(
+            adapter: CodexAdapter(executableURL: URL(filePath: "/tmp/fake-codex"), transport: routedTransport),
+            manifest: HarnessProtocolCompatibilityManifest.codex()
+        )
+        let request = CreateHarnessSessionRequest(
+            localSessionID: UUID(), workspaceURL: URL(filePath: "/tmp/codex-yhp-product"), initialPrompt: nil)
+        let directHandle = try await direct.createSession(request)
+        let routedHandle = try await routed.createSession(request)
+        try await direct.send("Start a turn", to: directHandle)
+        try await routed.send("Start a turn", to: routedHandle)
+
+        // Until `turn/started` arrives the presentation has no turn, so a presentation applied now
+        // predates the turn `turn/start` answered. A late subscriber also replays every
+        // presentation kept from before the turn started.
+        let renamed: JSONValue = .object([
+            "threadId": .string("codex-thread-1"), "threadName": .string("Renamed")
+        ])
+        await directTransport.emit(method: "thread/name/updated", params: renamed)
+        await routedTransport.emit(method: "thread/name/updated", params: renamed)
+        let stream = try await routed.presentationStates(for: routedHandle)
+        let recorder = CodexYHPPresentationRecorder()
+        let collection = Task { for await state in stream { await recorder.append(state) } }
+        defer { collection.cancel() }
+        try await waitUntil {
+            let directName = try? await direct.presentationState(for: directHandle).thread?.name
+            let routedRenamed = await recorder.states.contains { $0.thread?.name == "Renamed" }
+            return directName == "Renamed" && routedRenamed
+        }
+        let directActiveTurnID = await direct.activeTurnID(for: directHandle)
+        let routedActiveTurnID = await routed.activeTurnID(for: routedHandle)
+        XCTAssertEqual(directActiveTurnID, "provider-turn-1")
+        XCTAssertEqual(routedActiveTurnID, "provider-turn-1")
+
+        let completed: JSONValue = .object([
+            "threadId": .string("codex-thread-1"),
+            "turn": .object(["id": .string("provider-turn-1"), "status": .string("completed")])
+        ])
+        await directTransport.emit(method: "turn/completed", params: completed)
+        await routedTransport.emit(method: "turn/completed", params: completed)
+        try await waitUntil {
+            let directEnded = await direct.activeTurnID(for: directHandle) == nil
+            let routedEnded = await routed.activeTurnID(for: routedHandle) == nil
+            return directEnded && routedEnded
+        }
+        await direct.close(directHandle)
+        await routed.close(routedHandle)
+    }
+
     func testCodexYHPRoutePreservesCapabilitiesPaginationAndThreadActions() async throws {
         let transport = FakeCodexTransport(responses: capabilityResponses())
         let routed = YHPCodexCompatibilityAdapter(

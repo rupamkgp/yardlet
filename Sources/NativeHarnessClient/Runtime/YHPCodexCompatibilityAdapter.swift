@@ -247,8 +247,16 @@ actor YHPCodexCompatibilityAdapter:
                 guard !Task.isCancelled else { break }
                 await self?.acceptProtocolEvent(event)
             }
+            guard !Task.isCancelled else { return }
+            await self?.endProtocolEvents(for: localSessionID)
         }
         return stream.stream
+    }
+
+    /// The session's events end with its provider connection, which ends any turn with it, as the
+    /// wrapped adapter forgets it too.
+    private func endProtocolEvents(for localSessionID: UUID) {
+        activeTurnIDs.removeValue(forKey: localSessionID)
     }
 
     func respond(
@@ -730,7 +738,11 @@ actor YHPCodexCompatibilityAdapter:
         serverRequestsByID: [String: HarnessProtocolCodexServerRequest],
         knownChanged: Bool = false
     ) {
-        activeTurnIDs[localSessionID] = activeTurnID
+        // Events cross YHP after the answers they may predate, so a presentation applied after a
+        // submit can still be one from before its turn.
+        if state.knowsActiveTurn(activeTurnIDs[localSessionID]) {
+            activeTurnIDs[localSessionID] = activeTurnID
+        }
         answerableRequestsBySessionID[localSessionID] = Dictionary(
             answerableServerRequestIDs.compactMap { id in serverRequestsByID[id].map { (id, $0) } }
         ) { _, newest in newest }

@@ -2135,6 +2135,7 @@ actor CodexAdapter: HarnessAdapter, CodexCapabilityProviding, CodexPresentationP
     }
 
     private func syncActiveTurnID(from state: CodexTaskState, for localSessionID: UUID) {
+        guard state.knowsActiveTurn(activeTurnIDByLocalSessionID[localSessionID]) else { return }
         if let activeTurnID = state.activeTurnID {
             activeTurnIDByLocalSessionID[localSessionID] = activeTurnID
         } else {
