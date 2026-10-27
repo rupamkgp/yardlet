@@ -1,6 +1,6 @@
 name: Feature request
 description: An idea for Yardlet.
-labels: ["enhancement"]
+labels: ["enhancement", "needs triage"]
 body:
   - type: markdown
     attributes:
