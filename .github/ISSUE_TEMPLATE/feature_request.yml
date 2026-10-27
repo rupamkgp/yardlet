@@ -1,0 +1,26 @@
+name: Feature request
+description: An idea for Yardlet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Yardlet runs each agent's own CLI and tries to stay close to the agent's own app. Ideas fit best when they work for every agent, can be turned on and off, and leave nothing behind once turned off. See [What fits Yardlet](https://github.com/zzunkie/yardlet/blob/main/CONTRIBUTING.md#what-fits-yardlet).
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like Yardlet to do
+    validations:
+      required: true
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: How other apps handle it
+      description: Optional. For example how the Codex app, the Claude app or another tool does this.

@@ -1,0 +1,1 @@
+Thanks for the pull request. Pull requests are not accepted yet: this repository is updated from the development tree at each release, so a change merged here would be overwritten. Please describe the change in an issue instead, with a link to this branch if you like; see [CONTRIBUTING.md](https://github.com/zzunkie/yardlet/blob/main/CONTRIBUTING.md#pull-requests).

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/zzunkie/yardlet/security/advisories/new
+    about: Report vulnerabilities privately, not in a public issue.
+  - name: How Yardlet handles your data
+    url: https://yardlet.app/privacy.html
+    about: What the app accesses, where it is stored and where it goes.

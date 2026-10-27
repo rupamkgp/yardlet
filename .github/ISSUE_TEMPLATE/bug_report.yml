@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in Yardlet does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Before you attach a log or a screenshot, remove tokens, email addresses, private repository names and anything else you would not post in public. Security problems go through [SECURITY.md](https://github.com/zzunkie/yardlet/blob/main/SECURITY.md), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Yardlet version
+      description: Yardlet > About Yardlet.
+      placeholder: "0.11.0 (22)"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 26.1"
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and CLI version
+      description: The agent the problem happens with, and the version its CLI reports (for example `codex --version` or `claude --version`). Write "any" if it happens with every agent.
+      placeholder: "Claude Code 2.1.304"
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Yardlet was installed
+      options:
+        - Disk image from GitHub Releases
+        - Homebrew
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a Codex task in a project
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Paste text logs as text.
