@@ -143,11 +143,14 @@ struct ConnectorAddSheet: View {
     enum Start: Identifiable, Equatable {
         case directory
         case preset(ConnectorPreset)
+        /// A program found in another app's settings, at its own page.
+        case program(ConnectorProgramDraft)
 
         var id: String {
             switch self {
             case .directory: "directory"
             case .preset(let preset): preset.id
+            case .program(let draft): draft.id
             }
         }
     }
@@ -158,6 +161,8 @@ struct ConnectorAddSheet: View {
 
     /// The service whose own page is open: one that needs a key or an OAuth app.
     @State private var focused: ConnectorPreset?
+    /// The program whose page is open, before the person runs it.
+    @State private var program: ConnectorProgramDraft?
     /// The directory row whose field is open: a preset ID, or `custom`.
     @State private var expanded: String?
     @State private var showsOwnApps = false
@@ -196,6 +201,7 @@ struct ConnectorAddSheet: View {
            ConnectorSetupGuide.Kind.of(preset, gitHubSignIn: center.canSignInToGitHub) != .oneClick {
             _focused = State(initialValue: preset)
         }
+        if case .program(let draft) = start { _program = State(initialValue: draft) }
     }
 
     var body: some View {
@@ -214,7 +220,12 @@ struct ConnectorAddSheet: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     Group {
-                        if let focused {
+                        if let program {
+                            ConnectorProgramPage(center: center, draft: program, onBack: {
+                                if case .program = start { onClose() } else { self.program = nil }
+                            }, onAdded: onClose)
+                            .id(program.id)
+                        } else if let focused {
                             servicePage(focused)
                         } else {
                             directory
@@ -313,9 +324,17 @@ struct ConnectorAddSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            ConnectorRegistrySection(center: center, query: query, onProgram: { program = $0 }, onAdded: onClose)
             section(L10n.string("Another MCP server"), caption: nil) {
                 customRow
             }
+        }
+        .task { await center.registry.loadIfNeeded() }
+        // A search asks the registries once typing pauses.
+        .task(id: query) {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await center.registry.search(query)
         }
     }
 

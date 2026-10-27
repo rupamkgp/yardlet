@@ -107,5 +107,7 @@ struct AgentRunConversationSheet: View {
         }
         .frame(minWidth: 560, idealWidth: 720, minHeight: 420, idealHeight: 640)
         .background(ParityTheme.canvas)
+        // Its images open over this sheet, not over the window behind it.
+        .imageViewerHost()
     }
 }

@@ -9,11 +9,22 @@ struct TaskProfiles {
     let rootCache: String
     let defaultProfile: String
 
-    /// A tab's context as the app asked for it: the folder, and the folder to copy cookies from when the
-    /// folder is new (empty for the default profile). Nil for the default context.
+    /// A tab's context as the app asked for it: the folder, and the cookie copies into it before the tab's page
+    /// loads. Nil for the default context.
     struct Prepared {
         var path: String
-        var seedFrom: String?
+        var copies: [Copy] = []
+    }
+
+    /// Cookies a profile takes before its tab's page: a new folder's starting cookies (every site of the profile it
+    /// seeds from), the person's sign-ins the task follows (replacing its own cookies of those sites), and for a
+    /// task that predates following, the default profile's sites it has no cookie of
+    /// (docs/BROWSER_SESSION_ISOLATION.md 11). `from` is a folder, empty for the default profile; `mode` is the
+    /// bridge's (`yardlet_cef_copy_cookies`): 0 add, 1 replace, 2 fill.
+    struct Copy: Equatable {
+        var from: String
+        var sites: [String]
+        var mode: Int32
     }
 
     /// The folder for a key; the default profile for nil or a key that is not one.
@@ -23,21 +34,26 @@ struct TaskProfiles {
         return rootCache + "/Task-" + key
     }
 
-    /// Makes a new profile folder ready before its context opens: the Touch ID passkeys' metadata key of the
-    /// default profile goes into its preferences, so passkeys made with Touch ID work in every task.
+    /// Makes a profile folder ready before its context opens. A new one takes the Touch ID passkeys' metadata key of
+    /// the default profile into its preferences, so passkeys made with Touch ID work in every task, and starts with
+    /// the cookies of the profile it seeds from (the named one when it exists, else the default profile).
     func prepare(_ profile: [String: Any]?) -> Prepared? {
         guard let key = profile?["key"] as? String else { return nil }
         let path = path(forKey: key)
         guard !path.isEmpty else { return nil }
-        let isNew = !FileManager.default.fileExists(atPath: path)
-        guard isNew else { return Prepared(path: path, seedFrom: nil) }
-        try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true,
-                                                 attributes: [.posixPermissions: 0o700])
-        copyPasskeyMetadataKey(to: path)
-        // Seed from the named profile when it exists, else from the default profile.
-        let named = self.path(forKey: profile?["seedFrom"] as? String)
-        let seed = !named.isEmpty && FileManager.default.fileExists(atPath: named) ? named : ""
-        return Prepared(path: path, seedFrom: seed)
+        var prepared = Prepared(path: path)
+        if !FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true,
+                                                     attributes: [.posixPermissions: 0o700])
+            copyPasskeyMetadataKey(to: path)
+            let named = self.path(forKey: profile?["seedFrom"] as? String)
+            let seed = !named.isEmpty && FileManager.default.fileExists(atPath: named) ? named : ""
+            prepared.copies.append(Copy(from: seed, sites: [], mode: 0))
+        }
+        let follow = (profile?["follow"] as? [String] ?? []).filter { !$0.isEmpty }
+        if !follow.isEmpty { prepared.copies.append(Copy(from: "", sites: follow, mode: 1)) }
+        if profile?["fill"] as? Bool == true { prepared.copies.append(Copy(from: "", sites: [], mode: 2)) }
+        return prepared
     }
 
     /// Chromium keeps the key that reads its Touch ID passkeys' metadata in each profile's preferences

@@ -20,6 +20,11 @@ struct AccountChoice: Identifiable, Equatable {
         }
         return knownLabel ?? identity.displayLabel
     }
+    /// The organization beside the address in an account row: a team's name, or "Personal" for
+    /// the address's own (`AccountIdentityProjection.organizationTitle`).
+    var organizationTitle: String? {
+        AccountIdentityProjection.organizationTitle(snapshot?.accountOrganization, of: snapshot?.accountLabel)
+    }
     /// How a composer's account control names the account a new task starts on: the account,
     /// or what keeps it from being chosen, or that it is still being checked.
     var composerTitle: String {

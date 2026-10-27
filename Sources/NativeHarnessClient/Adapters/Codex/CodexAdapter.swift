@@ -1581,6 +1581,13 @@ actor CodexAdapter: HarnessAdapter, CodexCapabilityProviding, CodexPresentationP
         presentationFlushTasks.removeValue(forKey: session.localSessionID)?.cancel()
         presentationContinuations.removeValue(forKey: session.localSessionID)?.finish()
 
+        // As the Codex app lets a conversation go: the App Server unloads a thread no client follows, and ends with
+        // the last task on its account below. Not waited for, so quitting Yardlet does not wait on each thread.
+        if !handles.isEmpty, initialized, !transportEnded,
+           !handles.values.contains(where: { $0.providerSessionID == session.providerSessionID }) {
+            let request = CodexThreadTitle.unsubscribe(id: takeRequestID(), threadID: session.providerSessionID)
+            Task { [transport] in _ = try? await transport.request(request) }
+        }
         if handles.isEmpty {
             for threadID in titleTurns.keys { finishTitleTurn(threadID, result: nil) }
             for threadID in predictionTurns.keys { finishPredictionTurn(threadID, result: nil) }

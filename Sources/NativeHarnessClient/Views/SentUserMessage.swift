@@ -84,32 +84,42 @@ private extension VerticalAlignment {
     static let sentBubbleCenter = VerticalAlignment(SentBubbleCenter.self)
 }
 
-/// A sent message's images: a thumbnail for each one that can be read, and its name otherwise.
+/// A sent message's images: a thumbnail for each one that can be read, and its name otherwise. A
+/// click opens it over the window with the message's other images beside it (`openImageViewer`).
 struct SentImageAttachments: View {
     let images: [TranscriptImageAttachment]
 
+    @Environment(\.openImageViewer) private var openImageViewer
+    @Environment(\.pauseTranscriptFollowing) private var pauseFollowing
+
     var body: some View {
         SentAttachmentFlow(spacing: 6) {
-            ForEach(Array(images.enumerated()), id: \.offset) { _, image in
-                SentImageThumbnail(attachment: image)
+            ForEach(Array(images.enumerated()), id: \.offset) { offset, image in
+                SentImageThumbnail(attachment: image) { open(at: offset) }
             }
         }
+    }
+
+    /// Opens the image at `offset` among the message's images that can be shown: an image whose file
+    /// went away since the message was sent shows as its name and is left out.
+    private func open(at offset: Int) {
+        let shown = images.enumerated().compactMap { offset, image -> (offset: Int, item: ImageViewerItem)? in
+            guard let url = image.url, TranscriptImageThumbnails.canPreview(url) else { return nil }
+            if case .unavailable? = TranscriptImageThumbnails.shared.cachedPreview(for: url) { return nil }
+            return (offset, ImageViewerItem(name: image.name ?? L10n.string("Image"), source: .url(url)))
+        }
+        guard let index = shown.firstIndex(where: { $0.offset == offset }) else { return }
+        pauseFollowing()
+        openImageViewer(ImageViewerRequest(items: shown.map(\.item), index: index))
     }
 }
 
 private struct SentImageThumbnail: View {
     let attachment: TranscriptImageAttachment
+    let open: () -> Void
 
     @Environment(\.yardletInterfaceScale) private var interfaceScale
-    @Environment(\.pauseTranscriptFollowing) private var pauseFollowing
     @State private var loaded: (url: URL, preview: TranscriptImageThumbnails.Preview)?
-    @State private var fullSize: FullSizeImage?
-    @State private var focusBookmark: WindowFocusBookmark?
-
-    private struct FullSizeImage: Identifiable {
-        let id = UUID()
-        let image: NSImage
-    }
 
     var body: some View {
         content
@@ -139,13 +149,7 @@ private struct SentImageThumbnail: View {
             .buttonStyle(.plain)
             .parityPointer()
             .accessibilityLabel(name)
-            .help(L10n.string("Open the image at full size"))
-            .sheet(item: $fullSize, onDismiss: {
-                focusBookmark?.restore()
-                focusBookmark = nil
-            }) { full in
-                TranscriptImageSheet(title: name, image: full.image) { fullSize = nil }
-            }
+            .help(L10n.string("View the image"))
         case .unavailable:
             SentImageNameChip(name: name)
         case nil:
@@ -165,22 +169,6 @@ private struct SentImageThumbnail: View {
     }
 
     private var name: String { attachment.name ?? L10n.string("Image") }
-
-    private func open() {
-        guard let url = attachment.url else { return }
-        focusBookmark = WindowFocusBookmark(window: NSApp.keyWindow)
-        pauseFollowing()
-        Task {
-            guard let data = await TranscriptImageThumbnails.shared.originalData(for: url),
-                  let image = NSImage(data: data) else {
-                // The file went away after its preview was made; show its name like any other.
-                loaded = (url, .unavailable)
-                focusBookmark = nil
-                return
-            }
-            fullSize = FullSizeImage(image: image)
-        }
-    }
 }
 
 /// An attached image that cannot be previewed, by name, as sent messages showed it before.

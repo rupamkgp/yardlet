@@ -391,7 +391,7 @@ extension SidebarTaskStatus {
     /// A state that needs the person or went wrong, whose words read in the primary colour.
     var isProblem: Bool {
         switch self {
-        case .awaitingApproval, .needsInput, .failed, .usageLimit: true
+        case .awaitingApproval, .needsInput, .waitingInBrowser, .failed, .usageLimit: true
         case .running, .reconnecting, .unread: false
         }
     }

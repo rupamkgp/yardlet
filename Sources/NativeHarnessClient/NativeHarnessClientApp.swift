@@ -104,6 +104,10 @@ private struct YardletSparkleKey: EnvironmentKey {
     static let defaultValue: YardletSparkle? = nil
 }
 
+private struct YardletStagedUpdateKey: EnvironmentKey {
+    static let defaultValue: YardletStagedUpdate? = nil
+}
+
 extension EnvironmentValues {
     /// Sparkle in a public build, for the account menu's Check for Updates… and Settings' switch.
     /// Nil in a development build and where there is no app, as in a test's window.
@@ -119,6 +123,13 @@ extension EnvironmentValues {
     var yardletUpdateWait: YardletUpdateWait? {
         get { self[YardletUpdateWaitKey.self] }
         set { self[YardletUpdateWaitKey.self] = newValue }
+    }
+
+    /// A staged build ready to install, for the sidebar's "Restart to update". Nil where there is no
+    /// app to install into.
+    var yardletStagedUpdate: YardletStagedUpdate? {
+        get { self[YardletStagedUpdateKey.self] }
+        set { self[YardletStagedUpdateKey.self] = newValue }
     }
 }
 
@@ -161,6 +172,9 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
     private var updateToInstall: YardletUpdater.Candidate?
     /// Install Update… › Restart When Tasks Finish, waiting for no task to run.
     let updateWait = YardletUpdateWait()
+    /// A staged build ready to install, shown in the sidebar and the menu bar menu. It looks only in a
+    /// build without Sparkle (started with the window).
+    let stagedUpdate = YardletStagedUpdate()
     /// The quit was started by that wait, which never stops a task: a task running when it comes
     /// cancels the quit and the wait goes on.
     private var quitIsForWaitedUpdate = false
@@ -283,11 +297,8 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
                 alert.informativeText = error.localizedDescription
                 candidate = nil
             case let .success(value):
-                let build = [value.commit, value.hasUncommittedChanges ? L10n.string("with uncommitted changes") : nil]
-                    .compactMap { $0 }.joined(separator: " ")
                 let date = value.builtAt?.formatted(date: .abbreviated, time: .shortened) ?? "-"
-                alert = YardletUpdateOffer.alert(build: build.isEmpty ? "-" : build, date: date,
-                                                 hasRunningTasks: hasRunningTasks)
+                alert = YardletUpdateOffer.alert(build: value.build ?? "-", date: date, hasRunningTasks: hasRunningTasks)
                 candidate = value
             }
             // A sheet on the main window stays in front of the task it concerns; a free-standing
@@ -310,6 +321,11 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
         }
+    }
+
+    /// The staged build's line in the sidebar and the menu bar menu.
+    var stagedUpdateLine: MenuBarMenu.UpdateLine? {
+        MenuBarMenu.UpdateLine(ready: stagedUpdate.ready, isWaiting: updateWait.isWaiting)
     }
 
     private func waitForTasks(then update: YardletUpdateWait.Update) {
@@ -397,13 +413,16 @@ struct NativeHarnessClientApp: App {
                         if !model.usesVisualFixture { MainWindowFrameAutosave() }
                     }
                     .ignoresSafeArea(.container, edges: .top)
+                    .imageViewerHost()
             }
                 .environment(\.yardletInstallUpdate, { [appDelegate] in appDelegate.offerStagedUpdate() })
                 .environment(\.yardletUpdateWait, appDelegate.updateWait)
                 .environment(\.yardletSparkle, appDelegate.sparkle)
+                .environment(\.yardletStagedUpdate, appDelegate.stagedUpdate)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     model.resourceMonitor.setApplicationActive(true)
                     model.pullRequests.setApplicationActive(true)
+                    appDelegate.stagedUpdate.checkNow()
                     // The person may have changed Yardlet's badge setting in System Settings.
                     Task { await model.refreshNotificationPermission() }
                 }
@@ -415,7 +434,14 @@ struct NativeHarnessClientApp: App {
                     appDelegate.model = model
                     appDelegate.workActivity.follow(model)
                     if !model.usesVisualFixture, appDelegate.menuBar == nil {
-                        appDelegate.menuBar = MenuBarStatusItem.live(model: model)
+                        appDelegate.menuBar = MenuBarStatusItem.live(
+                            model: model, update: { [appDelegate] in appDelegate.stagedUpdateLine },
+                            installUpdate: { [appDelegate] in appDelegate.offerStagedUpdate() })
+                    }
+                    // Sparkle shows its own window for an update; a fixture or QA run never shows the
+                    // person's staged build.
+                    if !model.usesVisualFixture, !QABackground.isOn, appDelegate.sparkle == nil {
+                        appDelegate.stagedUpdate.start()
                     }
                     model.agentTools = MacAgentToolService.shared.broker
                     // The agent's first browser call finds the tabs the task's side panel saved.
@@ -426,10 +452,11 @@ struct NativeHarnessClientApp: App {
                     MacAgentToolService.shared.broker.sessions = model
                     MacAgentToolService.shared.broker.schedules = model
                     MacAgentToolService.shared.broker.handoffs = model
-                    MacBrowserHost.shared.client.onChromiumWindowOverHiddenTab = { [weak model] tab in
-                        guard let session = tab.session else { return }
-                        model?.showBrowserTab(tab.key, under: session)
-                    }
+                    // A browser tab waiting on the person marks its task, tells them once, and waits in its tab.
+                    model.followBrowserWaits(of: MacBrowserHost.shared.client)
+#if DEBUG
+                    BrowserHostQAFixture.model = model
+#endif
                     MacAgentToolService.shared.broker.isTaskInTurn = { [weak model] in model?.isInTurn($0) ?? false }
                     if !model.usesVisualFixture {
                         // A finished subagent's conversation is kept with its task in Yardlet's own folder.
@@ -473,10 +500,15 @@ struct NativeHarnessClientApp: App {
                         ShowcaseFixture.install(in: model)
                     }
 #endif
+                    // The newest install of each harness the person chose no runtime for, read off
+                    // the main thread; only files changed since the last launch run `--version`.
+                    Task { await model.runtimeSelections.findNewest() }
                     await model.restoreIndex()
                     if !model.usesVisualFixture {
                         // What the last quit cut off continues alongside the rest of the launch.
                         Task { await model.continueWorkInterruptedByRestart() }
+                        // Idle tasks' runtimes end while the memory saver is on, and resume at the next message.
+                        model.startHarnessMemorySaver()
                         // And what a lost connection cuts off, once the network is back.
                         appDelegate.networkWatch.start(reporting: model)
                         model.startRoutingEvaluationLoop()

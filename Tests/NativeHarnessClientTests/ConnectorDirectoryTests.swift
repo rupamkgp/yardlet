@@ -55,13 +55,14 @@ final class ConnectorDirectoryTests: XCTestCase {
     // MARK: - Directory
 
     /// Each entry is the service's own public endpoint with the sign-in its live metadata showed
-    /// on 2026-10-16 and 2026-10-21 (docs/CONNECTORS.md, "Directory").
+    /// on 2026-10-16, 2026-10-21 and 2026-10-27 (docs/CONNECTORS.md, "Directory").
     func testTheDirectoryHasEachServicesOfficialEndpointAndSignIn() throws {
         func preset(_ id: String) throws -> ConnectorPreset { try XCTUnwrap(ConnectorPreset.preset(id: id), id) }
         XCTAssertEqual(ConnectorPreset.all.map(\.id), [
             "linear", "notion", "slack", "gmail", "google-calendar", "google-drive", "apple-calendar", "apple-reminders",
             "apple-contacts", "github", "browserbase", "atlassian", "sentry", "asana", "clickup", "monday", "todoist", "airtable",
-            "miro", "dropbox", "intercom", "zapier", "granola", "fireflies", "gamma", "xcode", "app-store-connect", "gitlab",
+            "miro", "dropbox", "intercom", "zapier", "pipedream", "composio", "make", "granola", "fireflies", "gamma", "xcode",
+            "app-store-connect", "gitlab",
             "supabase", "neon", "prisma", "netlify", "cloudflare", "posthog", "semgrep",
             "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow", "wix", "figma-desktop", "tavily", "exa", "huggingface",
             "context7", "deepwiki", "openai-docs", "microsoft-learn", "aws-knowledge", "cloudflare-docs"
@@ -72,7 +73,8 @@ final class ConnectorDirectoryTests: XCTestCase {
         XCTAssertNil(ConnectorPreset.preset(id: "clobe"), "A service only this Mac used is not in everyone's directory")
         XCTAssertEqual(try preset("linear").signIn, .oauth)
         XCTAssertEqual(try preset("notion").signIn, .oauth)
-        for id in ["asana", "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "granola",
+        for id in ["asana", "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "pipedream",
+                   "composio", "make", "granola",
                    "fireflies", "gamma", "gitlab", "supabase", "neon", "prisma", "netlify", "cloudflare", "posthog", "semgrep",
                    "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow", "wix", "tavily"] {
             XCTAssertEqual(try preset(id).signIn, .oauth, "\(id) registers its client dynamically")
@@ -664,7 +666,7 @@ final class ConnectorDirectoryTests: XCTestCase {
         XCTAssertTrue(linear.connectsInOneClick)
         XCTAssertFalse(try XCTUnwrap(suggestions.first { $0.name == "Gmail" }).connectsInOneClick, "Gmail needs a client first")
         XCTAssertFalse(suggestions.contains { $0.name == "yardlet" || $0.name.contains("Claude Docs") })
-        XCTAssertEqual(suggestions.first { $0.name == "docs" }?.serverURL.absoluteString, "https://mcp.example.test/mcp",
+        XCTAssertEqual(suggestions.first { $0.name == "docs" }?.serverURL?.absoluteString, "https://mcp.example.test/mcp",
                        "A server the directory does not know is offered as it is, without its query")
     }
 

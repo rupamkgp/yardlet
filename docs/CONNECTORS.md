@@ -12,7 +12,11 @@ section of this document by its title.
   inside the app. They sign in once per Google account and call Google's public REST APIs (the "Google" section). The
   Apple connectors (App Store Connect, the Mac's calendars, reminders and contacts, and Xcode) are also servers inside
   the app. App Store Connect calls Apple's REST API with the person's API key, the three Mac connectors use the Mac's
-  data once macOS allows it, and Xcode goes through Xcode's `mcpbridge` (the "Apple" section).
+  data once macOS allows it, and Xcode goes through Xcode's `mcpbridge` (the "Apple" section). A connector can also be
+  a program Yardlet runs on this Mac (stdio), from an MCP registry or another app's settings, once the person has seen
+  what it runs and said yes (the "Programs on this Mac" section).
+- Besides its own directory, Add connector lists the public MCP registries' servers and searches them (the
+  "Registries" section).
 - **Every harness and account gets the same connectors.** Claude Code keeps claude.ai connectors and `claude mcp add`
   entries separately for each config folder (`CLAUDE_CONFIG_DIR`), so with several Claude accounts each account has
   different connections. Yardlet adds its connectors per process (Claude `--mcp-config`, the Codex thread `config`, ACP
@@ -31,12 +35,14 @@ section of this document by its title.
 | OAuth (your own client) | No dynamic registration (Slack, a GitHub OAuth app the user registered) | The steps below, with the user's client ID (and secret) and a fixed redirect in place of step 4 |
 | GitHub device code | GitHub, when the build has the client ID of Yardlet's GitHub OAuth app | The "GitHub sign-in" section |
 | Access token | Servers without dynamic registration (GitHub personal access tokens and others) | Sends the pasted value as `Authorization: Bearer` |
+| Key in a header | A registry server that names its own header for the key (`x-api-key`) | Sends the pasted value as is in that header (`tokenHeader`), not in `Authorization` |
 | Key in the address | Servers that take the key as a query (Browserbase `browserbaseApiKey`) | Adds it to the address on each request. It is not in the saved address or headers |
 | No authentication | The server answers without a 401 | Connects as is |
 | Google account | Gmail, Google Calendar and Google Drive | The "Google" section |
 | App Store Connect API key | App Store Connect | The `.p8` key file, the key ID and (for a team key) the issuer ID. The "Apple" section |
 | macOS permission | Apple Calendar, Apple Reminders and Apple Contacts | macOS asks once when it is turned on. The "Apple" section |
 | App on this Mac | Xcode | No sign-in. Xcode's `mcpbridge` provides the tools. The "Apple" section |
+| Program on this Mac | A registry package (`npx`, `uvx`, `docker run`) or a program another app's settings start | Runs after the person confirms what runs; its arguments and environment values are in Keychain. The "Programs on this Mac" section |
 
 OAuth steps (the MCP authorization spec):
 
@@ -113,7 +119,7 @@ registration, the connection error shows the reason the service gave.
 
 | Sign-in | Services |
 |---|---|
-| Dynamic registration OAuth | Linear, Notion, Atlassian, Sentry, Asana, ClickUp, monday.com, Todoist, Airtable, Miro, Dropbox, Intercom, Zapier, Granola, Fireflies, Gamma, GitLab, Supabase, Neon, Prisma Postgres, Netlify, Cloudflare, PostHog, Semgrep, Postman, Jam, Stripe, PayPal, Square, Mercury (read-only), Webflow, Wix, Tavily |
+| Dynamic registration OAuth | Linear, Notion, Atlassian, Sentry, Asana, ClickUp, monday.com, Todoist, Airtable, Miro, Dropbox, Intercom, Zapier, Pipedream, Composio, Make, Granola, Fireflies, Gamma, GitLab, Supabase, Neon, Prisma Postgres, Netlify, Cloudflare, PostHog, Semgrep, Postman, Jam, Stripe, PayPal, Square, Mercury (read-only), Webflow, Wix, Tavily |
 | No authentication | Exa, Hugging Face, Context7, DeepWiki, OpenAI Docs, Microsoft Learn, AWS Knowledge, Cloudflare Docs, the Figma desktop app server (`http://127.0.0.1:3845/mcp`, turned on in Dev Mode). Exa, Hugging Face and Context7 allow more after a sign-in, but Yardlet does not ask for one |
 | Your own OAuth app | Slack (the "Slack" section) |
 | Google account | Gmail, Google Calendar, Google Drive (the "Google" section) |
@@ -135,7 +141,17 @@ registration, the connection error shows the reason the service gave.
   shows under the Mercury line in the Add connector sheet. Sign-in follows the OAuth steps in the "Connection types"
   section as they are. Mercury accepts public client dynamic registration and PKCE `S256`, and keeps its protected
   resource metadata only at the root (`/.well-known/oauth-protected-resource`).
-- A server that is not in the list is added by its address under "Another MCP server" in Add connector.
+- Pipedream (`https://mcp.pipedream.net/v2`), Composio (`https://connect.composio.dev/mcp`) and Make
+  (`https://mcp.make.com/v2`) reach many apps through one sign-in, as Zapier does. Each runs its own server and answered an
+  unauthenticated GET on 2026-10-27 with 401 and OAuth metadata that has a registration endpoint and PKCE `S256`.
+  Pipedream keeps its protected resource metadata only at the root; Make takes `client_secret_post` alone, which
+  dynamic registration already handles. IFTTT (`https://ifttt.com/mcp`, GET 200) and Activepieces
+  (`https://cloud.activepieces.com/mcp`, GET 405) also publish registration metadata, but a GET could not show whether they
+  ask for a sign-in before listing tools, so they are left to a registry search until a connection is tried. Merge Agent
+  Handler's docs sign in with Merge's own command-line tool first; n8n, Klavis, Arcade and Gumloop give each person or
+  workspace its own address, so they are added by URL.
+- A server that is not in the list is added by its address under "Another MCP server" in Add connector, or found in the
+  registries (the "Registries" section).
 
 Not included:
 
@@ -152,6 +168,78 @@ Not included:
 - Notes and Messages on the Mac: macOS has no public way for an app to read that data.
 - Codex runtime plugins (documents, spreadsheets, presentations, pdf, browser and others), computer-use and node_repl:
   they are not connectors, so they stay in Codex as they are.
+
+### Registries
+
+Add connector also lists the servers of two public MCP registries, which share the `server.json` format: the GitHub MCP
+Registry (`https://api.mcp.github.com/v0.1/servers`, the list VS Code shows, sorted by GitHub stars) and the official MCP
+Registry (`https://registry.modelcontextprotocol.io/v0.1/servers`). Yardlet keeps no list of its own for them.
+
+- Reading: the GitHub registry's list, 50 a page, when Add connector opens, and the next page as the person scrolls to
+  the end; both registries for a search (`search=`, 30 each; the official one with `version=latest`), 0.4 seconds
+  after typing stops. The official registry asks host apps to read it through a subregistry and to scrape it rarely,
+  so Yardlet asks it only with a search. Answers stay in memory for 6 hours; nothing is written to disk. Requests are
+  GETs with the search words alone.
+- Counts on 2026-10-27: the GitHub registry lists 648 servers; 481 have a Streamable HTTP remote (410 with no key, 60
+  with one key, 11 with an address per account) and 156 only a package. The official registry lists 50,910 latest
+  entries (50,243 active): 32,575 with a Streamable HTTP remote (29,266 with no key, 3,020 with a key, 289 with an
+  address per account) and 16,334 with only a package; across all its packages, npm 12,078, PyPI 4,729, Docker 1,264 and MCP bundles
+  1,984. Unauthenticated GETs of each remote's metadata found, for the GitHub registry's 470 fixed addresses,
+  285 with dynamic registration OAuth, 82 that answer without a sign-in, 59 that take one key, 7 that need an app of
+  the person's own, 7 that accept only a client metadata document and 24 that did not answer; for 500 of the official
+  registry's 32,290 fixed addresses chosen at random, 29.8% dynamic registration, 48.8% no sign-in, 9.8% one key,
+  8.4% no answer. So Yardlet connects about 426 of the GitHub registry's servers by itself or with a pasted key, and
+  roughly 88% of the official registry's remotes, plus programs after the person confirms them.
+- What a registry says is someone else's data. An entry is kept only when its name matches the registry's pattern
+  (`namespace/name`, 200 characters at most) and it is not marked deleted or deprecated. Titles and descriptions become
+  one line of plain text (control, format and direction characters dropped, 80 and 240 characters at most) and are
+  shown to the person, never given to a model. Addresses must be https with a host and no user info; package names,
+  versions, flags, header and variable names must match their formats; an answer over 8 MB or with more than 200
+  entries is not read past that. Packages from an npm or PyPI registry other than the public one are not run.
+- What connecting asks (`MCPRegistryEntry.Reach`):
+  - A Streamable HTTP remote with no required header connects like one added by URL: sign-in in the browser if the
+    server asks (the "Connection types" section), or none.
+  - A remote with one required header takes a pasted key: `Authorization: Bearer` when the registry gives that form,
+    otherwise as is in the named header (`x-api-key`).
+  - A package (npm, PyPI or a Docker image, stdio) opens its page (the "Programs on this Mac" section).
+  - The rest say why in one line: only the old SSE transport, an address each account fills in, several headers, a
+    package kind Yardlet does not run (MCP bundles, NuGet, Cargo, or bare runtime arguments whose meaning the format
+    does not fix), or Docker options beyond environment variables, a loopback port and the container's own lifetime.
+- Order: without a search only remotes show, the service's own first (the namespace is a domain the registry
+  verified, such as `com.notion`, and the remote's host is under that domain by the public suffix list), then keys
+  after sign-ins, entries in both registries, stars and title. With a search, programs and those that cannot be
+  connected show too. Entries at a directory service's address are left out, since the directory shows them.
+
+### Programs on this Mac
+
+A connector can be a program Yardlet starts on this Mac and talks to over standard input and output (stdio): a
+registry package, or a server that another app or harness starts (the "Harnesses' own servers" section).
+
+- **Nothing runs before the person confirms.** The program's page shows where it comes from (the registry name and its
+  source repository, or the app whose settings had it), the exact command line, the values it needs (secret ones
+  hidden, defaults filled in), and what it can reach: it runs with the person's access to files, the network and other
+  apps. Only "Run on this Mac" adds the connector, and the command it adds is the one shown.
+- What runs: npm packages as `npx -y <package>@<version>`, PyPI packages as `uvx <package>==<version>`, Docker images as
+  `docker run -i --rm [-e NAME …] [-p 127.0.0.1:…] <image>`, with the registry's arguments. Docker's `-e NAME=value`
+  passes the value through the environment, so it is not in arguments other processes can see. A registry version is
+  pinned when it names one; "latest" or none runs what the package manager resolves. Imported programs run as their
+  settings say.
+- Storage: the record keeps what to show (`program`: runtime, program, package, version, origin, environment names).
+  The arguments and environment values are a Keychain item of kind `program`. Disconnect stops the program and keeps
+  that item; Remove deletes it and the connector's folder.
+- Starting: the first time a task lists or calls its tools. Yardlet finds the program in the package managers' folders,
+  Homebrew, nvm's newest Node, Docker Desktop and the system (a GUI app's `PATH` lacks them). The program starts in its
+  own folder, `~/Library/Caches/<bundle ID>/ConnectorPrograms/<connector ID>/`, with only `HOME`, `USER`, `LOGNAME`,
+  locale, `TMPDIR`, `SHELL`, `TERM`, a `PATH` that reaches its runtime, npm's and uv's caches in that folder, and the
+  person's values; nothing else of Yardlet's environment. A first `npx` or `uvx` downloads the package, so connecting
+  waits up to 3 minutes. A missing runtime says what to install (Node.js, uv or Docker Desktop).
+- Lifetime: it runs while Yardlet runs and stops when Yardlet quits (its standard input closes), on Disconnect or on
+  Remove. Removing the connector deletes what npx and uv downloaded for it; Docker keeps the image, and the page says
+  so. Nothing is written to harness or app settings.
+- Updates: none on its own. A newer version is added again from the registry.
+- Same server twice: a harness that starts the same package itself (`npx|@scope/name` from its settings, without the
+  version) keeps its copy, and the program connector stays out of that harness's tasks (`.harnessHasIt`). A program
+  without a package is not compared.
 
 ## 4. What harnesses see
 
@@ -303,22 +391,32 @@ not kept.
 
 - Read in the background when Settings → Connectors opens (`NativeMCPHome.all`): the default Claude sign-in, saved
   Claude accounts, Session Switch account folders
-  (`~/Library/Application Support/Session Switch/accounts/*/.claude.json`), the default and saved Codex homes, and
-  `~/.gemini/antigravity/mcp_config.json` and `~/.gemini/config/mcp_config.json`. Read only.
+  (`~/Library/Application Support/Session Switch/accounts/*/.claude.json`), the default and saved Codex homes,
+  `~/.gemini/antigravity/mcp_config.json` and `~/.gemini/config/mcp_config.json`, and three apps that are not harnesses:
+  the Claude app (`~/Library/Application Support/Claude/claude_desktop_config.json`, `mcpServers`), Cursor
+  (`~/.cursor/mcp.json`, `mcpServers`) and VS Code (`~/Library/Application Support/Code/User/mcp.json` and
+  `Code - Insiders`, `servers`, read with its comments and trailing commas). Read only.
 - Sources: `claudeAiMcpEverConnected` in each account's `.claude.json` ("claude.ai · account", where the account is the
   address that folder's `oauthAccount` gives, or "address (organization)" for a team organization), plugins in Codex
   homes ("Codex plugin") and ChatGPT apps ("Codex app": the names in the cache Codex left, minus apps its settings
   turned off, and apps missing from the cache by their tool name prefix), and the servers in harness settings.
-- What is kept: the server name, the address (without query or user info), a stdio program's file name and npm package
-  name (only scoped packages or ones containing "mcp", so command-line keys are not taken for packages), whether it is
+- What is kept: the server name, the address (without query or user info), a stdio program's path as written and npm
+  package name (only scoped packages or ones containing "mcp", so command-line keys are not taken for packages), whether it is
   on, claude.ai connector names, account addresses and organization names, and Codex plugin IDs. Headers, environment
   values, queries, organization IDs and conversation history are not kept.
 - Suggestions: services matched to the directory by the same address, the same host, the claude.ai name, the Codex
-  plugin name or the stdio package (`ConnectorPreset.isNamed`), and https remote servers that are not in the directory,
-  with their name and address as they are. Left out: services already connected (Google services by their API address),
-  the `yardlet` server, claude.ai-only entries and apps not in the directory.
+  plugin name or the stdio package (`ConnectorPreset.isNamed`), https remote servers that are not in the directory,
+  with their name and address as they are, and programs (stdio servers) by their name, one row for the same package
+  found in several places. Left out: services already connected (Google services by their API address, programs by
+  package), the `yardlet` server, servers turned off there, programs inside an app's bundle (`.app/Contents/`, such as
+  Codex's `node_repl`, which work only for that app), claude.ai-only entries and apps not in the directory.
+- A program's arguments and environment are read only when the person presses "Review…", from that one entry in that
+  file (`NativeMCPLaunch.read`, Codex's TOML included), and shown on the program's page; values the settings leave to
+  something else (`${input:…}`, `${env:…}`, `${NAME}`) are left empty for the person. They are stored only if the
+  person runs it. The file is never written.
 - Each row has "Connect in Yardlet": a service that connects in one step is added and connected, a Google service opens
-  the Google page, Slack opens the Slack page, and one that needs a key opens that field. "Hide"
+  the Google page, Slack opens the Slack page, and one that needs a key opens that field. A program's row has
+  "Review…", which opens its page. "Hide"
   (`Yardlet.connectorImportDismissed`) folds the section.
 
 ### Antigravity
@@ -350,7 +448,12 @@ calls, and the composer list and the settings text say that Antigravity is not s
   Browserbase have a field in the row with "Create a token on GitHub" or "Find your API key", and for App Store Connect
   "Set up…" opens its own page) → "Needs an OAuth app of your own" (folded by default) → "Another MCP server" (add by
   URL, with sign-in details in a folded optional field). When the search finds nothing, only a one-line hint and adding
-  by URL remain.
+  by URL remain. "From MCP registries" comes before "Another MCP server" (the "Registries" section): rows with the
+  title, the service's domain when it publishes the server itself, the description and what connecting needs, and
+  Connect, a key field, "Review…" for a program, or "Added".
+  - A program's page (`ConnectorProgramPage`): "Run … on this Mac?", where it comes from with a link to its source,
+    a warning that it runs with the person's access, the command line in monospace, the values it needs, when it runs
+    and what removing leaves, Cancel and "Run on this Mac" (enabled once required values are filled).
   - When the build includes a Google app, the Google line comes first in "Connect in one click", and only Slack remains
     under "Needs an OAuth app of your own". Without one, Google and Slack are both under it, and the Google hint offers
     the claude.ai switch as an alternative.
@@ -400,14 +503,16 @@ What the person does (per service):
 - `~/.yardlet/connectors.json`: name, slug, server address, auth type, state, the tool list and when it was read
   (`toolsUpdatedAt`), directory ID (`presetID`), your own OAuth client ID (`oauthClientID`, not a secret), scope, extra
   authorization parameters, the key's query name (`tokenQueryParameter`), server icons (`serverIcons`) and connectors
-  turned off per task (`offInTasks`: task ID → connector ID). Google services have `localService`, `account` (the
+  turned off per task (`offInTasks`: task ID → connector ID), the header a pasted key goes in (`tokenHeader`), and a
+  program's runtime, program name, package, version, origin and environment names (`program`). Google services have `localService`, `account` (the
   address) and `googleAccountID`, and the top of the file has the `googleOAuthClientID` of the Google app the user saved
   (not a secret). Apple services have `localService`, and App Store Connect also has `account` (the key ID). The server
   address of the three Mac services is the Mac app that holds that data (`/System/Applications/Calendar.app` and
   others), and Xcode's is the path of the `mcpbridge` it found. No secrets are written. Older files are read as they are
   (new fields are empty when missing).
 - Keychain: generic password, service `<bundle ID>.connectors`, account the connector UUID (for Google, the ID of the
-  account sign-in), and a JSON value (kinds `oauth`, `token`, `client` and `signingKey`; access and refresh tokens,
+  account sign-in), and a JSON value (kinds `oauth`, `token`, `client`, `signingKey` and `program`; a program's
+  arguments and environment values; access and refresh tokens,
   expiry, client ID and secret, token endpoint and auth method, resource; `signingKey` holds App Store Connect's key ID,
   issuer ID and PEM). `client` is what is left before sign-in or after a disconnect: only your own client. The ID and
   secret of the Google app the user saved are a single item under the same service with a fixed account
@@ -418,7 +523,8 @@ What the person does (per service):
 - Disconnect deletes the token (and keeps your own client). Remove deletes the Keychain item. Yardlet does not ask the
   server to revoke tokens (RFC 7009). Permissions that macOS gave for the three Mac services stay after removal (the
   "Apple" section).
-- The icon cache is in `~/Library/Caches/<bundle ID>/ConnectorIcons/` (the "Icons" section).
+- The icon cache is in `~/Library/Caches/<bundle ID>/ConnectorIcons/` (the "Icons" section). Program connectors work in
+  `~/Library/Caches/<bundle ID>/ConnectorPrograms/<connector ID>/`, which Remove deletes.
 
 ## 9. Google
 
@@ -987,10 +1093,12 @@ registered OAuth app can offer a sign-in button. Yardlet signs in with the devic
   address), resources and prompts, requests the server sends inside a stream (elicitation, sampling, roots), showing
   progress notifications, blocking individual tools and `notifications/tools/list_changed` sent by connector servers
   (remote MCP) themselves (server lists are read again when connecting and every 12 hours).
-- There are no stdio connectors that the user adds (where Yardlet starts a process such as `npx` and passes secrets in
-  its environment). For services with a remote server, remote is simpler, and stdio would make Yardlet responsible for
-  the lifetime, updates and sandbox of third-party processes. The stdio client behind the same broker (`MCPStdioClient`)
-  starts only Apple's `mcpbridge` that comes with Xcode, and passes it no secrets (the "Apple" section).
+- Program connectors run someone else's code with the person's access; macOS gives them no sandbox from Yardlet. The
+  person sees the exact command before it runs and runs it with one button; Yardlet passes only a small environment,
+  keeps values in Keychain, pins registry versions, refuses Docker mounts, devices, privileges and host networking, and
+  runs nothing a registry or another app's settings say on their own (the "Programs on this Mac" section). A remote
+  server is still the simpler choice where a service has one, and the list shows remotes first.
+- Registry text is someone else's: it is shown as plain text and never reaches a model (the "Registries" section).
 - The loopback listener, Keychain, opening the browser, SHA-256, App Store Connect's ES256 signing (CryptoKit), EventKit
   and Contacts, and the addresses of the privacy panes in System Settings belong to the macOS platform layer. Windows
   needs its own Credential Manager store and loopback listener under the same contract, and has no Mac data or Xcode
@@ -1002,7 +1110,9 @@ registered OAuth app can offer a sign-in button. Yardlet signs in with the devic
 |---|---|---|
 | `Sources/NativeHarnessClient/Connectors/ConnectorModels.swift` | Records, credentials (including the `client` and `signingKey` kinds), the store contract, naming rules (`ConnectorToolNaming`), services inside the app (`LocalConnectorService`: the three Google and five Apple services) | engine |
 | `Sources/NativeHarnessClient/Connectors/ConnectorDirectory.swift` | The directory (`ConnectorPreset`), import suggestions, task state (`ConnectorTaskState`, `ConnectorTaskScope`), tool row labels | engine |
-| `Sources/NativeHarnessClient/Connectors/NativeMCPConfigs.swift` | Reading harnesses' own settings (Claude `.claude.json` and `.mcp.json`, Codex `config.toml`, Antigravity `mcp_config.json`), the servers a task loads on its own | engine |
+| `Sources/NativeHarnessClient/Connectors/NativeMCPConfigs.swift` | Reading harnesses' own settings (Claude `.claude.json` and `.mcp.json`, Codex `config.toml`, Antigravity `mcp_config.json`) and other apps' (`NativeMCPApp`: the Claude app, Cursor, VS Code), the servers a task loads on its own, one program's launch (`NativeMCPLaunch`) | engine |
+| `Sources/NativeHarnessClient/Connectors/MCPRegistry.swift`, `MCPRegistryDirectory.swift` | Reading and checking registry answers (`MCPRegistryFormat`, `MCPRegistryCheck`), what connecting asks (`Reach`), order and merging, the registry client, what Add connector shows | engine |
+| `Sources/NativeHarnessClient/Connectors/ConnectorProgram.swift` | Program connectors: the record's `ConnectorProgram`, the Keychain `ConnectorProgramSpec`, registry packages as commands, finding the program, its environment, the page's draft (`ConnectorProgramDraft`) | engine |
 | `Sources/NativeHarnessClient/Connectors/MCPHTTPClient.swift` | Streamable HTTP client, `WWW-Authenticate` parsing, event stream, key in the address | engine |
 | `Sources/NativeHarnessClient/Connectors/ConnectorOAuth.swift` | Discovery, dynamic registration, your own client, authorization URL, token exchange and refresh, PKCE | engine |
 | `Sources/NativeHarnessClient/Connectors/ConnectorCenter.swift` | The connector list, connecting and sign-in, the per-task switch, standing in for harness servers (`withYardletStandIns`), tool lists and calls, per-session token refresh (`ConnectorSession`), the Google app, accounts and sign-in, adding and connecting Apple services (`isAvailable`, `addLocal`, `addAppStoreConnectKey`), list change notification (`onToolsChanged`) | engine |
@@ -1027,6 +1137,7 @@ registered OAuth app can offer a sign-in button. Yardlet signs in with the devic
 | `Sources/NativeHarnessClient/Platform/macOS/Connectors/` | Keychain store, loopback listener (Network.framework, fixed port choice), opening the browser, SHA-256, icon fetching and cache (`ConnectorIconStore`, including icons of apps on this Mac), the EventKit and Contacts implementation (`MacEventKitStore`; it does not ask without usage descriptions; addresses of the privacy panes in System Settings), CryptoKit ES256 (`MacES256Signer`) | macOS |
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorSettingsView.swift` | Settings → Connectors, the one-word state (`ConnectorSettingsState`), the "Set up in one go" cards | views |
 | `Sources/NativeHarnessClient/Views/AppShell/ConnectorAddSheet.swift` | The "Add connector" sheet, steps and links per service (`ConnectorSetupGuide`) | views |
+| `Sources/NativeHarnessClient/Views/AppShell/ConnectorRegistryViews.swift` | "From MCP registries" (`ConnectorRegistrySection`) and a program's page (`ConnectorProgramPage`) | views |
 | `Sources/NativeHarnessClient/Views/AppShell/GoogleSetupPage.swift`, `SlackSetupPage.swift`, `ConnectorSetupAssistantViews.swift` | Google and Slack setup assistants (step rows, copy buttons, checked fields, per-account service chips) | views |
 | `Sources/NativeHarnessClient/Views/AppShell/AppStoreConnectSetupPage.swift` | The App Store Connect page (steps, key type, choosing the `.p8`, ID fields, key list, the Trash question) | views |
 | `Sources/NativeHarnessClient/Views/Composer/ComposerPlusMenu.swift` | Rows and keys of the composer "+" menu (`ComposerMenuList`), the "+" order (`ComposerPlusMenu`), the connector list (`ComposerConnectorsMenu`) | views |
@@ -1042,6 +1153,8 @@ Tests:
 | `Tests/NativeHarnessClientTests/GmailConnectorTests.swift`, `GoogleCalendarDriveConnectorTests.swift`, `GoogleBuiltInAppTests.swift` | With a fake Google (`FakeGoogle`, `FakeGoogleWorkspace`): sign-in, scopes, accounts, and the requests and asking for each tool; the app in the build |
 | `Tests/NativeHarnessClientTests/AppleConnectorTests.swift` | The whole flow with a fake App Store Connect (checking the token signature on every request), a fake Mac store and a fake `mcpbridge`: team key and individual key tokens, the key only in Keychain, the request and reply for each tool, refused keys, asking only for writes and the card text, Mac permissions and calendars, reminders and contacts, finding, connecting, restarting and removing Xcode, stdio with a real shell process |
 | `Tests/NativeHarnessClientTests/GitHubDeviceSignInTests.swift` | Device code request, waiting, refusal and expiry, sending it to MCP as a bearer token |
+| `Tests/NativeHarnessClientTests/MCPRegistryTests.swift` | Recorded registry answers (`Fixtures/mcp-registry-*.json`), checks on someone else's data, order, the client's requests, commands from packages, program connectors with a fake stdio server (keys only in Keychain, a harness's own copy, removal), a key in a named header, other apps' settings and one program's launch |
+| `Tests/NativeHarnessClientTests/ConnectorRegistryRenderingTests.swift` | Draws the registry list, a search, a program's page and programs offered from other apps under `.build/connector-registry-qa/`, light and dark |
 | `Tests/NativeHarnessClientTests/ConnectorSetupAssistantTests.swift` | The Slack manifest and link encoding, Google and Slack step state, field checks, suggestions read by name only |
 | `Tests/NativeHarnessClientTests/ConnectorIconTests.swift` | Icon order, themes and source limits, fetching, cache and waiting after a failure (opt-in `YARDLET_CONNECTOR_ICONS_LIVE=1` fetches from the real service sites and draws them) |
 | `Tests/NativeHarnessClientTests/ConnectorsRenderingTests.swift`, `ConnectorsEasyQARenderingTests.swift`, `PlusConnectorsQARenderingTests.swift`, `GmailSetupRenderingTests.swift`, `AppleConnectorsRenderingTests.swift` | Draws settings, the add sheet, the assistants, the composer list and the App Store Connect page under `.build/`, in light and dark. The Apple connection flow runs with accessibility presses in a transparent off-screen window |

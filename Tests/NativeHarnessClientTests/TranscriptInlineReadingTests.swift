@@ -37,17 +37,18 @@ final class TranscriptInlineReadingTests: XCTestCase {
         XCTAssertNil(value.attributed.runs.compactMap(\.link).first?.scheme)
     }
 
-    /// A file named in code opens as Claude Code's `file_path:line_number` and Codex's inline path do; a
-    /// path that is not there, a folder and a plain word stay code.
+    /// A file named in code opens as Claude Code's `file_path:line_number` and Codex's inline path do, and
+    /// a folder too (in Finder); a path that is not there, `/` alone and a plain word stay code.
     func testAFileNamedInCodeLinksWhenItIsThere() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "yardlet-code-file-\(UUID())")
         try FileManager.default.createDirectory(at: root.appending(path: "Sources"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try Data().write(to: root.appending(path: "Sources/App.swift"))
         let value = try content("`Sources/App.swift:12` and `Sources/App.swift#L3-L5` and `\(root.path)/Sources/App.swift` "
-            + "and `Sources/Gone.swift` and `Sources` and `swift build`")
+            + "and `Sources/Gone.swift` and `Sources` and `swift build` and `/` and `Sources/`")
         let links = value.resolved(relativeTo: root).runs.compactMap(\.link)
-        XCTAssertEqual(links.count, 3)
+        XCTAssertEqual(links.count, 4)
+        XCTAssertEqual(links[3].path(percentEncoded: false), root.appending(path: "Sources/").standardizedFileURL.path(percentEncoded: false))
         XCTAssertEqual(links[0].path(percentEncoded: false), root.appending(path: "Sources/App.swift").standardizedFileURL.path)
         XCTAssertEqual(links[0].fragment, "L12")
         XCTAssertEqual(links[1].fragment, "L3")
@@ -55,13 +56,16 @@ final class TranscriptInlineReadingTests: XCTestCase {
         XCTAssertTrue(value.attributed.runs.allSatisfy { $0.link == nil }, "The parsed content keeps no file links")
     }
 
-    func testExistingWorkspaceDoesNotAddAnExtraDirectoryLevelToParentLinks() throws {
+    /// `..` is read from the task's folder without an extra level, and `~/` from the home folder.
+    func testLinksOutsideTheWorkspaceResolveFromItsParentAndTheHomeFolder() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "yardlet-inline-link-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let value = try content("[parent](../outside.txt)")
-        let resolved = try XCTUnwrap(value.resolved(relativeTo: root).runs.compactMap(\.link).first)
-        XCTAssertEqual(resolved.standardizedFileURL.path, root.deletingLastPathComponent().appending(path: "outside.txt").standardizedFileURL.path)
+        let value = try content("[parent](../outside.txt) and [home](<~/Library/Application Support/notes.md:4>)")
+        let links = value.resolved(relativeTo: root).runs.compactMap(\.link)
+        XCTAssertEqual(links[0].standardizedFileURL.path, root.deletingLastPathComponent().appending(path: "outside.txt").standardizedFileURL.path)
+        XCTAssertEqual(links[1].path(percentEncoded: false),
+                       FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/notes.md:4").path(percentEncoded: false))
     }
 
     func testMixedUnicodeAndExistingPercentEscapesAreNotEscapedTwice() throws {

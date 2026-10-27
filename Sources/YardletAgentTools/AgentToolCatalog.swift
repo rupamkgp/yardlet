@@ -35,8 +35,8 @@ package struct AgentToolDefinition: Equatable, Sendable {
 
 /// The browser tools Yardlet offers every harness. Each acts on one of the calling task's own browser
 /// tabs over the Chrome DevTools Protocol, so the same catalog serves CEF and WebView2: the tab named
-/// by `tabId`, or the task's active tab (the one its panel shows), as the Claude app's Browser pane
-/// tools do. The tab tools list, open, front and close the task's tabs.
+/// by `tabId`, or the agent's active tab (the one its panel shows, unless the person kept the panel on
+/// another), as the Claude app's Browser pane tools do. The tab tools list, open, front and close the task's tabs.
 package enum AgentToolCatalog {
     package static let navigate = "browser_navigate"
     package static let snapshot = "browser_snapshot"
@@ -356,7 +356,8 @@ package enum AgentToolCatalog {
             name: tabList,
             title: "List tabs",
             description: "List this task's browser tabs: each tab's id, the origin of its page (not its title, which "
-                + "the page writes), and which one is active, and say whether the task's browser panel is open.",
+                + "the page writes), which one is active, which one the panel shows and whether the person is using it, "
+                + "and say whether the task's browser panel is open.",
             inputSchema: object([:]),
             readOnly: true
         ),
@@ -367,15 +368,17 @@ package enum AgentToolCatalog {
                 + "unless foreground is set; load a page in it with browser_navigate and its tabId. A task keeps at "
                 + "most 9 tabs.",
             inputSchema: object([
-                "foreground": property("boolean", "Make the new tab the active one, which the panel shows.")
+                "foreground": property("boolean", "Make the new tab the active one, which the panel shows unless the "
+                    + "person is using another tab there.")
             ]),
             readOnly: false
         ),
         AgentToolDefinition(
             name: tabSelect,
             title: "Select tab",
-            description: "Make a tab of this task the active one, which the panel shows and the other tools use "
-                + "without a tabId. Background tabs keep running while the tools drive them.",
+            description: "Make a tab of this task the active one, which the other tools use without a tabId and the "
+                + "panel shows unless the person is using another tab there. Background tabs keep running while the "
+                + "tools drive them.",
             inputSchema: object(["tabId": property("string", "The tab to make active.")], required: ["tabId"]),
             readOnly: false
         ),

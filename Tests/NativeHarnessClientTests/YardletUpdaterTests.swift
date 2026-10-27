@@ -40,6 +40,51 @@ final class YardletUpdaterTests: XCTestCase {
         XCTAssertNoThrow(try YardletUpdater.verifySignature(of: candidate.bundleURL))
     }
 
+    /// The sidebar's "Restart to update" and its menu bar line follow the staged build without checking
+    /// its signature: nothing staged, another app's build or the installed build shows nothing; a new
+    /// build shows, and a build staged over it is read again although the last digest is kept.
+    @MainActor
+    func testRestartToUpdateShowsOnlyAStagedBuildOfThisAppThatDiffersFromTheInstalledOne() async throws {
+        let updates = root.appending(path: "Updates")
+        let pending = updates.appending(path: "Pending")
+        let staged = pending.appending(path: "Yardlet.app")
+        let installed = try bundle(at: root.appending(path: "Installed/Yardlet.app"), marker: "installed")
+        let watch = YardletStagedUpdate(root: updates, bundleIdentifier: identifier, installedBundle: installed)
+        await watch.check()
+        XCTAssertNil(watch.ready, "Nothing staged")
+
+        try bundle(at: staged, marker: "other", identifier: "com.example.other", executableSuffix: "other")
+        await watch.check()
+        XCTAssertNil(watch.ready, "Another app's build")
+
+        try FileManager.default.removeItem(at: staged)
+        try FileManager.default.copyItem(at: installed, to: staged)
+        await watch.check()
+        XCTAssertNil(watch.ready, "The installed build")
+
+        try FileManager.default.removeItem(at: pending)
+        try bundle(at: staged, marker: "new", executableSuffix: "new build")
+        try Data(#"{"commit":"abc1234","dirty":false}"#.utf8).write(to: pending.appending(path: "manifest.json"))
+        await watch.check()
+        let ready = try XCTUnwrap(watch.ready)
+        XCTAssertEqual(ready.commit, "abc1234")
+        XCTAssertEqual(MenuBarMenu.UpdateLine(ready: ready, isWaiting: false), .ready(build: "abc1234"))
+        XCTAssertEqual(MenuBarMenu.UpdateLine(ready: ready, isWaiting: true), .waiting)
+        XCTAssertEqual(MenuBarMenu.UpdateLine.ready(build: "abc1234").help,
+                       L10n.string("Restart to update") + " · abc1234")
+
+        try FileManager.default.removeItem(at: pending)
+        try bundle(at: staged, marker: "newer", executableSuffix: "a newer build")
+        await watch.check()
+        XCTAssertNotNil(watch.ready)
+        XCTAssertNotEqual(watch.ready?.executableDigest, ready.executableDigest)
+        XCTAssertNil(watch.ready?.commit, "No manifest, no commit")
+
+        try FileManager.default.removeItem(at: pending)
+        await watch.check()
+        XCTAssertNil(watch.ready, "Installed, or taken away")
+    }
+
     func testStagingScriptPublishesACompleteBuildWithItsManifest() throws {
         let built = try bundle(at: root.appending(path: "build/Yardlet.app"), marker: "built", executableSuffix: "built")
         let installed = try bundle(at: root.appending(path: "Installed/Yardlet.app"), marker: "installed")

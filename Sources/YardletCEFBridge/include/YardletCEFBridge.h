@@ -56,7 +56,8 @@ typedef enum {
     /// number: 0 Chromium's hang monitor found the renderer unresponsive (no input handled for 15 s),
     /// 1 it answers again.
     YardletCEFEventResponsiveness = 18,
-    /// Process-wide (tab -1): a cookie copy finished. number: its request ID, detail: how many cookies.
+    /// Process-wide (tab -1): a cookie copy finished. number: its request ID, detail: how many cookies (a digest's
+    /// sum for yardlet_cef_cookie_digest).
     YardletCEFEventCookiesCopied = 19,
     /// The profile a tab waited for has loaded. number: 1 its browser was made, 0 Chromium could not make it
     /// (the tab is gone).
@@ -71,8 +72,44 @@ typedef enum {
     /// load. text: the address, detail: the address of the document that asked, number: 1 with a user gesture.
     YardletCEFEventExternalProtocol = 23,
     /// The main frame committed a new document (never for a same-document move). text: its address.
-    YardletCEFEventDocumentStart = 24
+    YardletCEFEventDocumentStart = 24,
+    /// One of the tab's frames answered yardlet_cef_ask_page_state. detail: the query, number: its
+    /// YardletPageState flags.
+    YardletCEFEventPageState = 25,
+    /// The renderer yardlet_cef_discard ended has ended: the tab is discarded, its page loads again on reload.
+    YardletCEFEventDiscarded = 26
 } YardletCEFEvent;
+
+/// What a frame's renderer says of its page (YardletCEFHelper's PageState.c names the same flags).
+enum {
+    /// Media plays out loud in the frame.
+    YardletPageStatePlaying = 1,
+    /// A form field's value differs from the one the page loaded with.
+    YardletPageStateEdited = 2,
+    /// The frame has audio or video elements.
+    YardletPageStateMedia = 4,
+    /// The frame is the page's main frame.
+    YardletPageStateMain = 8,
+    /// The frame's renderer also holds frames of another tab.
+    YardletPageStateShared = 16,
+    /// The renderer could not read the page.
+    YardletPageStateUnknown = 32
+};
+
+/// What the browser process knows of a tab's page, for the memory saver (yardlet_cef_page_signals).
+typedef struct {
+    /// Seconds since the page last began to play sound in this document; -1 when it has not.
+    double audibleAgo;
+    /// The page uses the camera or the microphone.
+    int capturing;
+    /// The page is the result of a form submission (POST), which a reload would send again.
+    int postData;
+    int loading;
+    /// The site may show notifications (its notification permission is allowed).
+    int notifications;
+    /// A frame shows Chromium's PDF viewer.
+    int pdf;
+} YardletCEFPageSignals;
 
 typedef struct {
     int commandID;
@@ -194,11 +231,30 @@ int yardlet_cef_unresponsive_action(int tab, int terminate);
 /// be paused there), so the host reads it.
 int yardlet_cef_is_unresponsive(int tab);
 int yardlet_cef_open_browser_count(void);
-/// Copies the cookies of one request context into another (an empty path is the global context),
-/// only those of `domain` and its subdomains when it is not empty, then flushes the target's store and
-/// emits YardletCEFEventCookiesCopied with `request`. A host-only cookie stays host-only; a partitioned
-/// cookie is left out, since CEF cannot set one. Returns 0 when the copy could not start.
-int yardlet_cef_copy_cookies(int request, const char *fromPath, const char *toPath, const char *domain);
+/// The memory saver (docs/BROWSER_HOST.md §3 "Memory saver"): what the browser process knows of `tab`'s page.
+/// Returns 0 when the tab has no browser.
+int yardlet_cef_page_signals(int tab, YardletCEFPageSignals *signals);
+/// Asks every frame of `tab`'s page about it; each answers with YardletCEFEventPageState and `query`.
+/// Returns how many frames were asked, -1 when the tab has no browser.
+int yardlet_cef_ask_page_state(int tab, int query);
+/// Asks `tab`'s main frame alone, as the last question before yardlet_cef_discard. Returns 1 when it was asked.
+int yardlet_cef_ask_main_frame(int tab, int query);
+/// Ends `tab`'s main-frame renderer, as Chrome's task manager ends a process, keeping the browser and its
+/// history; YardletCEFEventDiscarded follows instead of YardletCEFEventPageCrashed. Returns 0 when it could
+/// not.
+int yardlet_cef_discard(int tab);
+/// Copies the cookies of one request context into another (an empty path is the global context), only
+/// those of `sites` (each a domain with its subdomains) when there are any, then flushes the target's store
+/// and emits YardletCEFEventCookiesCopied with `request`. `mode` 0 adds them beside the target's; 1 first
+/// deletes the target's cookies of `sites`, so each holds the source's alone; 2 adds only those of sites the
+/// target has no cookie of (a site no finer than its registrable domain). A host-only cookie stays host-only;
+/// a partitioned cookie is left out, since CEF cannot set one. Returns 0 when the copy could not start.
+int yardlet_cef_copy_cookies(int request, const char *fromPath, const char *toPath, const char *const *sites,
+                             int siteCount, int mode);
+/// Sums a hash of each cookie of `site` (a domain with its subdomains) in a request context (an empty path is
+/// the global context): name, domain, path and value. Emits YardletCEFEventCookiesCopied with `request` and
+/// the sum as 16 hexadecimal digits for detail. Returns 0 when it could not start.
+int yardlet_cef_cookie_digest(int request, const char *path, const char *site);
 /// A cookie another browser keeps, as Chromium stores it: `domain` with a leading dot for a domain cookie and
 /// the host alone for a host-only one; `same_site` and `priority` as CEF's (cef_cookie_same_site_t,
 /// cef_cookie_priority_t); `expires` in microseconds since 1601, as Chromium's times, when `has_expires`.

@@ -24,13 +24,15 @@ final class BrowserHost {
     /// Where tasks' own request contexts keep their data (docs/BROWSER_SESSION_ISOLATION.md).
     var profiles: TaskProfiles?
     /// Tabs not at their page yet: Chromium is still loading their profile from disk (the browser is made
-    /// once it has), or a new task's first tab waits on about:blank while its context takes the cookies it
-    /// starts with. The address (or the one navigated to meanwhile) loads after that.
+    /// once it has), or a task's tab waits on about:blank while its context takes cookies: a new task's starting
+    /// cookies, the person's sign-ins it follows. The address (or the one navigated to meanwhile) loads after that.
     private struct WaitingTab {
         var url: String
-        /// The address the browser is made at: about:blank while it takes its starting cookies.
+        /// The address the browser is made at: about:blank while it takes cookies.
         var start: String
-        var seed: (from: String, to: String)?
+        /// The copies still to run, in order, into `profile`.
+        var copies: [TaskProfiles.Copy] = []
+        var profile = ""
         var copyRequest: Int32?
     }
     private var waitingTabs: [Int: WaitingTab] = [:]
@@ -39,6 +41,10 @@ final class BrowserHost {
     private var nextCookieCopy: Int32 = 1
     /// Imports under way (the copy's request → the app's), answered with `cookiesImported`.
     private var cookieImports: [Int32: Int] = [:]
+    /// Digests under way (the bridge's request → the app's), answered with `cookieDigest`.
+    private var cookieDigests: [Int32: Int] = [:]
+    /// The memory saver's discards (docs/BROWSER_HOST.md §3 "Memory saver").
+    private lazy var discarder = TabDiscarder(send: { [weak self] in self?.send($0) })
 
     init(arguments: HostArguments, output: EventOutput) {
         self.arguments = arguments
@@ -95,10 +101,11 @@ final class BrowserHost {
             guard let requested = fields["url"] as? String, let viewport = fields["viewport"] as? [String: Any] else { return }
             let url = Self.isAllowed(requested) ? requested : "about:blank"
             if url != requested { send(["navigationBlocked": ["tab": tab, "url": requested]]) }
-            // A task's tabs share its own context; a new one starts with the cookies of the one it seeds from.
+            // A task's tabs share its own context; a new one starts with the cookies of the one it seeds from, and
+            // one that follows the person's sign-ins takes those it has not yet.
             let profile = profiles?.prepare(fields["profile"] as? [String: Any])
-            let seed = profile.flatMap { profile in profile.seedFrom.map { (from: $0, to: profile.path) } }
-            let start = seed == nil ? url : "about:blank"
+            let copies = profile?.copies ?? []
+            let start = copies.isEmpty ? url : "about:blank"
             // 2: the profile is still loading; the browser follows with YardletCEFEventProfileReady.
             let created = yardlet_cef_create_browser(
                 Int32(tab), start, number(viewport["width"]),
@@ -112,7 +119,9 @@ final class BrowserHost {
             }
             guard created != 0 else { return notOpened(tab, "chromium", "Chromium could not create a browser for tab \(tab)") }
             send(["opened": ["tab": tab]])
-            if created == 2 || seed != nil { waitingTabs[tab] = WaitingTab(url: url, start: start, seed: seed) }
+            if created == 2 || !copies.isEmpty {
+                waitingTabs[tab] = WaitingTab(url: url, start: start, copies: copies, profile: profile?.path ?? "")
+            }
             if created == 1 { advance(tab) }
             // A profile that never loads leaves no tab waiting for good.
             if created == 2 {
@@ -125,14 +134,29 @@ final class BrowserHost {
                 }
             }
         case "copyCookies":
-            // The person signed in on a task's page: that site's cookies go to the default profile too.
+            // The person signed in on a task's page: that site's cookies go to the default profile and the tasks
+            // that follow the person's sign-ins, in place of theirs (docs/BROWSER_SESSION_ISOLATION.md 11).
             guard let profiles, let domain = fields["domain"] as? String, !domain.isEmpty else { return }
             let from = profiles.path(forKey: fields["from"] as? String)
             let to = profiles.path(forKey: fields["to"] as? String)
             guard from != to else { return }
             let request = nextCookieCopy
             nextCookieCopy += 1
-            _ = yardlet_cef_copy_cookies(request, from, to, domain)
+            _ = Self.copyCookies(request, TaskProfiles.Copy(from: from, sites: [domain], mode: fields["replace"] as? Bool == true ? 1 : 0),
+                                 to: to)
+        case "cookieDigest":
+            // Whether a sign-in changed a site's cookies, without their values leaving the host.
+            let asked = fields["request"] as? Int ?? 0
+            guard let profiles, let site = fields["site"] as? String else {
+                return send(["cookieDigest": ["request": asked, "digest": ""]])
+            }
+            let request = nextCookieCopy
+            nextCookieCopy += 1
+            cookieDigests[request] = asked
+            if yardlet_cef_cookie_digest(request, profiles.path(forKey: fields["profile"] as? String), site) != 1 {
+                cookieDigests[request] = nil
+                send(["cookieDigest": ["request": asked, "digest": ""]])
+            }
         case "importCookies":
             // The person brings sites' sign-ins over from another browser (docs/BROWSER_SESSION_ISOLATION.md 10).
             let asked = fields["request"] as? Int ?? 0
@@ -257,6 +281,7 @@ final class BrowserHost {
             // Chromium's window over the tab goes and comes with it, which tells the host the window's tab.
             if let chromiumWindows { chromiumWindows.changeVisibility(of: tab, hidden: hidden) }
             else { yardlet_cef_set_hidden(Int32(tab), hidden ? 1 : 0) }
+            if !hidden { discarder.cancel(tab: tab) }
             if hidden {
                 // Nothing paints a hidden tab; its rings go, and Yardlet is told so it can let go of
                 // its references too (after every frame written so far). Showing it again paints
@@ -286,7 +311,10 @@ final class BrowserHost {
             if yardlet_cef_unresponsive_action(Int32(tab), terminate ? 1 : 0) == 1 {
                 FileHandle.standardError.write(Data("renderer \(terminate ? "ended" : "waited for") tab=\(tab)\n".utf8))
             }
+        case "discard":
+            discarder.discard(tab: tab, urgent: fields["urgent"] as? Bool ?? false)
         case "close":
+            discarder.cancel(tab: tab)
             yardlet_cef_close_browser(Int32(tab))
             surfaces?.forget(key: "\(tab).view")
             surfaces?.forget(key: "\(tab).popup")
@@ -406,17 +434,17 @@ final class BrowserHost {
 
     // MARK: Task profiles
 
-    /// Moves a waiting tab on once its browser exists: its starting cookies first, then its page and the
-    /// DevTools messages that waited.
+    /// Moves a waiting tab on once its browser exists: its cookie copies first, one after another, then its page
+    /// and the DevTools messages that waited.
     private func advance(_ tab: Int) {
         guard var waiting = waitingTabs[tab] else { return }
-        if let seed = waiting.seed {
+        if !waiting.copies.isEmpty {
+            let copy = waiting.copies.removeFirst()
             let request = nextCookieCopy
             nextCookieCopy += 1
-            waiting.seed = nil
             waiting.copyRequest = request
             waitingTabs[tab] = waiting
-            guard yardlet_cef_copy_cookies(request, seed.from, seed.to, "") == 1 else { return advance(tab) }
+            guard Self.copyCookies(request, copy, to: waiting.profile) else { return advance(tab) }
             // A copy that never reports still lets the page load. One that reported is done: host.log's
             // `count=-1` is a copy that did not report in time.
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
@@ -434,6 +462,13 @@ final class BrowserHost {
         }
     }
 
+    private func cookiesCopied(request: Int32, detail: String?) {
+        if let asked = cookieDigests.removeValue(forKey: request) {
+            return send(["cookieDigest": ["request": asked, "digest": detail ?? ""]])
+        }
+        cookiesCopied(request: request, count: Int(detail ?? "") ?? 0)
+    }
+
     private func cookiesCopied(request: Int32, count: Int) {
         FileHandle.standardError.write(Data("cookies copied request=\(request) count=\(count)\n".utf8))
         if let asked = cookieImports.removeValue(forKey: request) {
@@ -441,6 +476,16 @@ final class BrowserHost {
         }
         guard let tab = waitingTabs.first(where: { $0.value.copyRequest == request })?.key else { return }
         advance(tab)
+    }
+
+    /// Starts a cookie copy into the profile at `path` (empty: the default profile); the bridge copies the site names.
+    private static func copyCookies(_ request: Int32, _ copy: TaskProfiles.Copy, to path: String) -> Bool {
+        let sites = copy.sites.map { strdup($0) }
+        defer { sites.forEach { free($0) } }
+        let list = sites.map { UnsafePointer($0) }
+        return list.withUnsafeBufferPointer {
+            yardlet_cef_copy_cookies(request, copy.from, path, $0.baseAddress, Int32($0.count), copy.mode) == 1
+        }
     }
 
     /// Hands the bridge an import's cookies as C strings, which it copies before it returns.
@@ -585,7 +630,7 @@ final class BrowserHost {
         case YardletCEFEventResponsiveness.rawValue:
             reportResponsiveness(tab: tab, isResponsive: value != 0)
         case YardletCEFEventCookiesCopied.rawValue:
-            cookiesCopied(request: value, count: Int(detail ?? "") ?? 0)
+            cookiesCopied(request: value, detail: detail)
         case YardletCEFEventProfileReady.rawValue:
             FileHandle.standardError.write(Data("profile loaded tab=\(tab) browser=\(value)\n".utf8))
             if value == 1 { advance(tab) }
@@ -595,8 +640,13 @@ final class BrowserHost {
             let status = Self.terminationStatus(value)
             let code = Int(detail ?? "") ?? 0
             FileHandle.standardError.write(Data("renderer ended tab=\(tab) status=\(status) code=\(code)\n".utf8))
+            discarder.rendererEnded(tab: tab)
             send(["pageCrashed": ["tab": tab, "reason": Self.errorCode(status: status, code: code), "status": status,
                                   "code": code]])
+        case YardletCEFEventPageState.rawValue:
+            discarder.answered(tab: tab, query: Int(detail ?? "") ?? -1, flags: value)
+        case YardletCEFEventDiscarded.rawValue:
+            discarder.discarded(tab: tab)
         case YardletCEFEventDialogReset.rawValue:
             send(["javaScriptDialogReset": ["tab": tab]])
         case YardletCEFEventDragOperation.rawValue:
@@ -806,7 +856,22 @@ final class BrowserHost {
     }
 
     func send(_ event: [String: Any]) {
+        keepTabsAskingThePerson(event)
         output.write(event)
+    }
+
+    /// A page that asks the person something or begins a download while its discard is decided is kept, as Chrome keeps
+    /// such a page: the memory saver's question about it is dropped (`TabDiscarder.cancel`).
+    private func keepTabsAskingThePerson(_ event: [String: Any]) {
+        guard let (name, value) = event.first, let fields = value as? [String: Any] else { return }
+        switch name {
+        case "javaScriptDialog", "fileDialog", "permissionPrompt", "download", "externalApp":
+            if let tab = fields["tab"] as? Int { discarder.cancel(tab: tab) }
+        case "chromiumWindow":
+            for tab in fields["tabs"] as? [Int] ?? [] where tab >= 0 { discarder.cancel(tab: tab) }
+        default:
+            break
+        }
     }
 
     /// Summary printed to standard error (Yardlet's host log) when the host exits.

@@ -68,7 +68,7 @@ extension BrowserHostPaneController {
             }
         }
         // The watch tells of the person's sign-ins: the vault offers saving them, and with per-task
-        // profiles the site's cookies also go to the default profile new tasks start from.
+        // profiles the tasks that follow the person's sign-ins take the site's cookies.
         let offers = vault.isAllowedBuild && vault.isEnabled
         guard offers || MacBrowserHost.shared.profiles.storage == .perTask else { return }
         let token = tab.devTools.observeEvents { [weak self, weak tab] method, params in
@@ -102,7 +102,9 @@ extension BrowserHostPaneController {
         guard let data = payload.data(using: .utf8),
               let fields = try? JSONDecoder().decode([String: String].self, from: data) else { return }
         switch fields["kind"] {
-        case "codeField": codeFieldShown(on: tab, page: fields["page"] ?? "")
+        case "codeField":
+            MacBrowserHost.shared.loginFollow.codeFieldShown(on: tab)
+            codeFieldShown(on: tab, page: fields["page"] ?? "")
         case "qr": scanForCodes(on: tab, page: fields["page"] ?? "", asked: false)
         case "setup": setupsFound(OneTimeCodeSetup.setups(in: fields["text"] ?? ""), on: tab, page: fields["page"] ?? "",
                                   asked: false)
@@ -119,7 +121,7 @@ extension BrowserHostPaneController {
             // The origin comes from the browser, not from the page's script.
             guard let self, let frame = try? await VaultPageScripts.mainFrame(tab.devTools, timeout: .seconds(10)),
                   let site = VaultSite.suggestion(for: frame.origin, suffixes: self.vault.suffixes) else { return }
-            self.keepSignInForNewTasks(origin: frame.origin)
+            MacBrowserHost.shared.loginFollow.signInSubmitted(on: tab)
             guard self.vault.isAllowedBuild, self.vault.isEnabled else { return }
             let never = UserDefaults.yardlet.stringArray(forKey: Self.neverSaveKey) ?? []
             guard !never.contains(site) else { return }
@@ -128,24 +130,6 @@ extension BrowserHostPaneController {
             if let sameUser, self.vault.secret(of: sameUser.id)?.password == password { return }
             self.vaultOffer = BrowserVaultSaveOffer(origin: frame.origin, site: site, username: username,
                                                     password: password, updates: sameUser)
-        }
-    }
-
-    /// The person signed in on this task's page: once the site has set its cookies, they go to the default
-    /// profile too, so tasks started later begin signed in (docs/BROWSER_SESSION_ISOLATION.md). Other running
-    /// tasks keep their own.
-    private func keepSignInForNewTasks(origin: String) {
-        guard MacBrowserHost.shared.profiles.storage == .perTask else { return }
-        let host = VaultSite.host(of: origin)
-        let domain = vault.suffixes.registrableDomain(of: host) ?? host
-        let session = self.session
-        Task { @MainActor [weak self] in
-            // After the sign-in's redirects, and once more for a site that sets its cookies late.
-            for wait in [4, 8] {
-                try? await Task.sleep(for: .seconds(wait))
-                guard self != nil else { return }
-                MacBrowserHost.shared.client.copyCookies(fromSession: session, toDefaultFor: domain)
-            }
         }
     }
 
@@ -200,6 +184,7 @@ extension BrowserHostPaneController {
             guard let self, let frame = try? await VaultPageScripts.mainFrame(tab.devTools, timeout: .seconds(10)),
                   let grant = self.vault.valuesForPerson(item, origin: frame.origin) else { return }
             MacAgentToolService.shared.broker.noteVaultValues([grant.password, grant.code])
+            MacBrowserHost.shared.loginFollow.personFilling(on: tab)
             let filled = await VaultPageScripts.fillForPerson(tab.devTools, username: grant.username, password: grant.password,
                                                               code: grant.code, codeOnly: codeOnly)
             if !filled {

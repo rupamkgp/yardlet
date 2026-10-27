@@ -6,7 +6,8 @@ import XCTest
 /// Settings › CLI Updates drawn offscreen (never shown) in both appearances into `.build/cli-update-qa`:
 ///
 /// - `cli-updates-*.png`: the switch on, and six installs after one check: Codex (Homebrew cask)
-///   back on 0.157.1 after 0.163.0 failed Yardlet's check, Claude Code inside the Claude app,
+///   back on 0.157.1 after 0.163.0 failed Yardlet's check, with the newer runtime the ChatGPT app
+///   brings offered beside the Homebrew one the person chose, Claude Code inside the Claude app,
 ///   OpenCode (npm) updated, Cursor Agent that Yardlet cannot check, Antigravity CLI up to date, and
 ///   Grok Build waiting for its running task.
 /// - `cli-update-notice-*.png`: the main window's notice for Codex.
@@ -29,6 +30,9 @@ final class CLIUpdateSettingsRenderingTests: XCTestCase {
     func testTheCLIUpdatesSectionDrawsEachInstallAfterACheck() async throws {
         let directory = try WindowlessRender.directory("cli-update-qa")
         let center = try await checkedCenter()
+        let runtimes = try await chosenHomebrewCodex()
+        let chatGPT = try XCTUnwrap(runtimes.newerInstalls[.codex])
+        XCTAssertEqual(chatGPT.version, "0.164.0-alpha.11.1")
 
         XCTAssertEqual(center.rows.map(\.harness), [.codex, .claudeCode, .openCode, .cursorAgent, .antigravityCLI, .grokBuild])
         XCTAssertEqual(center.heldVersion(for: .codex)?.version, "0.157.1")
@@ -39,16 +43,20 @@ final class CLIUpdateSettingsRenderingTests: XCTestCase {
 
         let size = NSSize(width: 820, height: 900)
         let captures = try WindowlessRender.hostedInBothAppearances("cli-updates", in: directory, size: size) { appearance in
-            settings(center).environment(\.colorScheme, appearance.colorScheme)
+            settings(center, runtimes: runtimes).environment(\.colorScheme, appearance.colorScheme)
         }
         for capture in captures { XCTAssertTrue(WindowlessRender.drawsContent(capture.bitmap, step: 6)) }
 
-        let host = WindowlessRender.Host(settings(center), size: size)
+        let host = WindowlessRender.Host(settings(center, runtimes: runtimes), size: size)
         defer { host.close() }
         host.settle()
-        let labels = host.accessibilityElements().map(\.label)
+        let elements = host.accessibilityElements()
+        let labels = elements.map(\.label)
         XCTAssertTrue(labels.contains(L10n.string("CLI automatic updates")), labels.description)
         XCTAssertTrue(labels.contains(L10n.format("Check %@ for updates", "Codex")), labels.description)
+        XCTAssertTrue(elements.contains { "\($0.label) \($0.value)".contains(
+            L10n.format("Newer version installed: %1$@ · %2$@", "0.164.0-alpha.11.1",
+                        L10n.format("Comes with the %@ app", "ChatGPT"))) }, elements.description)
 
         let notice = try XCTUnwrap(center.notice)
         let bars = try WindowlessRender.hostedInBothAppearances("cli-update-notice", in: directory,
@@ -59,14 +67,39 @@ final class CLIUpdateSettingsRenderingTests: XCTestCase {
                 .environment(\.colorScheme, appearance.colorScheme)
         }
         for bar in bars { XCTAssertTrue(WindowlessRender.drawsContent(bar.bitmap, step: 4)) }
+
+        // Using it drops the person's choice: Codex follows its newest install again.
+        XCTAssertTrue(host.hosting.pressButton(labeled: L10n.format("Use %1$@ %2$@", "Codex", "0.164.0-alpha.11.1")))
+        await host.settle { runtimes.selectedURL(for: .codex) == chatGPT.url }
+        XCTAssertEqual(runtimes.selectedURL(for: .codex), chatGPT.url)
+        XCTAssertNil(runtimes.newerInstalls[.codex])
+        // Queued after the check the button started, so that one ends before the fixtures go.
+        await center.check(.codex)
     }
 
-    private func settings(_ center: CLIUpdateCenter) -> some View {
+    private func settings(_ center: CLIUpdateCenter, runtimes: RuntimeSelectionStore) -> some View {
         SettingsCenterView(size: CGSize(width: 820, height: 900), initialSection: SettingsSection.cliUpdates.rawValue,
-                           notificationCenter: MenuBarQuietNotificationCenter(), cliUpdates: center)
+                           notificationCenter: MenuBarQuietNotificationCenter(),
+                           accounts: SettingsAccountsContext(runtimeSelections: runtimes,
+                                                             connections: ProviderConnectionStore(), fixtureSnapshots: []),
+                           cliUpdates: center)
     }
 
     // MARK: - Fixtures
+
+    /// The Homebrew Codex chosen in Settings, and the ChatGPT app's newer one beside it. Versions
+    /// come from the fixture files; nothing runs.
+    private func chosenHomebrewCodex() async throws -> RuntimeSelectionStore {
+        let homebrew = root.appending(path: "opt/homebrew/bin/codex")
+        let chatGPT = try write("Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex", version: "0.164.0-alpha.11.1")
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("CLIUpdateSettingsRenderingTests.runtimes")))
+        let runtimes = RuntimeSelectionStore(defaults: defaults, loadsPersistedSelections: false,
+            candidates: { $0 == .codex ? [homebrew, chatGPT] : [] },
+            versions: RuntimeVersionCache(defaults: defaults) { Self.version(of: $0) })
+        runtimes.select(homebrew, for: .codex)
+        await runtimes.findNewest()
+        return runtimes
+    }
 
     private func checkedCenter() async throws -> CLIUpdateCenter {
         try write("opt/homebrew/bin/brew")

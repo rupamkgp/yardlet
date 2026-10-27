@@ -166,6 +166,8 @@ final class BrowserAgentTools {
         do {
             let page = try await pages(sessionID, arguments["tabId"]?.stringValue)
             page.workspaceRoots = workspaceRoots(sessionID)
+            // A tab the memory saver discarded loads its page again as the tool reaches it.
+            await page.untilRestored()
             return .success(page)
         } catch let error as BrowserAgentToolError {
             return .failure(error)
@@ -185,16 +187,27 @@ final class BrowserAgentTools {
                 let listing = JSONValue.object([
                     "panelOpen": .bool(panelOpen),
                     "tabs": .array(tabs.map { tab in
-                        .object(["tabId": .string(tab.id), "origin": .string(tab.origin), "isActive": .bool(tab.isActive),
-                                 "responding": .bool(tab.isResponding)])
+                        var fields: [String: JSONValue] = ["tabId": .string(tab.id), "origin": .string(tab.origin),
+                                                           "isActive": .bool(tab.isActive), "responding": .bool(tab.isResponding)]
+                        if tab.isShown { fields["shownInPanel"] = .bool(true) }
+                        if tab.personUse != nil { fields["personUsing"] = .bool(true) }
+                        return .object(fields)
                     })
                 ])
-                let note = tabs.isEmpty
+                let shown = tabs.first(where: \.isShown)
+                var note = tabs.isEmpty
                     ? "This task has no browser tab yet; browser_navigate or browser_tab_new opens one."
                     : panelOpen
-                    ? "The task's browser panel is open and shows the active tab; other tabs run in the background."
+                    ? "The task's browser panel is open and shows " + (shown.map { "tab \($0.id)" } ?? "a tab")
+                        + "; other tabs run in the background."
                     : "The task's browser panel is closed: the pages still work, as background pages, so timing and "
                         + "animation can be off. Prefer browser_snapshot to screenshots for reading them."
+                if let active = tabs.first(where: \.isActive), let shown, active.id != shown.id {
+                    note += " Tools without a tabId act on tab \(active.id), your active tab."
+                }
+                if let used = tabs.first(where: { $0.personUse != nil }), let use = used.personUse {
+                    note += " The person is using tab \(used.id) there (\(Self.describe(use)))."
+                }
                 let stuck = tabs.filter { !$0.isResponding && $0.crash == nil && $0.openFailure == nil }.map(\.id)
                 let stuckNote = stuck.isEmpty ? "" : "\nNot responding: tab " + stuck.joined(separator: ", tab ")
                     + " (its page's renderer is busy; browser_navigate opens a page again in its place, browser_tab_close closes it)."
@@ -208,13 +221,14 @@ final class BrowserAgentTools {
             case AgentToolCatalog.tabNew:
                 let foreground = arguments["foreground"]?.boolValue ?? false
                 let tab = try directory.newTab(for: sessionID, foreground: foreground)
-                let where_ = tab.isActive ? "It is the active tab." : "It opened behind the active tab."
+                let where_ = tab.isActive ? Self.activeTabText(directory.personTab(for: sessionID), besides: tab.id, opened: true)
+                    : "It opened behind the active tab."
                 return .text(Self.json(.object(["tabId": .string(tab.id), "isActive": .bool(tab.isActive)]))
                     + "\nOpened a blank tab. \(where_) Load a page with browser_navigate and tabId \"\(tab.id)\".")
             case AgentToolCatalog.tabSelect:
                 guard let id = arguments["tabId"]?.stringValue else { throw BrowserAgentToolError("browser_tab_select needs a tabId.") }
                 try directory.select(id, for: sessionID)
-                return .text("Tab \(id) is now the active tab.")
+                return .text("Tab \(id) " + Self.activeTabText(directory.personTab(for: sessionID), besides: id, opened: false))
             case AgentToolCatalog.tabClose:
                 guard let id = arguments["tabId"]?.stringValue else { throw BrowserAgentToolError("browser_tab_close needs a tabId.") }
                 let active = try directory.close(id, for: sessionID)
@@ -228,6 +242,30 @@ final class BrowserAgentTools {
         } catch {
             return .error(error.localizedDescription)
         }
+    }
+
+    /// Where the agent's active tab stands: shown in the panel, or behind the tab the person keeps there.
+    private static func activeTabText(_ person: BrowserAgentTabInfo?, besides id: String, opened: Bool) -> String {
+        let subject = opened ? "It is" : "is now"
+        guard let person, person.id != id, let use = person.personUse else { return "\(subject) the active tab." }
+        return "\(subject) your active tab: tools without a tabId act on it. The browser panel stays on tab \(person.id), "
+            + "which the person is using (\(describe(use)))."
+    }
+
+    /// How the person is using a tab, as a fact.
+    static func describe(_ use: BrowserPersonUse) -> String {
+        if use.hasKeyboard { return "the page has their keyboard" }
+        guard let seconds = use.secondsSinceInput else { return "they are on it" }
+        return seconds < 2 ? "their last input to it was just now" : "their last input to it was \(seconds) seconds ago"
+    }
+
+    /// A tool on the tab the person is using says so: the fact and the ways to a tab of the agent's own.
+    private func personNote(_ page: BrowserAgentPage, sessionID: UUID?) -> String? {
+        guard let sessionID, let person = directory?.personTab(for: sessionID), person.id == String(page.tabID),
+              let use = person.personUse else { return nil }
+        return "The person is using this tab in the browser panel (\(Self.describe(use))), so what you do here happens "
+            + "on the page they are working in. browser_tab_new opens a tab of your own; browser_handoff hands this one "
+            + "to them."
     }
 
     private static func json(_ value: JSONValue) -> String {
@@ -262,6 +300,7 @@ final class BrowserAgentTools {
             var result = try await perform(tool, arguments, on: page, sessionID: sessionID)
             result.content += notices(after: tool, on: page, sessionID: sessionID).map { .text($0) }
             if let note = unresponsiveNote(page) { result.content.append(.text(note)) }
+            if let note = personNote(page, sessionID: sessionID) { result.content.append(.text(note)) }
             return result
         } catch is BrowserAgentDialogOpened {
             let dialog = page.dialog.map(Self.describe) ?? "A JavaScript dialog opened."

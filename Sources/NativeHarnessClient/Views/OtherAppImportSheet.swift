@@ -10,6 +10,7 @@ struct OtherAppImportSheet: View {
     let onDismiss: () -> Void
 
     @State private var claudeAccountID: String
+    @State private var codexAccountID: String
     @State private var listing = OtherAppConversations()
     /// The list as shown: where each conversation goes, worked out once per reading.
     @State private var groups: [Group] = []
@@ -21,26 +22,25 @@ struct OtherAppImportSheet: View {
     init(model: AppModel, onDismiss: @escaping () -> Void) {
         self.model = model
         self.onDismiss = onDismiss
-        _claudeAccountID = State(initialValue: Self.defaultClaudeAccountID(in: model.connections))
+        _claudeAccountID = State(initialValue: model.connections.defaultImportChoice(for: .claudeCode)?.id ?? "")
+        _codexAccountID = State(initialValue: model.connections.defaultImportChoice(for: .codex)?.id ?? "")
     }
 
     private var isImporting: Bool { progress != nil }
 
     // MARK: Accounts
 
-    private static func claudeAccounts(in connections: ProviderConnectionStore) -> [AccountChoice] {
-        connections.choices(for: [.claudeCode]).filter(\.canSelect)
-    }
-
-    /// The account Claude's new tasks start on, else the first.
-    private static func defaultClaudeAccountID(in connections: ProviderConnectionStore) -> String {
-        connections.defaultImportChoice(for: .claudeCode)?.id ?? ""
-    }
-
-    private var claudeAccounts: [AccountChoice] { Self.claudeAccounts(in: model.connections) }
+    /// Each harness's accounts, then its folders found with a login or history that are not saved
+    /// (importing under one saves it). Each starts on the account its new tasks start on.
+    private var claudeAccounts: [AccountChoice] { model.connections.importChoices(for: .claudeCode) }
+    private var codexAccounts: [AccountChoice] { model.connections.importChoices(for: .codex) }
 
     private var claudeConnection: ProviderConnection? {
         (claudeAccounts.first { $0.id == claudeAccountID } ?? claudeAccounts.first)?.connection
+    }
+
+    private var codexConnection: ProviderConnection? {
+        (codexAccounts.first { $0.id == codexAccountID } ?? codexAccounts.first)?.connection
     }
 
     // MARK: Rows
@@ -66,7 +66,12 @@ struct OtherAppImportSheet: View {
     }
 
     private func existingTask(for conversation: ImportableConversation) -> SessionRecord? {
-        model.existingTask(for: conversation, connection: conversation.harness == .claudeCode ? claudeConnection : nil)
+        let connection: ProviderConnection? = switch conversation.harness {
+        case .claudeCode: claudeConnection
+        case .codex: codexConnection
+        default: nil
+        }
+        return model.existingTask(for: conversation, connection: connection)
     }
 
     /// The conversations not yet in Yardlet, which the checkboxes choose among.
@@ -94,7 +99,7 @@ struct OtherAppImportSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(isImporting)
             }
-            Text(L10n.string("Conversations in the Claude and Codex apps and Antigravity CLI. Their history stays where it is."))
+            Text(L10n.string("Conversations from the Claude and Codex apps, Claude Code and Codex run elsewhere, and Antigravity CLI. Their history stays where it is."))
                 .font(.callout).foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Toggle(L10n.string("Select All"), isOn: selectAll)
@@ -104,6 +109,13 @@ struct OtherAppImportSheet: View {
                 if claudeAccounts.count > 1 {
                     Picker(L10n.string("Claude account"), selection: $claudeAccountID) {
                         ForEach(claudeAccounts) { Text($0.title).tag($0.id) }
+                    }
+                    .frame(maxWidth: 300)
+                    .disabled(isImporting)
+                }
+                if codexAccounts.count > 1 {
+                    Picker(L10n.string("Codex account"), selection: $codexAccountID) {
+                        ForEach(codexAccounts) { Text($0.title).tag($0.id) }
                     }
                     .frame(maxWidth: 300)
                     .disabled(isImporting)
@@ -118,7 +130,8 @@ struct OtherAppImportSheet: View {
         .padding(20)
         .frame(width: 720, height: 600)
         .interactiveDismissDisabled(isImporting)
-        .task(id: claudeAccountID) { await load() }
+        .task { await model.connections.findUnsavedAccountHomes() }
+        .task(id: claudeAccountID + "|" + codexAccountID) { await load() }
     }
 
     @ViewBuilder private var list: some View {
@@ -225,7 +238,7 @@ struct OtherAppImportSheet: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
-        let found = await model.otherAppConversations(claudeConnection: claudeConnection)
+        let found = await model.otherAppConversations(claudeConnection: claudeConnection, codexConnection: codexConnection)
         guard !Task.isCancelled else { return }
         listing = found
         groups = grouped(found.all)
@@ -240,7 +253,8 @@ struct OtherAppImportSheet: View {
         guard !chosen.isEmpty else { return }
         failures = [:]
         progress = (0, chosen.count)
-        let found = await model.importConversations(chosen, claudeConnection: claudeConnection) { _ in
+        let found = await model.importConversations(chosen, claudeConnection: claudeConnection,
+                                                    codexConnection: codexConnection) { _ in
             progress = progress.map { ($0.done + 1, $0.total) }
         }
         progress = nil

@@ -7,6 +7,7 @@
 // keyboard entry and Roman input sources while that field has the keyboard, as Safari and Chrome do.
 
 #include "FocusedField.h"
+#include "PageState.h"
 
 #include <dlfcn.h>
 #include <string.h>
@@ -106,7 +107,9 @@ static int CEF_CALLBACK render_on_process_message_received(cef_render_process_ha
                                                            cef_process_message_t *message) {
     (void)self;
     int handled = 0;
-    if (source_process == PID_BROWSER && frame != NULL && message != NULL && message_is(message, kFocusedFieldQuery)) {
+    if (source_process == PID_BROWSER && yardlet_page_state_message(browser, frame, message)) {
+        handled = 1;
+    } else if (source_process == PID_BROWSER && frame != NULL && message != NULL && message_is(message, kFocusedFieldQuery)) {
         handled = 1;
         g_visited_password = 0;
         // Passing the visitor gives up a reference, which a static ignores.
@@ -117,6 +120,20 @@ static int CEF_CALLBACK render_on_process_message_received(cef_render_process_ha
     RELEASE(frame);
     RELEASE(browser);
     return handled;
+}
+
+static void CEF_CALLBACK render_on_browser_created(cef_render_process_handler_t *self, cef_browser_t *browser,
+                                                   cef_dictionary_value_t *extra_info) {
+    (void)self;
+    yardlet_page_state_browser_created(browser);
+    RELEASE(extra_info);
+    RELEASE(browser);
+}
+
+static void CEF_CALLBACK render_on_browser_destroyed(cef_render_process_handler_t *self, cef_browser_t *browser) {
+    (void)self;
+    yardlet_page_state_browser_destroyed(browser);
+    RELEASE(browser);
 }
 
 static cef_render_process_handler_t g_render_process_handler;
@@ -135,7 +152,7 @@ cef_app_t *yardlet_helper_app(void *framework) {
         (__typeof__(p_cef_string_userfree_utf16_free))dlsym(framework, "cef_string_userfree_utf16_free");
     // Without them the renderer reports nothing and the panel never turns secure input on.
     if (!p_cef_process_message_create || !p_cef_string_utf8_to_utf16 || !p_cef_string_utf16_clear
-        || !p_cef_string_userfree_utf16_free) {
+        || !p_cef_string_userfree_utf16_free || !yardlet_page_state_init(framework)) {
         return NULL;
     }
     memset(&g_visitor, 0, sizeof(g_visitor));
@@ -146,6 +163,8 @@ cef_app_t *yardlet_helper_app(void *framework) {
     init_base(&g_render_process_handler.base, sizeof(g_render_process_handler));
     g_render_process_handler.on_focused_node_changed = render_on_focused_node_changed;
     g_render_process_handler.on_process_message_received = render_on_process_message_received;
+    g_render_process_handler.on_browser_created = render_on_browser_created;
+    g_render_process_handler.on_browser_destroyed = render_on_browser_destroyed;
 
     memset(&g_app, 0, sizeof(g_app));
     init_base(&g_app.base, sizeof(g_app));

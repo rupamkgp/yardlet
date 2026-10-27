@@ -55,7 +55,7 @@ final class CodexFileChangeCardTests: XCTestCase {
         XCTAssertEqual(L10n.string("Diff too large to preview", languageCode: "ko"), "변경 내용이 너무 커서 미리 볼 수 없습니다")
     }
 
-    func testARowShowsTheFileNameItsCountsAndOpensTheFileInsideTheTaskFolder() throws {
+    func testARowShowsTheFileNameItsCountsAndOpensTheFileItChanged() throws {
         let rows = rows(threeKinds + [
             change("/Users/me/project/a.swift", "update", "@@ -1 +1 @@\n-x\n+y\n", movePath: "/Users/me/project/Sources/b.swift"),
             change("/tmp/scratch.txt", "add", "one\n"),
@@ -72,7 +72,8 @@ final class CodexFileChangeCardTests: XCTestCase {
         ])
         XCTAssertEqual(rows.map { $0.fileURL?.path(percentEncoded: false) }, [
             "/Users/me/project/Sources/App.swift", "/Users/me/project/notes.md", "/Users/me/project/old.txt",
-            "/Users/me/project/Sources/b.swift", nil, "/Users/me/project/empty.txt"
+            // A file outside the task's folder opens too, read-only in the files panel.
+            "/Users/me/project/Sources/b.swift", "/tmp/scratch.txt", "/Users/me/project/empty.txt"
         ])
         XCTAssertEqual(rows[0].accessibilityValue, "\(L10n.string("Edited")), +1 −1")
         XCTAssertEqual(rows[5].accessibilityValue, L10n.string("Edited"))

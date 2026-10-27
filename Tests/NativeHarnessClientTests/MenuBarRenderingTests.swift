@@ -10,8 +10,8 @@ import XCTest
 ///
 /// - `menu-*.png`: the item in the menu bar with the menu open on ten tasks across three projects
 ///   and a chat with the sidebar's state marks, one usage line per account (four Claude accounts and
-///   Codex, whose latest check could not finish), and Recent's More submenu; beside it the menu with
-///   nothing to list and the icon on a bar of each appearance.
+///   Codex, whose latest check could not finish), Recent's More submenu, and "Restart to update" for a
+///   staged build; beside it the menu with nothing to list and the icon on a bar of each appearance.
 /// - `account-menu-*.png`: the sidebar's account menu (`SidebarAccountMenuController`) with the same
 ///   accounts under Usage, each with its harness and what is left under it.
 /// - `settings-general-*.png`: Settings › General with "Show in menu bar" first.
@@ -24,7 +24,12 @@ final class MenuBarRenderingTests: XCTestCase {
     func testTheMenuDrawsWithItsSectionsUsageAndEndInBothAppearances() throws {
         let directory = try WindowlessRender.directory("menu-bar-qa")
         let model = fixtureModel()
-        let controller = MenuBarMenuController(content: { model.menuBarMenu(now: self.now) }, actions: .init())
+        // With a staged build ready to install: "Restart to update" before Quit.
+        let controller = MenuBarMenuController(content: {
+            var menu = model.menuBarMenu(now: self.now)
+            menu.update = .ready(build: "abc1234")
+            return menu
+        }, actions: .init())
         controller.menuNeedsUpdate(controller.menu)
         let lines = MenuLine.lines(controller.menu.items)
         let empty = MenuBarMenuController(content: { .empty }, actions: .init())

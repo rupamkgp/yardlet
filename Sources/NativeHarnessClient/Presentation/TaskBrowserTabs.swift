@@ -21,6 +21,13 @@ final class TaskBrowserTabs {
         /// PNG; never saved, so a tab shows its globe until its page loads again.
         var favicon: Data?
         var isLoading = false
+        /// What the tab waits on from the person (`BrowserHostClient.personWait(of:)`), and the page's site it names.
+        var wait: BrowserPersonWait?
+        var site: String?
+        /// The agent used this tab last in its turn.
+        var isAgentUsing = false
+        /// The memory saver discarded the page (`BrowserTab.isDiscarded`); it loads again when the tab shows.
+        var isDiscarded = false
     }
 
     private(set) var tabs: [UUID: Tab]
@@ -35,16 +42,28 @@ final class TaskBrowserTabs {
     func tab(_ key: UUID) -> Tab? { tabs[key] }
 
     /// What the browser reports of its tab `key`; a nil address keeps the page last shown.
-    func update(_ key: UUID, address: String?, title: String, favicon: Data?, isLoading: Bool) {
+    func update(_ key: UUID, address: String?, title: String, favicon: Data?, isLoading: Bool, isDiscarded: Bool = false) {
         var tab = tabs[key] ?? Tab()
         if let address, !address.isEmpty, address != "about:blank" { tab.address = address }
         tab.title = title
         tab.favicon = favicon
         tab.isLoading = isLoading
+        tab.isDiscarded = isDiscarded
         guard tab != tabs[key] else { return }
         let saved = tabs[key].map { ($0.address, $0.title) }
         tabs[key] = tab
         if saved.map({ $0 != (tab.address, tab.title) }) ?? true { onChange?() }
+    }
+
+    /// What the panel's tab marks: what the tab waits on from the person, and whether the agent works in it. Never
+    /// saved.
+    func mark(_ key: UUID, wait: BrowserPersonWait?, site: String?, isAgentUsing: Bool) {
+        guard var tab = tabs[key] else { return }
+        tab.wait = wait
+        tab.site = wait == nil ? nil : site
+        tab.isAgentUsing = isAgentUsing
+        guard tab != tabs[key] else { return }
+        tabs[key] = tab
     }
 
     /// A new tab's page before the browser opens it (a duplicate, a link from the conversation).

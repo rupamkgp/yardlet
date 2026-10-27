@@ -65,6 +65,24 @@ final class AppModelTests: XCTestCase {
         await model.shutdown()
     }
 
+    /// A task records the runtime it was created with; the harness's runtime stays the person's
+    /// choice or its newest install, so a task made from an older runtime does not pin it.
+    func testCreatingATaskDoesNotChooseItsRuntimeForTheHarness() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("NativeHarnessClientTests")))
+        let adapter = FakeHarnessAdapter(kind: .codex)
+        let model = AppModel(
+            store: SessionStore(repository: InMemorySessionRepository()),
+            runtimeSelections: RuntimeSelectionStore(defaults: defaults, discoversRuntimes: false),
+            registry: HarnessRegistry { _, _ in adapter }, restoresIndexOnLaunch: false
+        )
+        let created = await model.createSession(harness: .codex, workspaceURL: URL(filePath: "/tmp/runtime-choice"),
+                                                runtimeExecutableURL: URL(filePath: "/usr/bin/true"), title: "Older runtime")
+        XCTAssertEqual(created?.runtimeExecutableURL, URL(filePath: "/usr/bin/true"))
+        XCTAssertNil(model.runtimeSelections.selectedURL(for: .codex))
+        XCTAssertNil(defaults.string(forKey: "runtime.codex.executablePath"))
+        await model.shutdown()
+    }
+
     func testSideChatOpensWithoutSelectingOrAttachingAndKeepsDraftsIndependent() async throws {
         let parent = SessionRecord(harness: .openCode, workspaceURL: URL(filePath: "/tmp/side-chat"),
                                    runtimeExecutableURL: URL(filePath: "/tmp/opencode"), title: "Main conversation")
@@ -235,6 +253,53 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(resumes, 1)
         XCTAssertTrue(prompts.isEmpty)
         XCTAssertNil(model.errorBySessionID[session.id])
+        await model.shutdown()
+    }
+
+    /// The memory saver lets an idle Codex task's thread go, unless the thread keeps a background
+    /// terminal (listed through the YHP wrapper). The account's last task leaves no adapter behind whose App Server ended
+    /// with it, so the next message starts a new one and resumes the thread.
+    func testTheMemorySaverLetsAnIdleCodexThreadGoAndTheNextMessageResumesIt() async throws {
+        final class Made: @unchecked Sendable {
+            private let lock = NSLock()
+            private var adapters: [FakeHarnessAdapter] = []
+            func add(_ adapter: FakeHarnessAdapter) { lock.withLock { adapters.append(adapter) } }
+            var all: [FakeHarnessAdapter] { lock.withLock { adapters } }
+        }
+        let made = Made()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("NativeHarnessClientTests")))
+        let model = AppModel(
+            store: SessionStore(repository: InMemorySessionRepository()),
+            runtimeSelections: RuntimeSelectionStore(defaults: defaults),
+            registry: HarnessRegistry { _, _ in
+                let adapter = FakeHarnessAdapter(kind: .codex)
+                made.add(adapter)
+                return YHPCodexCompatibilityAdapter(adapter: adapter, manifest: HarnessProtocolCompatibilityManifest.codex())
+            }
+        )
+        let created = await model.createSession(harness: .codex, workspaceURL: URL(filePath: "/tmp/memory-saver"),
+                                                runtimeExecutableURL: URL(filePath: "/tmp/codex"), title: "Idle")
+        let session = try XCTUnwrap(created)
+        model.store.selectedSessionID = nil
+        let first = try XCTUnwrap(made.all.first)
+        await first.setBackgroundTerminals([CodexBackgroundTerminal(processID: "7", itemID: "item", command: "npm run dev",
+                                                                    workspacePath: "/tmp/memory-saver")])
+        let later = Date().addingTimeInterval(4 * 3_600)
+        await model.checkHarnessMemory(now: later, pressure: .normal, physicalMemory: 16 << 30)
+        XCTAssertTrue(model.isAttached(session.id), "A background terminal keeps the thread")
+
+        await first.setBackgroundTerminals([])
+        await model.checkHarnessMemory(now: later, pressure: .normal, physicalMemory: 16 << 30)
+        XCTAssertFalse(model.isAttached(session.id), "Three hours off screen let it go")
+        let closes = await first.closeCount
+        XCTAssertEqual(closes, 1)
+        XCTAssertEqual(model.store.sessions.first?.status, .ready, "Let go to save memory, not failed")
+
+        await model.send("Next step", to: try XCTUnwrap(model.store.sessions.first))
+        XCTAssertTrue(model.isAttached(session.id))
+        XCTAssertEqual(made.all.count, 2, "A new adapter: the old one's App Server ended with its last task")
+        let resumes = await made.all.last?.resumeCount
+        XCTAssertEqual(resumes, 1, "The same thread resumes")
         await model.shutdown()
     }
 
@@ -3816,6 +3881,9 @@ actor FakeHarnessAdapter: HarnessAdapter, CodexCapabilityProviding, CodexPresent
     private(set) var createCount = 0
     private(set) var resumeCount = 0
     private(set) var closeCount = 0
+    /// What the thread lists as its background terminals (`CodexBackgroundTerminalControlling`).
+    private var backgroundTerminalList: [CodexBackgroundTerminal] = []
+    func setBackgroundTerminals(_ terminals: [CodexBackgroundTerminal]) { backgroundTerminalList = terminals }
     private(set) var sentPrompts: [String] = []
     private(set) var forkedFromSessionIDs: [UUID] = []
     private(set) var forkedThroughTurnIDs: [String?] = []
@@ -4582,4 +4650,18 @@ private final class CountingTranscriptCache: TranscriptRepository {
         state.withLock { $0.saves += 1; $0.entries[sessionID] = value }
     }
     func remove(for sessionID: UUID) { state.withLock { _ = $0.entries.removeValue(forKey: sessionID) } }
+}
+
+extension FakeHarnessAdapter: CodexBackgroundTerminalControlling {
+    func backgroundTerminals(in session: HarnessSessionHandle) async throws -> [CodexBackgroundTerminal] {
+        backgroundTerminalList
+    }
+
+    func terminateBackgroundTerminal(processID: String, in session: HarnessSessionHandle) async throws {
+        backgroundTerminalList.removeAll { $0.processID == processID }
+    }
+
+    func cleanBackgroundTerminals(in session: HarnessSessionHandle) async throws {
+        backgroundTerminalList = []
+    }
 }

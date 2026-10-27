@@ -224,9 +224,12 @@ actor MCPStdioClient {
 struct ProcessMCPStdioLauncher: MCPStdioLaunching {
     let executable: URL
     var arguments: [String] = []
+    /// The whole environment it starts with; nil for Yardlet's own.
+    var environment: [String: String]? = nil
+    var directory: URL? = nil
 
     func launch() throws -> any MCPStdioChannel {
-        try ProcessMCPStdioChannel(executable: executable, arguments: arguments)
+        try ProcessMCPStdioChannel(executable: executable, arguments: arguments, environment: environment, directory: directory)
     }
 }
 
@@ -242,11 +245,13 @@ final class ProcessMCPStdioChannel: MCPStdioChannel, @unchecked Sendable {
     /// The last of standard error kept, enough for the reason a server gives.
     private static let errorLimit = 4_096
 
-    init(executable: URL, arguments: [String]) throws {
+    init(executable: URL, arguments: [String], environment: [String: String]? = nil, directory: URL? = nil) throws {
         let output = Pipe()
         let errorPipe = Pipe()
         process.executableURL = executable
         process.arguments = arguments
+        if let environment { process.environment = environment }
+        if let directory { process.currentDirectoryURL = directory }
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errorPipe

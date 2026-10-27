@@ -288,12 +288,41 @@ final class MacBrowserHost: NativeSurfaceResource {
         client.onAgentActivity = { session, tab in BrowserAgentUse.shared.noteUse(session: session, tab: tab) }
         client.onTabClosed = { tab in BrowserAgentUse.shared.tabClosed(tab) }
         client.profileForSession = { [unowned self] in self.profiles.profile(for: $0) }
+        client.openingProfileForSession = { [unowned self] in self.profiles.opening(for: $0) }
         client.onTabsMoved = { [unowned self] in self.profiles.tabsMoved(from: $0, to: $1) }
         client.onHostEnded = { [unowned self] in self.removeUnusedProfiles() }
         client.externalApps = LaunchServicesApps()
         client.onChromiumWindowsChange = { [unowned self] in self.chromiumWindows.present() }
+        followMemorySaver(client)
         return client
     }()
+    /// macOS's critical memory pressure, which brings the memory saver's next discard forward.
+    private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+    private var memorySaverObserver: (any NSObjectProtocol)?
+
+    /// The memory saver (`BrowserMemorySaver`): on as the setting says, and told when memory turns critical.
+    private func followMemorySaver(_ client: BrowserHostClient) {
+        client.isMemoryCritical = { MacConditionReader.memoryPressure() == .critical }
+#if DEBUG
+        // QA runs shorten Chrome's times: `--ui-fixture-browser-memory-saver=<seconds hidden before a discard>`.
+        if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--ui-fixture-browser-memory-saver=") }),
+           let seconds = Double(argument.dropFirst("--ui-fixture-browser-memory-saver=".count)) {
+            client.memorySaverTiming = BrowserMemorySaver.Timing(
+                hiddenBeforeDiscard: .milliseconds(Int(seconds * 1000)), urgentInterval: .seconds(1),
+                urgentProtection: .milliseconds(Int(seconds * 1000)), sweepInterval: .seconds(1), retryAfter: .seconds(2))
+        }
+#endif
+        client.isMemorySaverOn = MemorySaverPreference.isOn()
+        memorySaverObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak client] _ in
+            MainActor.assumeIsolated { client?.isMemorySaverOn = MemorySaverPreference.isOn() }
+        }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: .critical, queue: .main)
+        source.setEventHandler { [weak client] in MainActor.assumeIsolated { client?.memoryBecameCritical() } }
+        source.resume()
+        memoryPressureSource = source
+    }
     /// Where Chromium's own windows show: over the panel that shows their tab.
     private(set) lazy var chromiumWindows: ChromiumWindowPresenter = {
         let presenter = ChromiumWindowPresenter()
@@ -302,8 +331,19 @@ final class MacBrowserHost: NativeSurfaceResource {
         presenter.hostProcessID = { [weak self] in self?.process?.processIdentifier }
         return presenter
     }()
-    /// Which profile each task's tabs use (docs/BROWSER_SESSION_ISOLATION.md).
-    private(set) lazy var profiles = BrowserTaskProfiles(root: paths.root)
+    /// Which profile each task's tabs use (docs/BROWSER_SESSION_ISOLATION.md). The agents' password manager fills
+    /// from before tasks followed the person's sign-ins are their tasks' own sign-ins (section 11).
+    private(set) lazy var profiles: BrowserTaskProfiles = {
+        let profiles = BrowserTaskProfiles(root: paths.root)
+        profiles.adoptEarlierAgentFills { MacAgentToolService.shared.vault.agentFills() }
+        return profiles
+    }()
+    /// The sign-ins made in tasks' tabs, which tasks follow or keep (docs/BROWSER_SESSION_ISOLATION.md 11).
+    private(set) lazy var loginFollow: BrowserLoginFollow = {
+        let follow = BrowserLoginFollow(client: client, profiles: profiles)
+        follow.start()
+        return follow
+    }()
     /// The tasks whose profiles stay, once the app knows them (nil before the saved tasks are loaded).
     var keptTasks: (@MainActor () -> Set<UUID>?)?
 
@@ -348,6 +388,8 @@ final class MacBrowserHost: NativeSurfaceResource {
         }
         let process = try CEFBrowserHostProcess(paths: paths)
         self.process = process
+        // Follows the sign-ins of the tabs this host opens.
+        _ = loginFollow
         return process
     }
 

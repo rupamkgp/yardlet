@@ -45,6 +45,11 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
     var onViewportChange: ((BrowserViewport) -> Void)?
     /// Called when the view stops or starts being on screen (`isOccluded`).
     var onOcclusionChange: ((Bool) -> Void)?
+    /// Whether the page has the keyboard in the key window: the view is the first responder of its window and the
+    /// window is key. Called when that may have changed.
+    var onKeyboardChange: ((Bool) -> Void)?
+    /// The view joined or left a window.
+    var onWindowChange: (() -> Void)?
     var onShortcut: ((BrowserPanelShortcut) -> Void)?
     /// Escape while the panel picks an element ends picking instead of reaching the page; true when it did.
     var onEscape: (() -> Bool)?
@@ -250,6 +255,8 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
         reportViewportIfChanged()
         reportOcclusionIfChanged()
         updateSecureInput()
+        reportKeyboard()
+        onWindowChange?()
     }
 
     override func viewDidHide() {
@@ -279,7 +286,10 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
         // Secure keyboard entry follows the key window: another window, a sheet, another app.
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             windowObservers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateSecureInput() }
+                MainActor.assumeIsolated {
+                    self?.updateSecureInput()
+                    self?.reportKeyboard()
+                }
             })
         }
     }
@@ -536,6 +546,7 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
     override func becomeFirstResponder() -> Bool {
         if let tabID { sendCommand?(.focus(tab: tabID, isFocused: true)) }
         updateSecureInput(hasKeyboard: true)
+        reportKeyboard(true)
         return true
     }
 
@@ -546,7 +557,13 @@ final class BrowserHostView: NSView, @preconcurrency NSTextInputClient {
             sendCommand?(.focus(tab: tabID, isFocused: false))
         }
         updateSecureInput(hasKeyboard: false)
+        reportKeyboard(false)
         return true
+    }
+
+    /// `hasKeyboard` stands in for the first responder inside becoming and resigning it, as for secure input.
+    private func reportKeyboard(_ hasKeyboard: Bool? = nil) {
+        onKeyboardChange?((hasKeyboard ?? hasKeyboardFocus) && window?.isKeyWindow == true)
     }
 
     /// Secure keyboard entry and Roman input sources only, exactly while the page's password field has the

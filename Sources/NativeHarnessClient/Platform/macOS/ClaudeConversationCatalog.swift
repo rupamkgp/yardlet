@@ -92,6 +92,46 @@ enum ClaudeConversationCatalog {
         }
     }
 
+    /// The most recently active conversations of every folder in a config's history, for importing
+    /// what Claude Code ran outside the Claude app (a terminal, another tool's account folder). Each
+    /// one's folder is the `cwd` its transcript records, since a history folder's name cannot be
+    /// turned back into a path. Only a transcript's start and end are read.
+    static func recentConversations(configDirectory: URL, limit: Int = 200) -> [ImportableConversation] {
+        let projects = configDirectory.appending(path: "projects", directoryHint: .isDirectory).resolvingSymlinksInPath()
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        let folders = (try? FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])) ?? []
+        let transcripts = folders.flatMap { folder in
+            ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles])) ?? []).compactMap { url -> (URL, Date)? in
+                guard url.pathExtension == "jsonl", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                      let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { return nil }
+                return (url, values.contentModificationDate ?? .distantPast)
+            }
+        }.sorted { $0.1 > $1.1 }.prefix(limit)
+        let running = runningSessionIDs(configDirectory: configDirectory)
+        return transcripts.compactMap { url, modified in
+            let id = url.deletingPathExtension().lastPathComponent.lowercased()
+            guard let workspace = workingFolder(of: url), let title = title(of: url) else { return nil }
+            return ImportableConversation(harness: .claudeCode, providerSessionID: id, title: title,
+                workspaceURL: workspace, updatedAt: modified, isOpenElsewhere: running.contains(id))
+        }
+    }
+
+    /// The folder a transcript's conversation ran in: the first `cwd` its records carry.
+    static func workingFolder(of url: URL) -> URL? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 65_536)) ?? Data()
+        let marker = Data(#""cwd":"#.utf8)
+        for line in head.split(separator: 10) where line.range(of: marker) != nil {
+            guard let value = try? JSONDecoder().decode(JSONValue.self, from: Data(line)),
+                  let cwd = value["cwd"]?.stringValue, cwd.hasPrefix("/") else { continue }
+            return URL(filePath: cwd, directoryHint: .isDirectory)
+        }
+        return nil
+    }
+
     /// Claude Code registers each running process as `sessions/<pid>.json` with its session ID.
     /// A process this app started (its child or a child's child) is Yardlet's own, not another
     /// app's, and is left out, so a task Yardlet itself just stopped is not taken for one held

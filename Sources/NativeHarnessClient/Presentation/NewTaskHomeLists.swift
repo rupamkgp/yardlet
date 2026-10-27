@@ -211,7 +211,7 @@ struct NewTaskAttentionRow: Equatable, Identifiable, Sendable {
     var canMarkRead: Bool {
         guard session.hasUnreadUpdate else { return false }
         switch status {
-        case .awaitingApproval, .needsInput: return false
+        case .awaitingApproval, .needsInput, .waitingInBrowser: return false
         default: return true
         }
     }

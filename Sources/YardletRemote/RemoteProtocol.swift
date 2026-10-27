@@ -26,8 +26,19 @@ public enum RemoteProtocol {
     public static let answerOption = "answer"
     public static let approvePlanOption = "approvePlan"
     public static let keepPlanningOption = "keepPlanning"
+    /// A question form with a secret answer, which only a phone that masks it is offered (§15.19).
+    public static let answerSecretOption = "answerSecret"
     /// The longest own-words answer or plan feedback a phone sends.
     public static let maxAnswerCharacters = 4_000
+    /// The largest message a phone sends over v2 once its chunks are joined (§13.2): room for images.
+    public static let maxSecureClientMessageBytes = 8 * 1024 * 1024
+    /// Images a message carries at most, and the largest one, decoded (§15.14).
+    public static let maxImages = 4
+    public static let maxImageBytes = 3 * 1024 * 1024
+    /// Files a message carries at most, the largest one, and the largest part of one (§15.20).
+    public static let maxFiles = 20
+    public static let maxFileBytes = 500 * 1024 * 1024
+    public static let maxUploadPartBytes = 4 * 1024 * 1024
 }
 
 // MARK: - Errors
@@ -162,6 +173,12 @@ public struct RemoteTask: Codable, Equatable, Sendable {
     /// kind (`approval`, `question`, `planReview`, `form`), so a list can say what waits (§15.1).
     public var pendingSummary: String?
     public var pendingKind: String?
+    /// A message to the task can carry images (§15.14).
+    public var acceptsImages: Bool?
+    /// A message sent while its turn runs can go into that turn now (§15.15).
+    public var steers: Bool?
+    /// A message to the task can carry files (§15.20).
+    public var acceptsFiles: Bool?
 
     public init(
         id: String, title: String, harness: String, harnessName: String, projectId: String?,
@@ -185,6 +202,17 @@ public struct RemoteTask: Codable, Equatable, Sendable {
     }
 }
 
+extension RemoteTask {
+    /// The task as a v1 phone gets it (§15.12): without the fields v2 added since 2026-10-27.
+    public func forVersion1() -> RemoteTask {
+        var task = self
+        task.acceptsImages = nil
+        task.steers = nil
+        task.acceptsFiles = nil
+        return task
+    }
+}
+
 /// What `snapshot` answers, and what attention events are read from.
 public struct RemoteSnapshot: Equatable, Sendable {
     public var projects: [RemoteProject]
@@ -197,14 +225,18 @@ public struct RemoteSnapshot: Equatable, Sendable {
     public var requestSummaries: [String: String]
     /// What `createTask` would start on, or nil when the Mac cannot start a task.
     public var newTask: RemoteNewTask?
+    /// What Return does on the Mac while a turn runs (§15.15).
+    public var followUp: RemoteFollowUpMode?
 
     public init(projects: [RemoteProject] = [], tasks: [RemoteTask] = [], newestRequestIDs: [String: String] = [:],
-                requestSummaries: [String: String] = [:], newTask: RemoteNewTask? = nil) {
+                requestSummaries: [String: String] = [:], newTask: RemoteNewTask? = nil,
+                followUp: RemoteFollowUpMode? = nil) {
         self.projects = projects
         self.tasks = tasks
         self.newestRequestIDs = newestRequestIDs
         self.requestSummaries = requestSummaries
         self.newTask = newTask
+        self.followUp = followUp
     }
 
     public static let empty = RemoteSnapshot()
@@ -231,9 +263,11 @@ public struct RemoteQuestionStep: Codable, Equatable, Sendable {
     public var multiple: Bool
     public var custom: Bool
     public var skippable: Bool
+    /// The answer is a secret: mask it and never keep it (§15.19).
+    public var secret: Bool?
 
     public init(id: String, header: String? = nil, text: String? = nil, options: [Option], multiple: Bool = false,
-                custom: Bool = false, skippable: Bool = false) {
+                custom: Bool = false, skippable: Bool = false, secret: Bool? = nil) {
         self.id = id
         self.header = header
         self.text = text
@@ -241,6 +275,7 @@ public struct RemoteQuestionStep: Codable, Equatable, Sendable {
         self.multiple = multiple
         self.custom = custom
         self.skippable = skippable
+        self.secret = secret
     }
 }
 
@@ -342,6 +377,16 @@ public struct RemoteItem: Codable, Equatable, Sendable {
     public var questionSteps: [RemoteQuestionStep]?
     public var options: [String]?
     public var moreOnMac: Bool?
+    /// The Mac card's words for options whose meaning is the provider's (`allowForSession`, §15.13).
+    public var optionTitles: [String: String]?
+    /// What only the Mac's card does, in one line, beside `moreOnMac` (§15.13).
+    public var macNote: String?
+    /// A plan limit's automatic continue is armed (§15.17).
+    public var autoContinue: Bool?
+    /// Every answer the Mac's card gives, in its order (§15.19).
+    public var choices: [RemoteChoice]?
+    /// An MCP form's fields (§15.19).
+    public var formFields: [RemoteFormField]?
 
     // plan
     public var explanation: String?
@@ -370,9 +415,14 @@ extension RemoteItem {
         item.suggestionId = nil
         item.suggestionState = nil
         item.startedTaskId = nil
+        item.optionTitles = nil
+        item.macNote = nil
+        item.autoContinue = nil
+        item.choices = nil
+        item.formFields = nil
         guard let options else { return item }
         if kind == .approval {
-            let known = options.filter { RemoteApprovalAnswer(rawValue: $0) != nil }
+            let known = options.filter { RemoteApprovalAnswer(rawValue: $0)?.isVersion1 == true }
             if known.count != options.count { item.moreOnMac = true }
             item.options = known
         } else {
@@ -457,6 +507,190 @@ public struct RemoteChange: Codable, Equatable, Sendable {
 public enum RemoteApprovalAnswer: String, Codable, Sendable {
     case allowOnce
     case deny
+    /// v2: the narrowest allow that lasts for the task's session (§15.13).
+    case allowForSession
+
+    /// An answer protocol 1 knows.
+    public var isVersion1: Bool { self != .allowForSession }
+}
+
+/// Where a message sent while a turn runs goes (§15.15).
+public enum RemoteFollowUpMode: String, Codable, Sendable {
+    case steer
+    case queue
+}
+
+/// The queue chip's actions on a queued message (§15.15).
+public enum RemoteQueuedAction: String, Codable, Sendable, CaseIterable {
+    case sendNow
+    case stopAndSend
+    case remove
+}
+
+/// The answers a browser handoff's bar gives (§15.18).
+public enum RemoteHandoffAnswer: String, Codable, Sendable {
+    case done
+    case decline
+}
+
+/// An image a phone sends with a message (§15.14): the type it names and its bytes.
+public struct RemoteImage: Equatable, Sendable {
+    public var type: String
+    public var data: Data
+
+    public init(type: String, data: Data) {
+        self.type = type
+        self.data = data
+    }
+
+    /// The format the bytes are, read from their signature rather than the label: `png` or `jpeg`.
+    public var format: String? {
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return "png" }
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpeg" }
+        return nil
+    }
+}
+
+/// One answer of a request as the Mac's card gives it (§15.19).
+public struct RemoteChoice: Codable, Equatable, Sendable {
+    public var id: String
+    public var title: String
+    /// `primary`, `secondary` or `destructive`.
+    public var role: String
+    /// It leaves a rule beyond this task; the phone asks once more.
+    public var standing: Bool?
+
+    public init(id: String, title: String, role: String, standing: Bool? = nil) {
+        self.id = id
+        self.title = title
+        self.role = role
+        self.standing = standing
+    }
+}
+
+/// An MCP form's field as the phone draws it (§15.19).
+public struct RemoteFormField: Codable, Equatable, Sendable {
+    public struct Option: Codable, Equatable, Sendable {
+        public var value: String
+        public var title: String
+
+        public init(value: String, title: String) {
+            self.value = value
+            self.title = title
+        }
+    }
+
+    public var id: String
+    public var label: String
+    public var description: String?
+    /// `text`, `number`, `integer`, `boolean`, `choice` or `choices`.
+    public var type: String
+    public var required: Bool?
+    public var format: String?
+    public var minLength: Int?
+    public var maxLength: Int?
+    public var minimum: Double?
+    public var maximum: Double?
+    public var minItems: Int?
+    public var maxItems: Int?
+    public var options: [Option]?
+    public var `default`: RemoteFormValue?
+
+    public init(id: String, label: String, type: String) {
+        self.id = id
+        self.label = label
+        self.type = type
+    }
+}
+
+/// A value a phone enters in an MCP form field (§15.19): words, a number, a switch, or the options picked.
+public enum RemoteFormValue: Codable, Equatable, Sendable {
+    case text(String)
+    case number(Double)
+    case flag(Bool)
+    case list([String])
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let flag = try? container.decode(Bool.self) {
+            self = .flag(flag)
+        } else if let number = try? container.decode(Double.self) {
+            self = .number(number)
+        } else if let text = try? container.decode(String.self) {
+            self = .text(text)
+        } else {
+            self = .list(try container.decode([String].self))
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .text(text): try container.encode(text)
+        case let .number(number): try container.encode(number)
+        case let .flag(flag): try container.encode(flag)
+        case let .list(list): try container.encode(list)
+        }
+    }
+}
+
+/// One part of a file a phone sends (§15.20).
+public struct RemoteUploadPart: Equatable, Sendable {
+    public var uploadID: String
+    /// The first part's: what the file is called, its type and its whole size.
+    public var name: String?
+    public var mediaType: String?
+    public var size: Int?
+    public var offset: Int
+    public var data: Data
+
+    public init(uploadID: String, name: String? = nil, mediaType: String? = nil, size: Int? = nil, offset: Int, data: Data) {
+        self.uploadID = uploadID
+        self.name = name
+        self.mediaType = mediaType
+        self.size = size
+        self.offset = offset
+        self.data = data
+    }
+}
+
+/// A file a phone sent, as the Mac holds it for a message (§15.20).
+public struct RemoteFile: Equatable, Sendable {
+    public var url: URL
+    public var name: String
+    public var mediaType: String?
+
+    public init(url: URL, name: String, mediaType: String? = nil) {
+        self.url = url
+        self.name = name
+        self.mediaType = mediaType
+    }
+}
+
+/// A task a phone starts (§15.5, §15.16): where, the first message, and what it runs on. Absent
+/// choices are the Mac's new-task composer's own.
+public struct RemoteTaskStart: Equatable, Sendable {
+    public var projectID: String
+    public var text: String
+    public var harness: String?
+    /// Setting IDs and values from `newTaskOptions`.
+    public var settings: [String: String]
+    public var worktree: Bool?
+    public var images: [RemoteImage]
+    /// The uploads it carries (§15.20), and once the server found them, the files.
+    public var files: [String]
+    public var attachedFiles: [RemoteFile] = []
+
+    public init(projectID: String, text: String, harness: String? = nil, settings: [String: String] = [:],
+                worktree: Bool? = nil, images: [RemoteImage] = [], files: [String] = []) {
+        self.projectID = projectID
+        self.text = text
+        self.harness = harness
+        self.settings = settings
+        self.worktree = worktree
+        self.images = images
+        self.files = files
+    }
 }
 
 public enum RemoteSuggestionAction: String, Codable, Sendable, CaseIterable {
@@ -474,14 +708,28 @@ public enum RemoteRequest: Equatable, Sendable {
     case loadOlder(taskID: String, cursor: String)
     case unsubscribeTask(taskID: String)
     case ping
-    case sendMessage(taskID: String, text: String)
-    case answerApproval(taskID: String, requestID: String, answer: RemoteApprovalAnswer)
+    /// `images` and `followUp` are v2's (§15.14, §15.15).
+    case sendMessage(taskID: String, text: String, images: [RemoteImage] = [], followUp: RemoteFollowUpMode? = nil,
+                     files: [String] = [])
+    /// `note` goes with a denial, and `allowForSession` is v2's (§15.13).
+    case answerApproval(taskID: String, requestID: String, answer: RemoteApprovalAnswer, note: String? = nil)
     case stopTurn(taskID: String)
     case markRead(taskID: String)
     // v2 (§15)
     case answerQuestion(taskID: String, requestID: String, answers: [RemoteQuestionAnswer])
     case reviewPlan(taskID: String, requestID: String, decision: RemotePlanDecision, reason: String?)
-    case createTask(projectID: String, text: String)
+    case createTask(RemoteTaskStart)
+    /// `settings` already picked, so a menu that depends on another (an effort on its model) answers as it would
+    /// after those picks (§15.16).
+    case newTaskOptions(projectID: String?, harness: String?, settings: [String: String] = [:])
+    case limitAccounts(taskID: String)
+    case continueWithAccount(taskID: String, accountID: String)
+    case setAutoContinue(taskID: String, enabled: Bool)
+    case actOnQueued(taskID: String, itemID: String, action: RemoteQueuedAction)
+    case answerHandoff(taskID: String, requestID: String, answer: RemoteHandoffAnswer)
+    case chooseAnswer(taskID: String, requestID: String, choice: String, note: String? = nil,
+                      values: [String: RemoteFormValue] = [:])
+    case uploadFile(RemoteUploadPart)
     case registerPush(provider: String, token: String)
     case unregisterPush
     case forgetDevice
@@ -507,6 +755,14 @@ public enum RemoteRequest: Equatable, Sendable {
         case .answerQuestion: "answerQuestion"
         case .reviewPlan: "reviewPlan"
         case .createTask: "createTask"
+        case .newTaskOptions: "newTaskOptions"
+        case .limitAccounts: "limitAccounts"
+        case .continueWithAccount: "continueWithAccount"
+        case .setAutoContinue: "setAutoContinue"
+        case .actOnQueued: "actOnQueued"
+        case .answerHandoff: "answerHandoff"
+        case .chooseAnswer: "chooseAnswer"
+        case .uploadFile: "uploadFile"
         case .registerPush: "registerPush"
         case .unregisterPush: "unregisterPush"
         case .forgetDevice: "forgetDevice"
@@ -521,11 +777,13 @@ public enum RemoteRequest: Equatable, Sendable {
     /// The task a request names.
     public var taskID: String? {
         switch self {
-        case let .subscribeTask(id), let .loadOlder(id, _), let .unsubscribeTask(id), let .sendMessage(id, _),
-             let .answerApproval(id, _, _), let .stopTurn(id), let .markRead(id), let .answerQuestion(id, _, _),
+        case let .subscribeTask(id), let .loadOlder(id, _), let .unsubscribeTask(id), let .sendMessage(id, _, _, _, _),
+             let .answerApproval(id, _, _, _), let .stopTurn(id), let .markRead(id), let .answerQuestion(id, _, _),
              let .reviewPlan(id, _, _, _), let .itemDetail(id, _), let .actOnSuggestion(id, _, _), let .setPinned(id, _),
-             let .archiveTask(id): id
-        case .pair, .hello, .snapshot, .ping, .createTask, .registerPush, .unregisterPush, .forgetDevice, .answerLink: nil
+             let .archiveTask(id), let .limitAccounts(id), let .continueWithAccount(id, _), let .setAutoContinue(id, _),
+             let .actOnQueued(id, _, _), let .answerHandoff(id, _, _), let .chooseAnswer(id, _, _, _, _): id
+        case .pair, .hello, .snapshot, .ping, .createTask, .newTaskOptions, .registerPush, .unregisterPush, .forgetDevice,
+             .answerLink, .uploadFile: nil
         }
     }
 
@@ -534,7 +792,8 @@ public enum RemoteRequest: Equatable, Sendable {
     public var isCommand: Bool {
         switch self {
         case .sendMessage, .answerApproval, .stopTurn, .markRead, .answerQuestion, .reviewPlan, .createTask,
-             .actOnSuggestion, .setPinned, .archiveTask, .answerLink: true
+             .actOnSuggestion, .setPinned, .archiveTask, .answerLink, .continueWithAccount, .setAutoContinue, .actOnQueued,
+             .answerHandoff, .chooseAnswer: true
         default: false
         }
     }
@@ -543,7 +802,10 @@ public enum RemoteRequest: Equatable, Sendable {
     public var isSecureOnly: Bool {
         switch self {
         case .answerQuestion, .reviewPlan, .createTask, .registerPush, .unregisterPush, .forgetDevice, .itemDetail,
-             .actOnSuggestion, .setPinned, .archiveTask, .answerLink: true
+             .actOnSuggestion, .setPinned, .archiveTask, .answerLink, .newTaskOptions, .limitAccounts, .continueWithAccount,
+             .setAutoContinue, .actOnQueued, .answerHandoff, .chooseAnswer, .uploadFile: true
+        case let .sendMessage(_, _, images, followUp, files): !images.isEmpty || followUp != nil || !files.isEmpty
+        case let .answerApproval(_, _, answer, note): !answer.isVersion1 || note != nil
         default: false
         }
     }
@@ -586,6 +848,38 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
         var action: String?
         var pinned: Bool?
         var approve: Bool?
+        var note: String?
+        var images: [WireImage]?
+        var followUp: String?
+        var harness: String?
+        var settings: [String: String]?
+        var worktree: Bool?
+        var accountId: String?
+        var enabled: Bool?
+        var choice: String?
+        var values: [String: RemoteFormValue]?
+        var files: [String]?
+        var uploadId: String?
+        var name: String?
+        var mediaType: String?
+        var size: Int?
+        var offset: Int?
+        var data: String?
+    }
+
+    private struct WireImage: Codable {
+        var type: String
+        var data: String
+    }
+
+    /// The images of a request, decoded, or nil when one is not base64.
+    private static func images(_ wire: [WireImage]?) -> [RemoteImage]? {
+        var images: [RemoteImage] = []
+        for image in wire ?? [] {
+            guard let data = Data(base64Encoded: image.data, options: .ignoreUnknownCharacters) else { return nil }
+            images.append(RemoteImage(type: image.type, data: data))
+        }
+        return images
     }
 
     public static func decode(_ data: Data) -> Result<RemoteRequestEnvelope, DecodingFailure> {
@@ -633,16 +927,30 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
                 guard let cursor = required(wire.cursor) else { return fail(.badRequest, "Missing cursor") }
                 request = .loadOlder(taskID: taskID, cursor: cursor)
             case "sendMessage":
-                guard let text = wire.text else { return fail(.badRequest, "Missing text") }
-                request = .sendMessage(taskID: taskID, text: text)
+                let attached = wire.images?.isEmpty == false || wire.files?.isEmpty == false
+                guard let text = wire.text ?? (attached ? "" : nil) else {
+                    return fail(.badRequest, "Missing text")
+                }
+                guard let images = images(wire.images) else { return fail(.badRequest, "An image is not base64") }
+                var followUp: RemoteFollowUpMode?
+                if let value = wire.followUp {
+                    guard let mode = RemoteFollowUpMode(rawValue: value) else {
+                        return fail(.badRequest, "followUp must be steer or queue")
+                    }
+                    followUp = mode
+                }
+                request = .sendMessage(taskID: taskID, text: text, images: images, followUp: followUp, files: wire.files ?? [])
             default:
                 guard let requestID = required(wire.requestId) else {
                     return fail(.badRequest, "Missing requestId")
                 }
                 guard let answer = wire.answer.flatMap(RemoteApprovalAnswer.init(rawValue:)) else {
-                    return fail(.badRequest, "answer must be allowOnce or deny")
+                    return fail(.badRequest, "answer must be allowOnce, allowForSession or deny")
                 }
-                request = .answerApproval(taskID: taskID, requestID: requestID, answer: answer)
+                let note = wire.note?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if note?.isEmpty == false, answer != .deny { return fail(.badRequest, "A note goes with deny only") }
+                request = .answerApproval(taskID: taskID, requestID: requestID, answer: answer,
+                                          note: note?.isEmpty == false ? note : nil)
             }
         case "answerQuestion", "reviewPlan":
             guard let taskID = required(wire.taskId) else { return fail(.badRequest, "Missing taskId") }
@@ -658,8 +966,60 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
             }
         case "createTask":
             guard let projectID = required(wire.projectId) else { return fail(.badRequest, "Missing projectId") }
+            // A new task starts with words, as on the Mac, images or not.
             guard let text = wire.text else { return fail(.badRequest, "Missing text") }
-            request = .createTask(projectID: projectID, text: text)
+            guard let images = images(wire.images) else { return fail(.badRequest, "An image is not base64") }
+            request = .createTask(RemoteTaskStart(projectID: projectID, text: text, harness: required(wire.harness),
+                                                  settings: wire.settings ?? [:], worktree: wire.worktree, images: images,
+                                                  files: wire.files ?? []))
+        case "newTaskOptions":
+            request = .newTaskOptions(projectID: required(wire.projectId), harness: required(wire.harness),
+                                      settings: wire.settings ?? [:])
+        case "limitAccounts":
+            guard let taskID = required(wire.taskId) else { return fail(.badRequest, "Missing taskId") }
+            request = .limitAccounts(taskID: taskID)
+        case "continueWithAccount":
+            guard let taskID = required(wire.taskId), let accountID = required(wire.accountId) else {
+                return fail(.badRequest, "Missing taskId or accountId")
+            }
+            request = .continueWithAccount(taskID: taskID, accountID: accountID)
+        case "setAutoContinue":
+            guard let taskID = required(wire.taskId), let enabled = wire.enabled else {
+                return fail(.badRequest, "Missing taskId or enabled")
+            }
+            request = .setAutoContinue(taskID: taskID, enabled: enabled)
+        case "actOnQueued":
+            guard let taskID = required(wire.taskId), let itemID = required(wire.itemId) else {
+                return fail(.badRequest, "Missing taskId or itemId")
+            }
+            guard let action = wire.action.flatMap(RemoteQueuedAction.init(rawValue:)) else {
+                return fail(.badRequest, "action must be sendNow, stopAndSend or remove")
+            }
+            request = .actOnQueued(taskID: taskID, itemID: itemID, action: action)
+        case "answerHandoff":
+            guard let taskID = required(wire.taskId), let requestID = required(wire.requestId) else {
+                return fail(.badRequest, "Missing taskId or requestId")
+            }
+            guard let answer = wire.answer.flatMap(RemoteHandoffAnswer.init(rawValue:)) else {
+                return fail(.badRequest, "answer must be done or decline")
+            }
+            request = .answerHandoff(taskID: taskID, requestID: requestID, answer: answer)
+        case "chooseAnswer":
+            guard let taskID = required(wire.taskId), let requestID = required(wire.requestId),
+                  let choice = required(wire.choice) else { return fail(.badRequest, "Missing taskId, requestId or choice") }
+            let note = wire.note?.trimmingCharacters(in: .whitespacesAndNewlines)
+            request = .chooseAnswer(taskID: taskID, requestID: requestID, choice: choice,
+                                    note: note?.isEmpty == false ? note : nil, values: wire.values ?? [:])
+        case "uploadFile":
+            guard let uploadID = required(wire.uploadId), UUID(uuidString: uploadID) != nil else {
+                return fail(.badRequest, "uploadId must be a UUID")
+            }
+            guard let offset = wire.offset, offset >= 0, let encoded = wire.data,
+                  let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters) else {
+                return fail(.badRequest, "Missing offset or base64 data")
+            }
+            request = .uploadFile(RemoteUploadPart(uploadID: uploadID.uppercased(), name: wire.name, mediaType: wire.mediaType,
+                                                   size: wire.size, offset: offset, data: data))
         case "registerPush":
             guard let provider = required(wire.provider), let token = required(wire.token) else {
                 return fail(.badRequest, "Missing provider or token")
@@ -719,13 +1079,17 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
         case let .loadOlder(taskID, cursor):
             wire.taskId = taskID
             wire.cursor = cursor
-        case let .sendMessage(taskID, text):
+        case let .sendMessage(taskID, text, images, followUp, files):
             wire.taskId = taskID
             wire.text = text
-        case let .answerApproval(taskID, requestID, answer):
+            wire.images = Self.wire(images)
+            wire.followUp = followUp?.rawValue
+            wire.files = files.isEmpty ? nil : files
+        case let .answerApproval(taskID, requestID, answer, note):
             wire.taskId = taskID
             wire.requestId = requestID
             wire.answer = answer.rawValue
+            wire.note = note
         case let .answerQuestion(taskID, requestID, answers):
             wire.taskId = taskID
             wire.requestId = requestID
@@ -735,9 +1099,47 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
             wire.requestId = requestID
             wire.decision = decision.rawValue
             wire.reason = reason
-        case let .createTask(projectID, text):
+        case let .createTask(start):
+            wire.projectId = start.projectID
+            wire.text = start.text
+            wire.harness = start.harness
+            wire.settings = start.settings.isEmpty ? nil : start.settings
+            wire.worktree = start.worktree
+            wire.images = Self.wire(start.images)
+            wire.files = start.files.isEmpty ? nil : start.files
+        case let .newTaskOptions(projectID, harness, settings):
             wire.projectId = projectID
-            wire.text = text
+            wire.harness = harness
+            wire.settings = settings.isEmpty ? nil : settings
+        case let .limitAccounts(taskID):
+            wire.taskId = taskID
+        case let .continueWithAccount(taskID, accountID):
+            wire.taskId = taskID
+            wire.accountId = accountID
+        case let .setAutoContinue(taskID, enabled):
+            wire.taskId = taskID
+            wire.enabled = enabled
+        case let .actOnQueued(taskID, itemID, action):
+            wire.taskId = taskID
+            wire.itemId = itemID
+            wire.action = action.rawValue
+        case let .answerHandoff(taskID, requestID, answer):
+            wire.taskId = taskID
+            wire.requestId = requestID
+            wire.answer = answer.rawValue
+        case let .chooseAnswer(taskID, requestID, choice, note, values):
+            wire.taskId = taskID
+            wire.requestId = requestID
+            wire.choice = choice
+            wire.note = note
+            wire.values = values.isEmpty ? nil : values
+        case let .uploadFile(part):
+            wire.uploadId = part.uploadID
+            wire.name = part.name
+            wire.mediaType = part.mediaType
+            wire.size = part.size
+            wire.offset = part.offset
+            wire.data = part.data.base64EncodedString()
         case let .registerPush(provider, token):
             wire.provider = provider
             wire.token = token
@@ -760,6 +1162,10 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
             wire.approve = approve
         }
         return (try? RemoteJSON.encoder.encode(wire)) ?? Data()
+    }
+
+    private static func wire(_ images: [RemoteImage]) -> [WireImage]? {
+        images.isEmpty ? nil : images.map { WireImage(type: $0.type, data: $0.data.base64EncodedString()) }
     }
 }
 
@@ -806,6 +1212,19 @@ public struct RemoteResponse: Codable, Equatable, Sendable {
     public var output: String?
     public var outputTruncated: Bool?
     public var diffs: [RemoteDiff]?
+    /// `snapshot` on v2 (§15.15).
+    public var followUp: RemoteFollowUpMode?
+    /// `newTaskOptions` (§15.16).
+    public var harness: String?
+    public var harnessName: String?
+    public var harnesses: [RemoteHarnessOption]?
+    public var settings: [RemoteSetting]?
+    public var worktree: Bool?
+    /// `limitAccounts` (§15.17).
+    public var accounts: [RemoteAccount]?
+    /// `uploadFile` (§15.20).
+    public var uploadId: String?
+    public var received: Int?
 
     public init(re: String, ok: Bool = true, error: RemoteError? = nil) {
         self.re = re
@@ -832,6 +1251,98 @@ public struct RemoteDiff: Codable, Equatable, Sendable {
         self.additions = additions
         self.deletions = deletions
         self.truncated = truncated
+    }
+}
+
+/// A harness a phone may start a task on (§15.16).
+public struct RemoteHarnessOption: Codable, Equatable, Sendable {
+    public var harness: String
+    public var harnessName: String
+    public var acceptsImages: Bool?
+    public var acceptsFiles: Bool?
+
+    public init(harness: String, harnessName: String, acceptsImages: Bool? = nil, acceptsFiles: Bool? = nil) {
+        self.harness = harness
+        self.harnessName = harnessName
+        self.acceptsImages = acceptsImages
+        self.acceptsFiles = acceptsFiles
+    }
+}
+
+/// One of the new-task screen's settings, its value now and its choices (§15.16).
+public struct RemoteSetting: Codable, Equatable, Sendable {
+    public struct Choice: Codable, Equatable, Sendable {
+        public var value: String
+        public var name: String
+        public var description: String?
+
+        public init(value: String, name: String, description: String? = nil) {
+            self.value = value
+            self.name = name
+            self.description = description
+        }
+    }
+
+    public var id: String
+    public var name: String
+    public var value: String
+    public var choices: [Choice]
+
+    public init(id: String, name: String, value: String, choices: [Choice]) {
+        self.id = id
+        self.name = name
+        self.value = value
+        self.choices = choices
+    }
+}
+
+/// What `newTaskOptions` answers with (§15.16).
+public struct RemoteNewTaskOptions: Equatable, Sendable {
+    public var harness: RemoteHarnessOption
+    public var harnesses: [RemoteHarnessOption]
+    public var settings: [RemoteSetting]
+    public var worktree: Bool?
+
+    public init(harness: RemoteHarnessOption, harnesses: [RemoteHarnessOption], settings: [RemoteSetting] = [],
+                worktree: Bool? = nil) {
+        self.harness = harness
+        self.harnesses = harnesses
+        self.settings = settings
+        self.worktree = worktree
+    }
+}
+
+/// An account of a limit card's list (§15.17), with its limit windows as the list shows them.
+public struct RemoteAccount: Codable, Equatable, Sendable {
+    public struct Usage: Codable, Equatable, Sendable {
+        public var label: String
+        public var usedPercent: Int?
+        public var resetsAt: Int64?
+
+        public init(label: String, usedPercent: Int? = nil, resetsAt: Int64? = nil) {
+            self.label = label
+            self.usedPercent = usedPercent
+            self.resetsAt = resetsAt
+        }
+    }
+
+    public var id: String
+    public var name: String
+    public var detail: String?
+    public var usage: [Usage]
+    /// The task runs under it now.
+    public var current: Bool?
+    /// The task may move to it now.
+    public var available: Bool?
+
+    public init(id: String, name: String, detail: String? = nil, usage: [Usage] = [], current: Bool? = nil,
+                available: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.usage = usage
+        self.current = current
+        self.available = available
     }
 }
 
@@ -889,6 +1400,8 @@ public struct RemoteEvent: Codable, Equatable, Sendable {
     public var requestId: String?
     /// One line about the request waited on (≤ 120 characters, secrets masked), for a notification.
     public var summary: String?
+    /// While `waiting`, what kind of request it is, as the task's `pendingKind` (§15.1, §15.18).
+    public var pendingKind: String?
 
     // conversation
     public var changes: [RemoteChange]?

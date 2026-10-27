@@ -16,7 +16,7 @@ struct FilesPane: View {
             WorkSurfaceHeader(
                 title: state.preferences.selectedPath.map { URL(filePath: $0).lastPathComponent } ?? L10n.string("Files"),
                 systemName: state.preferences.selectedPath == nil ? "folder" : "doc.text",
-                workspaceURL: state.preferences.selectedPath.map { workspaceURL.appending(path: $0) } ?? workspaceURL,
+                workspaceURL: state.preferences.selectedPath.map(fileURL) ?? workspaceURL,
                 onClose: {
                     if state.preferences.selectedPath != nil || state.fileError != nil { showPicker() }
                     else { onClose() }
@@ -56,10 +56,24 @@ struct FilesPane: View {
             Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).padding(10)
         }
         if let error = state.fileError {
-            WorkSurfaceEmptyState(title: L10n.string("File unavailable"), message: error, systemName: "doc.badge.ellipsis")
+            WorkSurfaceEmptyState(title: L10n.string("File unavailable"), message: error, systemName: "doc.badge.ellipsis") {
+                // A file the panel cannot show (an image, a folder, an app) is still a click away.
+                if let path = state.preferences.selectedPath {
+                    FileElsewhereButtons(url: fileURL(path)).controlSize(.small)
+                }
+            }
+        } else if let media = state.media {
+            VStack(spacing: 0) {
+                if !fileTasks.isEmpty {
+                    FileTasksLine(tasks: fileTasks).padding(.horizontal, 10).padding(.vertical, 7)
+                    Divider()
+                }
+                WorkspaceFileMediaView(media: media)
+            }
+            .loadsFileTasks(for: media.url, into: $fileTasks)
         } else if let document = state.document {
             VStack(spacing: 0) {
-                FileSizeNotice(document: document, url: workspaceURL.appending(path: document.path))
+                FileNotice(document: document, url: fileURL(document.path))
                 if !fileTasks.isEmpty {
                     FileTasksLine(tasks: fileTasks).padding(.horizontal, 10).padding(.vertical, 7)
                     Divider()
@@ -72,7 +86,7 @@ struct FilesPane: View {
                     onNavigated: { state.didNavigate($0) }, onEdit: document.isEditable ? { state.edit($0) } : nil,
                     isSaving: state.isSaving)
             }
-            .loadsFileTasks(for: workspaceURL.appending(path: document.path), into: $fileTasks)
+            .loadsFileTasks(for: fileURL(document.path), into: $fileTasks)
         } else if state.isLoading {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else { filePicker }
@@ -124,6 +138,11 @@ struct FilesPane: View {
         .taskFocus(.files, isFocused: $isSearchFocused)
     }
 
+    /// A path the panel holds: relative to the task's folder, or absolute for a file outside it.
+    private func fileURL(_ path: String) -> URL {
+        WorkspaceFileLocation.url(for: path, in: workspaceURL)
+    }
+
     private func open(_ path: String) {
         state.open(WorkspaceFileLocation(relativePath: path), in: workspaceURL)
         keyboardFocus?.move(to: .files)
@@ -136,22 +155,24 @@ struct FilesPane: View {
 }
 
 /// One line over a file the panel does not show as usual: past 2 MB without colors or editing, past
-/// 20 MB only its beginning, with the file's own app and Finder for the rest.
-private struct FileSizeNotice: View {
+/// 20 MB only its beginning, outside the task's folder or not UTF-8 read-only, with the file's own app
+/// and Finder for the rest.
+private struct FileNotice: View {
     let document: WorkspaceFileDocument
     let url: URL
 
     var body: some View {
+        let isOutside = WorkspaceFileLocation(relativePath: document.path).isOutsideWorkspace
         if document.isPartial || !document.isEditable {
             HStack(spacing: 10) {
                 Text(L10n.string(document.isPartial ? "Large file: only its beginning is shown"
-                                                    : "Large file: shown without syntax highlighting or editing"))
+                                 : isOutside ? "Outside the task's folder: not editable here"
+                                 : document.isLossy ? "Not UTF-8: what doesn't decode shows as �, not editable here"
+                                 : "Large file: shown without syntax highlighting or editing"))
                     .lineLimit(1).truncationMode(.tail)
+                    .help(isOutside ? document.path : "")
                 Spacer(minLength: 0)
-                if document.isPartial {
-                    Button(L10n.string("Open in its app")) { NSWorkspace.shared.open(url) }
-                    Button(L10n.string("Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                }
+                if document.isPartial || isOutside || document.isLossy { FileElsewhereButtons(url: url) }
             }
             .buttonStyle(.borderless)
             .font(.caption).foregroundStyle(.secondary)
@@ -159,5 +180,27 @@ private struct FileSizeNotice: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(ParityTheme.subtleFill)
         }
+    }
+}
+
+/// The file in its own app and in Finder, for what the panel does not do. A program is only shown in
+/// Finder: its own app would run it.
+private struct FileElsewhereButtons: View {
+    let url: URL
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if !Self.runs(url) {
+                Button(L10n.string("Open in its app")) { NSWorkspace.shared.open(url) }
+            }
+            Button(L10n.string("Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+    }
+
+    static func runs(_ url: URL) -> Bool {
+        let path = url.path(percentEncoded: false)
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            && (isDirectory.boolValue ? NSWorkspace.shared.isFilePackage(atPath: path) : FileManager.default.isExecutableFile(atPath: path))
     }
 }

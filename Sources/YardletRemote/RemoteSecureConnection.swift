@@ -27,7 +27,7 @@ public final class RemoteSecureConnection: RemoteChannel, @unchecked Sendable {
     private var state = State.awaitingHello
     private var sender: RemoteNoiseCipher?
     private var receiver: RemoteNoiseCipher?
-    private var joiner = RemoteNoiseFraming.Joiner(limit: RemoteProtocol.maxClientFrameBytes)
+    private var joiner = RemoteNoiseFraming.Joiner(limit: RemoteProtocol.maxSecureClientMessageBytes)
     /// What the server sent before message 2 went out (it should not, but order is kept if it does).
     private var held: [String] = []
     /// Frames are handled one at a time, in order.

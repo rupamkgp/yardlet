@@ -56,7 +56,7 @@ enum CodexFileChangeCardProjection {
         /// Nil when there is no diff to count, as the Codex app hides counts it cannot preview.
         let lineCounts: LineCounts?
         let preview: PreviewAvailability
-        /// The file to open, verified to lie inside the task's folder.
+        /// The file the name opens (`openableURL`): inside the task's folder, or elsewhere by its absolute path.
         let fileURL: URL?
         /// The lines a harness activity's edit draws, worked out from the text it replaced
         /// (`PermissionRequestPreviewProjection`); nil where `change` carries a diff to read.
@@ -163,7 +163,7 @@ enum CodexFileChangeCardProjection {
                         ? nil : LineCounts(additions: counts.additions, deletions: counts.deletions)
                 },
                 preview: preview,
-                fileURL: workspaceURL.flatMap { fileURL(for: target, workspaceURL: $0) }
+                fileURL: workspaceURL.flatMap { openableURL(for: target, workspaceURL: $0) }
             )
         }
     }
@@ -237,6 +237,14 @@ enum CodexFileChangeCardProjection {
         let candidatePath = candidate.path(percentEncoded: false)
         guard !rootPath.isEmpty, candidatePath.hasPrefix(rootPath + "/") else { return nil }
         return candidate
+    }
+
+    /// The file a row's name opens for the person: inside the task's folder as `fileURL` reads it,
+    /// or a file the task changed elsewhere by its absolute path, which the files panel shows read-only.
+    static func openableURL(for path: String, workspaceURL: URL) -> URL? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fileURL(for: trimmed, workspaceURL: workspaceURL)
+            ?? (trimmed.hasPrefix("/") ? URL(filePath: trimmed).standardizedFileURL : nil)
     }
 
     private static func kind(of change: JSONValue) -> Kind {

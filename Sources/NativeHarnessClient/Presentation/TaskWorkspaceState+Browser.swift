@@ -77,11 +77,14 @@ extension TaskWorkspaceState {
         let open = client.tabs(forSession: link.session)
         var next = panels
         var previous: UUID?
+        let agentTab = client.agentUsedTab(forSession: link.session)
         for tab in open {
             next = Navigation.addingBrowserTab(tab.key, after: previous, in: next)
             previous = tab.key
             browserTabs.update(tab.key, address: tab.lastPageURL, title: tab.title, favicon: tab.favicon,
-                               isLoading: tab.isLoading)
+                               isLoading: tab.isLoading, isDiscarded: tab.isDiscarded)
+            browserTabs.mark(tab.key, wait: client.personWait(of: tab), site: tab.currentURL.flatMap { URL(string: $0)?.host() },
+                             isAgentUsing: tab === agentTab)
         }
         let openKeys = Set(open.map(\.key))
         if client.isHostRunning {
@@ -135,7 +138,7 @@ extension TaskWorkspaceState {
     private func showInEngine(_ key: UUID?, link: BrowserPanelLink) {
         guard let key, let tab = link.client.tab(key: key, forSession: link.session) else { return }
         link.pauses += 1
-        link.client.select(tab)
+        link.client.show(tab)
         link.pauses -= 1
     }
 
@@ -143,7 +146,7 @@ extension TaskWorkspaceState {
     func frontShownBrowserTab() {
         guard let link = browserLink, let key = Navigation.browserKey(inTab: panels.trailingSurfaceID),
               let tab = link.client.tab(key: key, forSession: link.session) else { return }
-        link.client.select(tab)
+        link.client.show(tab)
     }
 
     // MARK: Opening and closing
@@ -213,7 +216,7 @@ extension TaskWorkspaceState {
                 try client.restoreTabs(forSession: link.session, viewport: viewport)
             }
             if let tab = client.tab(key: key, forSession: link.session) {
-                client.select(tab)
+                client.show(tab)
                 return tab
             }
         }

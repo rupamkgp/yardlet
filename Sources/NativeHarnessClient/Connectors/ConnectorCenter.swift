@@ -179,6 +179,21 @@ final class ConnectorCenter: ConnectorToolProviding {
         var xcodeBridge: @Sendable () -> URL? = { nil }
         /// Starts a stdio MCP server (Xcode's bridge) at a path.
         var stdioLauncher: @Sendable (URL) -> any MCPStdioLaunching = { ProcessMCPStdioLauncher(executable: $0) }
+        /// Starts a program connector's server as the person confirmed it.
+        var programLauncher: @Sendable (ConnectorProgramLaunch) -> any MCPStdioLaunching = {
+            ProcessMCPStdioLauncher(executable: $0.executable, arguments: $0.arguments, environment: $0.environment,
+                                    directory: $0.directory)
+        }
+        /// Finds a program on this Mac by name or path (`ConnectorPrograms.locate`).
+        var locateProgram: @Sendable (String) -> URL? = { ConnectorPrograms.locate($0, home: FileManager.default.homeDirectoryForCurrentUser) }
+        /// Where each program connector works and keeps what its runtime downloads, a folder per
+        /// connector that goes with it.
+        var programFolders: URL = FileManager.default.temporaryDirectory.appending(path: "YardletConnectorPrograms", directoryHint: .isDirectory)
+        /// How long a program may take to list its tools the first time: a first `npx` or `uvx`
+        /// downloads the package.
+        var programStartTimeout: Duration = .seconds(180)
+        /// The MCP registries Add connector reads; nil where none is asked (tests and renders).
+        var registries: MCPRegistryClient.Endpoints?
         /// The Mac's calendars, reminders, and contacts; nil where this build has none.
         var macData: (any MacDataStoring)?
         /// The App Store Connect API's address.
@@ -259,17 +274,24 @@ final class ConnectorCenter: ConnectorToolProviding {
         record.presetID == "github" && canSignInToGitHub && !record.usesRegisteredClient && record.authorization != .token
     }
 
+    /// What Add connector shows from the public MCP registries.
+    let registry: MCPRegistryDirectory
+
     @ObservationIgnored private var environment: Environment
     @ObservationIgnored private var sessions: [UUID: ConnectorSession] = [:]
     @ObservationIgnored private var googleSessions: [UUID: GoogleAPISession] = [:]
     @ObservationIgnored private var appStoreSessions: [UUID: AppStoreConnectSession] = [:]
-    @ObservationIgnored private var xcodeClients: [UUID: MCPStdioClient] = [:]
+    /// Servers Yardlet runs as child processes: Xcode's bridge and program connectors.
+    @ObservationIgnored private var stdioClients: [UUID: MCPStdioClient] = [:]
     @ObservationIgnored private var connectTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var toolRefreshes: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var pendingDeletion: Task<Void, Never>?
 
     init(environment: Environment) {
         self.environment = environment
+        registry = MCPRegistryDirectory(client: environment.registries.map {
+            MCPRegistryClient(endpoints: $0, http: environment.http, clientVersion: environment.clientVersion)
+        }, now: environment.now)
         connectors = environment.repository.load()
         offInTasks = environment.repository.loadTaskChoices()
         googleAppClientID = environment.repository.loadGoogleAppClientID()
@@ -295,6 +317,7 @@ final class ConnectorCenter: ConnectorToolProviding {
         name: String,
         serverURL: URL,
         token: String? = nil,
+        tokenHeader: String? = nil,
         client: (id: String, secret: String?)? = nil,
         preset: ConnectorPreset? = nil
     ) async throws -> ConnectorRecord {
@@ -311,7 +334,8 @@ final class ConnectorCenter: ConnectorToolProviding {
             presetID: matchingPreset?.id,
             scope: matchingPreset?.scope,
             authorizationParameters: matchingPreset.map { $0.authorizationParameters.isEmpty ? nil : $0.authorizationParameters } ?? nil,
-            tokenQueryParameter: matchingPreset?.tokenQueryParameter
+            tokenQueryParameter: matchingPreset?.tokenQueryParameter,
+            tokenHeader: tokenHeader.flatMap(Self.trimmed)
         )
         if matchingPreset?.signIn == ConnectorPreset.SignIn.none { record.authorization = .none }
         let id = record.id
@@ -490,6 +514,10 @@ final class ConnectorCenter: ConnectorToolProviding {
         let key = taskKey(id)
         guard connectTasks[key] == nil else { return }
         connectTasks[key] = Task { [weak self] in
+            if record.program != nil {
+                await self?.performProgramConnect(id)
+                return
+            }
             switch record.localService {
             case let service? where service.isGoogle:
                 await self?.performGoogleConnect(account: key, signingInAgain: signingInAgain)
@@ -555,6 +583,10 @@ final class ConnectorCenter: ConnectorToolProviding {
             googleSessions[key] = nil
         }
         closeLocalServer(id)
+        if record(id)?.program != nil {
+            let folder = programFolder(id)
+            Task.detached { try? FileManager.default.removeItem(at: folder) }
+        }
         toolRefreshes.removeValue(forKey: id)?.cancel()
         sessions[id] = nil
         failures[id] = nil
@@ -1053,10 +1085,10 @@ final class ConnectorCenter: ConnectorToolProviding {
     }
 
     private func xcodeClient(_ record: ConnectorRecord) -> MCPStdioClient {
-        if let client = xcodeClients[record.id] { return client }
+        if let client = stdioClients[record.id] { return client }
         let bridge = environment.xcodeBridge() ?? record.serverURL
         let client = MCPStdioClient(launcher: environment.stdioLauncher(bridge), clientVersion: environment.clientVersion)
-        xcodeClients[record.id] = client
+        stdioClients[record.id] = client
         return client
     }
 
@@ -1071,7 +1103,7 @@ final class ConnectorCenter: ConnectorToolProviding {
     /// Ends what a local server holds open: Xcode's bridge, an App Store Connect key in memory.
     private func closeLocalServer(_ id: UUID) {
         appStoreSessions[id] = nil
-        if let client = xcodeClients.removeValue(forKey: id) { Task { await client.close() } }
+        if let client = stdioClients.removeValue(forKey: id) { Task { await client.close() } }
     }
 
     private func callAppStoreConnectTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
@@ -1135,6 +1167,111 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
     }
 
+    // MARK: Programs on this Mac
+
+    /// Adds a program the person confirmed, with its arguments and environment in the secure
+    /// store, and connects it: the program starts and lists its tools.
+    @discardableResult
+    func addProgram(name: String, program: ConnectorProgram, spec: ConnectorProgramSpec) async throws -> ConnectorRecord {
+        let id = UUID()
+        let displayName = Self.trimmed(name) ?? program.package ?? program.program
+        let record = ConnectorRecord(
+            id: id,
+            name: displayName,
+            slug: ConnectorToolNaming.slug(for: displayName, taken: Set(connectors.map(\.slug))),
+            serverURL: URL(string: "yardlet-program:\(id.uuidString.lowercased())")!,
+            authorization: .none,
+            program: program
+        )
+        try await store { try $0.save(.program(spec), for: id) }
+        connectors.append(record)
+        connect(id)
+        return record
+    }
+
+    /// The folder a program connector works in and its runtime caches in.
+    private func programFolder(_ id: UUID) -> URL {
+        environment.programFolders.appending(path: id.uuidString, directoryHint: .isDirectory)
+    }
+
+    /// Starts the program, or reuses the one running, and lists its tools; a first `npx` or `uvx`
+    /// downloads the package, so this waits up to `programStartTimeout`. A program that does not
+    /// answer is stopped.
+    private func performProgramConnect(_ id: UUID) async {
+        defer {
+            connectTasks[id] = nil
+            activity[id] = nil
+        }
+        await pendingDeletion?.value
+        guard let record = record(id) else { return }
+        failures[id] = nil
+        activity[id] = .connecting
+        do {
+            let client = try await programClient(record)
+            let tools = try await Self.withTimeout(environment.programStartTimeout) { try await client.listTools() }
+            update(id) {
+                $0.status = .connected
+                $0.tools = tools
+                $0.toolsUpdatedAt = environment.now()
+            }
+        } catch let error where Self.isCancellation(error) {
+            return
+        } catch {
+            if Task.isCancelled { return }
+            closeLocalServer(id)
+            failures[id] = programMessage(for: error, connector: record)
+        }
+    }
+
+    private enum ProgramFailure: Error {
+        case missingSpec
+        case missingRuntime(String)
+    }
+
+    private func programClient(_ record: ConnectorRecord) async throws -> MCPStdioClient {
+        if let client = stdioClients[record.id] { return client }
+        guard let program = record.program else { throw ProgramFailure.missingSpec }
+        let id = record.id
+        guard let spec = try await store({ try $0.load(id) })?.program else { throw ProgramFailure.missingSpec }
+        if let client = stdioClients[id] { return client }
+        guard let executable = environment.locateProgram(program.program) else {
+            throw ProgramFailure.missingRuntime(program.missingRuntimeAdvice)
+        }
+        let folder = programFolder(id)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let launch = ConnectorProgramLaunch(
+            executable: executable,
+            arguments: spec.arguments,
+            environment: ConnectorPrograms.environment(executable: executable, folder: folder, values: spec.environment,
+                                                       home: FileManager.default.homeDirectoryForCurrentUser),
+            directory: folder
+        )
+        let client = MCPStdioClient(launcher: environment.programLauncher(launch), clientVersion: environment.clientVersion)
+        stdioClients[id] = client
+        return client
+    }
+
+    private func callProgramTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
+        do {
+            return Self.toolResult(try await programClient(record).callTool(name: tool, arguments: arguments))
+        } catch let failure as MCPStdioError {
+            if case .rpc(_, let message) = failure { return .error("\(record.name): \(message)") }
+            return .error("\(record.name): \(failure.localizedDescription)")
+        } catch {
+            return .error("\(record.name): \(programMessage(for: error, connector: record))")
+        }
+    }
+
+    private func programMessage(for error: Error, connector record: ConnectorRecord) -> String {
+        switch error {
+        case ProgramFailure.missingRuntime(let advice): advice
+        case ProgramFailure.missingSpec: L10n.string("Yardlet no longer has what this program starts with. Remove it and add it again.")
+        case ConnectorOAuthError.timedOut: L10n.string("The program didn't answer within 3 minutes.")
+        case let failure as MCPStdioError: L10n.format("The program stopped: %@", failure.localizedDescription)
+        default: message(for: error, connector: record)
+        }
+    }
+
     // MARK: Per task
 
     /// Whether a connector reaches a task, and if not, why. The scope is what Yardlet knew of
@@ -1145,6 +1282,7 @@ final class ConnectorCenter: ConnectorToolProviding {
         if let scope {
             let address = MCPServerAddress.canonical(record.serverURL)
             if scope.nativeServerURLs.contains(address), !scope.yardletServedURLs.contains(address) { return .harnessHasIt }
+            if let key = record.program?.key, scope.nativePrograms.contains(key) { return .harnessHasIt }
         }
         if let taskID, offInTasks[taskID]?.contains(record.id) == true { return .off }
         return .on
@@ -1167,11 +1305,12 @@ final class ConnectorCenter: ConnectorToolProviding {
     /// harness's files for the task's account and folder.
     static func scope(for session: SessionRecord, locations: HarnessModelSettingsLocations = .live()) -> ConnectorTaskScope {
         let folder = locations.folder(for: session.harness, connection: session.connection, scope: session.environmentScope)
-        let servers = NativeMCPInventory.loadedRemoteServerEntries(
+        let loaded = NativeMCPInventory.loadedServers(
             harness: session.harness, configFolder: folder, workspaceURL: session.workspaceURL,
             originWorkspaceURL: session.originWorkspaceURL)
+        let servers = loaded.compactMap(HarnessRemoteServer.init)
         return ConnectorTaskScope(harness: session.harness, nativeServerURLs: Set(servers.map(\.address)),
-                                  nativeServers: servers)
+                                  nativeServers: servers, nativePrograms: Set(loaded.compactMap(\.programKey)))
     }
 
     /// The scope with Yardlet's connectors standing in for the harness's own servers at the same
@@ -1217,7 +1356,7 @@ final class ConnectorCenter: ConnectorToolProviding {
         for record in connectors where record.status == .connected
             || (record.status == .signInRequired && record.toolsUpdatedAt != nil) {
             guard state(of: record, inTask: context.taskID, scope: context.scope) == .on else { continue }
-            if record.localService == nil, record.status == .connected { refreshToolsIfStale(record) }
+            if record.localService == nil, record.program == nil, record.status == .connected { refreshToolsIfStale(record) }
             for tool in record.offeredTools {
                 guard let exposed = Self.exposedTool(tool, of: record),
                       let name = exposed["name"]?.stringValue, names.insert(name).inserted
@@ -1251,6 +1390,7 @@ final class ConnectorCenter: ConnectorToolProviding {
             return .error("\(record.displayName) is not connected in Yardlet. The user can connect it in Yardlet "
                 + "Settings → Connectors; the same tool works again once they have.")
         }
+        if record.program != nil { return await callProgramTool(record, tool: toolName, arguments: arguments) }
         switch record.localService {
         case let service? where service.isGoogle: return await callGoogleTool(record, tool: toolName, arguments: arguments)
         case .appStoreConnect?: return await callAppStoreConnectTool(record, tool: toolName, arguments: arguments)
@@ -1348,10 +1488,10 @@ final class ConnectorCenter: ConnectorToolProviding {
     /// `keepingClient`, a client the user registered stays for the next sign-in.
     private func forgetCredential(_ id: UUID, keepingClient: Bool) {
         let credentials = environment.credentials
-        let keeps = keepingClient && record(id)?.usesRegisteredClient == true
+        let keeps = keepingClient && (record(id)?.usesRegisteredClient == true || record(id)?.program != nil)
         pendingDeletion = Task.detached { [previous = pendingDeletion] in
             await previous?.value
-            if keeps, let client = (try? credentials.load(id))??.clientOnly {
+            if keeps, let client = (try? credentials.load(id))??.keptAfterDisconnect {
                 try? credentials.save(client, for: id)
             } else {
                 try? credentials.delete(id)
@@ -1370,6 +1510,7 @@ final class ConnectorCenter: ConnectorToolProviding {
             id: record.id,
             endpoint: record.serverURL,
             tokenQueryParameter: record.tokenQueryParameter,
+            tokenHeader: record.tokenHeader,
             credentials: environment.credentials,
             http: environment.http,
             clientVersion: environment.clientVersion,
@@ -1444,6 +1585,7 @@ actor ConnectorSession {
     nonisolated let endpoint: URL
     private let id: UUID
     private let tokenQueryParameter: String?
+    private let tokenHeader: String?
     private let client: MCPHTTPClient
     private let credentials: any ConnectorCredentialStoring
     private let http: any ConnectorHTTPTransport
@@ -1457,6 +1599,7 @@ actor ConnectorSession {
         id: UUID,
         endpoint: URL,
         tokenQueryParameter: String? = nil,
+        tokenHeader: String? = nil,
         credentials: any ConnectorCredentialStoring,
         http: any ConnectorHTTPTransport,
         clientVersion: String,
@@ -1466,6 +1609,7 @@ actor ConnectorSession {
         self.id = id
         self.endpoint = endpoint
         self.tokenQueryParameter = tokenQueryParameter
+        self.tokenHeader = tokenHeader
         self.credentials = credentials
         self.http = http
         self.now = now
@@ -1483,6 +1627,8 @@ actor ConnectorSession {
     private func present(_ credential: ConnectorCredential?) async {
         if let tokenQueryParameter {
             await client.setQueryToken(name: tokenQueryParameter, value: credential?.presentedToken)
+        } else if let tokenHeader {
+            await client.setHeaderToken(name: tokenHeader, value: credential?.presentedToken)
         } else {
             await client.setBearer(credential?.presentedToken)
         }

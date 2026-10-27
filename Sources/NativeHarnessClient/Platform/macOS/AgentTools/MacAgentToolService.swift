@@ -64,6 +64,12 @@ final class MacAgentToolService: NativeSurfaceResource {
         connectorEnvironment.xcodeBridge = { XcodeBridge.locate() }
         connectorEnvironment.macData = MacEventKitStore.shared
         connectorEnvironment.es256 = MacES256Signer()
+        connectorEnvironment.registries = .live
+        if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            connectorEnvironment.programFolders = caches
+                .appending(path: Bundle.main.bundleIdentifier ?? "com.zzunkie.yardlet", directoryHint: .isDirectory)
+                .appending(path: "ConnectorPrograms", directoryHint: .isDirectory)
+        }
         connectors = ConnectorCenter(environment: connectorEnvironment)
         broker.connectors = connectors
         connectors.onToolsChanged = { [weak broker = self.broker] in broker?.toolsMayHaveChanged() }

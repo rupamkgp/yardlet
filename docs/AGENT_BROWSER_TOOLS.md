@@ -10,8 +10,8 @@ host's structure is in [BROWSER_HOST](BROWSER_HOST.md).
   to the harness's settings files.
 - The server asks the running Yardlet for the tool list and reports it, and also forwards calls over a local socket.
   Yardlet drives the calling task's browser tabs over CDP. Each of those tabs is a tab of the task's right-hand panel
-  (2026-10-23). The tools act on the tab that `tabId` names, or else on the active tab (the browser tab the panel showed
-  last). The tools do not open the panel. The same server also offers the tools of the connectors the user connected
+  (2026-10-23). The tools act on the tab that `tabId` names, or else on the agent's active tab (usually the browser tab
+  the panel showed last; section 2, "The tab the person uses"). The tools do not open the panel. The same server also offers the tools of the connectors the user connected
   ([CONNECTORS](CONNECTORS.md)). When it cannot reach Yardlet, the list is the browser tool list built into the server.
 - One toggle, "Agent browser tools" in Settings → General (on by default). When it is off, sessions that start or resume
   from then on get no browser tools. The server still goes in, with the task suggestion tools (`spawn_task` and
@@ -21,8 +21,9 @@ host's structure is in [BROWSER_HOST](BROWSER_HOST.md).
 ## 2. Tools
 
 All of them act on the calling task's tabs. Page tools pick a tab with the optional argument `tabId` (a string, an id
-that `browser_tab_list` or `browser_tab_new` gave), and use the active tab without it (the `tabId` of the Claude app
-3.1623.3 Browser pane tools: "Omit for the fronted tab; get ids from tabs_context"). Another task's tab id is an error
+that `browser_tab_list` or `browser_tab_new` gave), and use the agent's active tab without it. That is usually the front
+tab (the `tabId` of the Claude app 3.1623.3 Browser pane tools: "Omit for the fronted tab; get ids from tabs_context");
+while the person uses a tab in the panel, it is the tab the agent chose or opened ("The tab the person uses" below). Another task's tab id is an error
 saying "this task has no such tab". Input is CDP trusted input (`Input.dispatchMouseEvent`, `dispatchKeyEvent` and
 `insertText`), so the page gets `isTrusted: true` events. Failures come back as `isError: true` results, as the MCP
 protocol specifies.
@@ -45,9 +46,9 @@ protocol specifies.
 | `browser_resize` | `preset` (mobile, tablet or desktop), `width` and `height` (1 to 9999), `colorScheme` (light or dark) | 2026-10-26, the same arguments and rules as `resize_window` of the Claude app's Browser pane. Emulates that size for the tab's page (`Emulation.setDeviceMetricsOverride`; narrower than 768 is a phone: deviceScaleFactor 2, 5 touch points, and the user agent and client hints of Chrome on an Android 14 Pixel 8). desktop clears the emulation, and `colorScheme` is the `prefers-color-scheme` of `Emulation.setEmulatedMedia`. It holds per tab, across reloads and navigations; the tab is drawn at that size, and the panel shows a larger one scaled down. The size and color scheme the agent set are cleared when that turn ends (a size the person picked in the panel menu stays, and when the agent changes it, the result says so) |
 | `browser_handoff` | `reason` (required), `text`, `timeout` (seconds, 600 by default) | 2026-10-26. Hands the tab to the person and waits: opens the task's right-hand panel on that tab and shows a bar ("The agent handed this tab to you", the reason, "Decline" and "I'm done") and a macOS notification. Returns on the person's answer, on `text` appearing on the page, at the end of the turn, when the tab closes, or at the timeout (within the harness limit `SessionToolPolicy.waitCeiling`). After the timeout the tab stays handed over, and the next call gets an answer given meanwhile. Cannot go in a batch |
 | `browser_batch` | `actions: [{name, input}]` | Runs the tools above and the tab tools in order (at most 50, not `browser_handoff`). Each action picks its tab with the `tabId` in its own `input`. Stops at the first failure and reports how many remain. No batch inside a batch |
-| `browser_tab_list` | none | `{"panelOpen", "tabs": [{"tabId", "origin", "isActive", "responding"}]}` (with a line "Not responding: tab …" when a tab does not respond, a line "Crashed: tab … (‹error code›)" when a tab's renderer ended, and a line "Could not open: tab … (‹reason›)" when the host could not open a tab) and a line on whether the panel is open (when it is closed: "these are background pages, so timing and animation can differ; use snapshot"). Titles and paths are words the page wrote, so it gives only the origin (scheme, host and port) (the same as the Claude app's `tabs_context`). With no tabs, an empty list and "browser_navigate or browser_tab_new opens one" |
-| `browser_tab_new` | `foreground` | Opens a blank tab at the end and returns its id. By default it opens behind the active tab (the Claude app's `tabs_create`); with `foreground` it becomes the active tab. An error at 9 tabs. If there are tabs lost when the host died, or tabs saved in the panel before Yardlet restarted, it reopens those first. The new tab joins the panel tabs at once, whatever the panel shows |
-| `browser_tab_select` | `tabId` | Makes it the active tab. If the panel shows a browser tab, it shows that tab; if the panel shows another tab (Review and so on) or is hidden, the screen stays as it is and the tab becomes the one ⌘4 returns to |
+| `browser_tab_list` | none | `{"panelOpen", "tabs": [{"tabId", "origin", "isActive", "responding"}]}`. `isActive` is the tab tools without a `tabId` use; the tab a panel on screen shows has `"shownInPanel": true`, and the tab the person is using has `"personUsing": true` (2026-10-27). With the panel open, the note says "shows tab ‹id›", adds "Tools without a tabId act on tab ‹id›" when the active tab is another, and "The person is using tab ‹id› there (‹last input›)" while they use one (with a line "Not responding: tab …" when a tab does not respond, a line "Crashed: tab … (‹error code›)" when a tab's renderer ended, and a line "Could not open: tab … (‹reason›)" when the host could not open a tab) and a line on whether the panel is open (when it is closed: "these are background pages, so timing and animation can differ; use snapshot"). Titles and paths are words the page wrote, so it gives only the origin (scheme, host and port) (the same as the Claude app's `tabs_context`). With no tabs, an empty list and "browser_navigate or browser_tab_new opens one" |
+| `browser_tab_new` | `foreground` | Opens a blank tab at the end and returns its id. By default it opens behind the active tab (the Claude app's `tabs_create`); with `foreground` it becomes the agent's active tab. The panel shows it, unless the person is using another tab there: then the panel stays and the result adds "The browser panel stays on tab ‹id›, which the person is using (‹last input›)". An error at 9 tabs. If there are tabs lost when the host died, or tabs saved in the panel before Yardlet restarted, it reopens those first. The new tab joins the panel tabs at once, whatever the panel shows |
+| `browser_tab_select` | `tabId` | Makes it the agent's active tab. When the person is not using another tab in the panel, it also becomes the front tab: if the panel shows a browser tab, it shows that tab; if the panel shows another tab (Review and so on) or is hidden, the screen stays as it is and the tab becomes the one ⌘4 returns to. While the person uses another tab, the panel stays and the result is "Tab ‹id› is now your active tab: tools without a tabId act on it. The browser panel stays on tab ‹id›, which the person is using (‹last input›)." |
 | `browser_tab_close` | `tabId` | Closes it and reports the new active tab. Its panel tab goes too, and if it was the tab on screen, the panel shows the new active tab. When no panel tab is left, the panel closes (before 2026-10-23 it closed at the last browser tab even when other panel tabs remained; the Claude app's `tabs_close`) |
 
 - **References:** They follow the latest snapshot. A new snapshot, `browser_navigate`, and a main frame navigation from
@@ -58,7 +59,9 @@ protocol specifies.
   that the node or session does not exist), the error says to take a new snapshot. Real CEF showed that nodes of an old
   document kept in the back/forward cache answer with old coordinates, and the navigation event blocks this. A missing
   reference and a stale reference each give an error saying to take a new snapshot.
-- **Dialogs:** When the panel is closed, nobody answers a JS dialog, so the page's script stops. The tools receive host
+- **Dialogs:** While no panel shows the tab, nobody answers a JS dialog until the person shows the tab, so the page's
+  script stops ([BROWSER_HOST](BROWSER_HOST.md) section 3, "JS dialogs"). When the person answers it in the panel, the
+  tools forget it (`dialogClosed`). The tools receive host
   events with `addEventObserver`. When a dialog opens while a tool waits, that wait ends at once and the tool returns a
   result saying it opened (without waiting for a timeout); while it is open, other tools return an error that points to
   `browser_handle_dialog` (reading the console and uploading files still work). A batch stops without an error when a
@@ -75,7 +78,9 @@ protocol specifies.
   window is up, so `browser_click`, `browser_type`, `browser_press_key` and `browser_scroll` sent to that tab send
   nothing and answer with a failure ("The click was not sent to tab 3." followed by the window's name and kind,
   `browser_handle_dialog` and `browser_handoff`). Reading tools and `browser_navigate` work as before.
-- **File chooser:** While one is open, the end of every result says so. Paths are absolute or relative to the task's
+- **File chooser:** While one is open, the end of every result says so. A chooser the agent's input opened does not
+  open the system's window in the panel; it waits in a bar over the page for the agent to answer or the person to open.
+  When the person chooses, the tools forget it ([BROWSER_HOST](BROWSER_HOST.md) section 3, "File choosers"). Paths are absolute or relative to the task's
   main folder, and after resolving `..` and symbolic links they must be inside the task's folders (the main folder and
   the project's other roots). Files, folders and save locations are checked per mode.
 - **Navigation the host blocked:** An error for `browser_navigate`; when the page tried it during another tool, the end
@@ -86,8 +91,19 @@ protocol specifies.
   for each such path before it reads the page. When the person declines, that tool fails with "The page shows ‹path›,
   a file outside this task's folders, and the person did not allow opening it." A file the person opened in that tab is
   treated the same.
+- **The tab the person uses (2026-10-27):** While the person uses a tab in the panel (a panel on screen shows it, and
+  its page has their keyboard or their last click, key, scroll or drag came within 30 seconds; [BROWSER_HOST](BROWSER_HOST.md)
+  section 3, "The tab the person uses"), the agent's tab selection, a new tab in front, and a new window its tab opens in
+  front do not change the tab the panel shows. That tab becomes the agent's active tab, which tools without a `tabId`
+  use. When the person moves the panel to another tab during the turn, an agent that worked in the front tab stays in
+  it. When the turn ends, the active tab is the panel's tab again. A tool the agent uses on the tab the person is using
+  is not refused; the end of its result states the fact: "The person is using this tab in the browser panel (their last
+  input to it was 4 seconds ago), so what you do here happens on the page they are working in. browser_tab_new opens a
+  tab of your own; browser_handoff hands this one to them." When the person is not using the panel, nothing changes.
+  Compared (bundle bytes): the Claude app's Browser pane `tabs_select` changes the tab the person sees as it is; the
+  Codex app keeps the tab the agent chose apart from the active tab on screen.
 - **New tabs the page opened:** When the page asks for a new window, by a click or the like, a new tab of the task opens
-  (in front, or behind for a click in a background tab; from 2026-10-25 that tab has `window.opener` like a Chrome
+  (in front, or behind for a click in a background tab or while the person uses another of the task's tabs; from 2026-10-25 that tab has `window.opener` like a Chrome
   popup, [BROWSER_HOST](BROWSER_HOST.md) section 3, "New windows"). The end of the next tool result gets
   "The page opened … in a new tab (tabId "…")". When the task already has 9 tabs, it reports that the page opened in
   that tab.
@@ -475,6 +491,12 @@ press), `/frames` (open and closed shadow roots, a same-site iframe, and an ifra
 iframe inside it) and `/handoff` (a check only a person can pass). Before the fix, of 26 checks, 9 of the 11 screen size
 checks, 8 checks of reading, clicking and typing inside iframes, and 1 handoff check failed (the 6 shadow DOM checks
 already passed); after the fix, all 38, which add 12 checks on the person's side, passed.
+
+The person's screen on 2026-10-27 (`run-check.sh … --ui-fixture-browser-check-only=person-first`, `BrowserHostPersonFirstQA`):
+while the person uses a tab, the agent's new tab in front, navigation without a `tabId` and tab selection leave the
+panel as it is; a tool on the person's tab and the tab list say so; once the person stops, the panel follows the agent;
+and a chooser the agent's click opened waits in a bar and goes with `browser_file_upload` ([BROWSER_HOST](BROWSER_HOST.md)
+section 11). Unit test `BrowserAgentTabToolsTests.testThePanelStaysOnTheTabThePersonIsUsing`.
 
 Task suggestion tools on 2026-10-16 (2 real Claude turns, `yardlet-sandbox`, a development account, `--model haiku --effort low`,
 with output limited to frame kinds and tool names): this branch's `yardlet-mcp` was added without Yardlet

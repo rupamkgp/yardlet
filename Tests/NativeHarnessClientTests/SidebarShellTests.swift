@@ -14,7 +14,10 @@ import XCTest
 ///   family of nested tasks and "Show more", one collapsed with a waiting task's mark, one empty
 ///   with "No chats"), pull request glyphs, and the account button.
 /// - `sidebar-520-*.png`: the widest the line goes.
-/// - `account-button-*.png`: the button alone, at rest and hovered.
+/// - `sidebar-update-240-*.png`: the standard width with a staged build ready to install, "Restart to
+///   update" over the account button.
+/// - `account-button-*.png`: the button alone, at rest and hovered, under the update strip at rest,
+///   hovered and while the update waits for tasks.
 @MainActor
 final class SidebarShellTests: XCTestCase {
     private static let identity = SidebarAccountIdentity(fullName: "Alex Kim", userName: "alex")
@@ -289,9 +292,25 @@ final class SidebarShellTests: XCTestCase {
             XCTAssertTrue(captures.allSatisfy { WindowlessRender.drawsContent($0.bitmap, step: 6) })
         }
 
-        // What the sidebar exposes: the account button by the person's name, the projects as headings.
+        // A staged build ready to install: the strip over the account button.
+        let ready = SidebarAccountMenuContext(identity: Self.identity, update: { .ready(build: "abc1234") })
+        let update = try WindowlessRender.hostedInBothAppearances("sidebar-update-240", in: directory,
+                                                                   size: NSSize(width: 240 + 1 + 140, height: 820)) { appearance in
+            HStack(spacing: 0) {
+                fixture.sidebar(accountMenu: ready).frame(width: 240)
+                ParityTheme.separator.frame(width: 1)
+                ParityTheme.canvas
+            }
+            .background(ParityTheme.canvas)
+            .environment(\.colorScheme, appearance.colorScheme)
+            .frame(width: 240 + 1 + 140, height: 820, alignment: .top)
+        }
+        XCTAssertTrue(update.allSatisfy { WindowlessRender.drawsContent($0.bitmap, step: 6) })
+
+        // What the sidebar exposes: the account button by the person's name, the projects as headings,
+        // and "Restart to update" while a staged build is ready.
         let host = WindowlessRender.Host(
-            fixture.sidebar(accountMenu: SidebarAccountMenuContext(identity: Self.identity))
+            fixture.sidebar(accountMenu: ready)
                 .frame(width: 240, height: 820, alignment: .top),
             size: NSSize(width: 240, height: 820))
         defer { host.close() }
@@ -301,17 +320,21 @@ final class SidebarShellTests: XCTestCase {
         XCTAssertFalse(elements.contains { $0.label == L10n.string("Archived tasks") },
                        "Archived tasks moved into the account menu: \(elements)")
         XCTAssertTrue(elements.contains { $0.label == L10n.format("Project %@", "Website") })
+        XCTAssertTrue(elements.contains { $0.label == L10n.string("Restart to update") }, "\(elements)")
 
         try WindowlessRender.hostedInBothAppearances("account-button", in: directory,
-                                                     size: NSSize(width: 240, height: 100)) { appearance in
+                                                     size: NSSize(width: 240, height: 220)) { appearance in
             VStack(spacing: 8) {
+                SidebarUpdateStripLabel(line: .ready(build: "abc1234"))
+                SidebarUpdateStripLabel(line: .ready(build: "abc1234"), isHovering: true)
+                SidebarUpdateStripLabel(line: .waiting)
                 SidebarAccountButtonLabel(identity: Self.identity)
                 SidebarAccountButtonLabel(identity: Self.identity, isHovering: true)
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 14)
             .environment(\.colorScheme, appearance.colorScheme)
-            .frame(width: 240, height: 100, alignment: .top)
+            .frame(width: 240, height: 220, alignment: .top)
             .background(ParityTheme.sidebar)
         }
     }

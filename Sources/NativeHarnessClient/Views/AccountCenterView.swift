@@ -29,6 +29,8 @@ struct ConnectionCenterLifecycle: ViewModifier {
                     await connections.check(defaultsOf: [], savedOf: initialHarness.map { [$0] },
                         runtimeSelections: runtimeSelections)
                 } else {
+                    // Folders with a login that are not saved accounts, read from their names only.
+                    await connections.findUnsavedAccountHomes()
                     // Every default login (the Harnesses page shows each) and the saved accounts
                     // the list opens on, side by side; every row keeps its last reading until its
                     // own answer arrives.
@@ -164,7 +166,12 @@ struct ConnectionCenterContent: View {
     let localSessionUsage: LocalSessionUsageOverview?
     /// Called when an add or sign-in step that a task opened is over.
     let onFinish: () -> Void
+    /// How many tasks run under a saved account; removing accounts is offered only with it.
+    var tasksUsingAccount: ((ProviderConnection) -> Int)? = nil
     @State private var pendingLogout: HarnessDescriptor?
+    @State private var shareRequest: AccountHomeShareSheet.Request?
+    @State private var pendingRemoval: (connection: ProviderConnection, kind: AccountRemoval)?
+    @State private var accountNote: String?
     @State private var selectedHarness: HarnessKind?
     @State private var showsLoginDetails = false
     @State private var searchText = ""
@@ -189,6 +196,7 @@ struct ConnectionCenterContent: View {
         setupExpanded: Binding<Bool>,
         isFixture: Bool = false,
         localSessionUsage: LocalSessionUsageOverview? = nil,
+        tasksUsingAccount: ((ProviderConnection) -> Int)? = nil,
         onFinish: @escaping () -> Void
     ) {
         self.tab = tab
@@ -202,6 +210,7 @@ struct ConnectionCenterContent: View {
         _setupExpanded = setupExpanded
         self.isFixture = isFixture
         self.localSessionUsage = localSessionUsage
+        self.tasksUsingAccount = tasksUsingAccount
         self.onFinish = onFinish
         _accountFilter = State(initialValue: initialHarness)
     }
@@ -223,6 +232,8 @@ struct ConnectionCenterContent: View {
                 AccountList(mode: .manage, store: connections, runtimeSelections: runtimeSelections,
                     onChoose: { connections.choose($0) }, onConnect: connectAccount,
                     onAdd: { accountFilter = $0; connectChoice = nil; addingAccount = true },
+                    onShare: share, onRemove: tasksUsingAccount == nil ? nil : { pendingRemoval = ($0, $1) },
+                    onAddFound: addFound,
                     harnessFilter: $accountFilter, harnessUsage: harnessUsage)
                     .padding(.horizontal, 16).padding(.top, 16)
             } else if let selectedHarness,
@@ -258,6 +269,113 @@ struct ConnectionCenterContent: View {
             }
         } message: {
             Text(disconnectConfirmationMessage)
+        }
+        .sheet(item: $shareRequest) { request in
+            AccountHomeShareSheet(request: request, defaultFolder: connections.claudeDefaultHome,
+                onShare: { shareRequest = nil; finishSharing(request, links: true) },
+                onKeep: { shareRequest = nil; finishSharing(request, links: false) },
+                onCancel: { shareRequest = nil })
+        }
+        .alert(removalTitle, isPresented: Binding(
+            get: { pendingRemoval != nil },
+            set: { if !$0 { pendingRemoval = nil } }
+        )) {
+            Button(L10n.string("Cancel"), role: .cancel) { pendingRemoval = nil }
+            if let pending = pendingRemoval {
+                // A folder tasks still run in is only taken off the list.
+                if pending.kind == .signOutAndDelete, tasksUsing(pending.connection) == 0 {
+                    Button(L10n.string("Sign Out and Delete"), role: .destructive) { remove(pending.connection, .signOutAndDelete) }
+                } else {
+                    Button(L10n.string("Remove from List"), role: .destructive) { remove(pending.connection, .fromList) }
+                }
+            }
+        } message: {
+            Text(removalMessage)
+        }
+        .alert(L10n.string("Accounts"), isPresented: Binding(
+            get: { accountNote != nil },
+            set: { if !$0 { accountNote = nil } }
+        )) {
+            Button(L10n.string("OK")) { accountNote = nil }
+        } message: {
+            Text(accountNote ?? "")
+        }
+    }
+
+    // MARK: Account folders
+
+    /// Adds a found folder as it is, unless it is a Claude folder that linking would change: then
+    /// the sheet shows what would change first, and the person chooses.
+    private func addFound(_ found: DiscoveredAccountHome) {
+        if let plan = connections.sharingPlan(for: found.connection), plan.hasChanges || !plan.sharesConversations {
+            shareRequest = AccountHomeShareSheet.Request(connection: found.connection, found: found, plan: plan)
+        } else {
+            finishSharing(AccountHomeShareSheet.Request(connection: found.connection, found: found,
+                plan: ClaudeAccountHome.Plan()), links: false)
+        }
+    }
+
+    private func share(_ connection: ProviderConnection) {
+        guard let plan = connections.sharingPlan(for: connection) else { return }
+        shareRequest = AccountHomeShareSheet.Request(connection: connection, found: nil, plan: plan)
+    }
+
+    private func finishSharing(_ request: AccountHomeShareSheet.Request, links: Bool) {
+        do {
+            if let found = request.found { try connections.add(found) }
+            if links { try connections.share(request.connection, plan: request.plan) }
+        } catch {
+            accountNote = error.localizedDescription
+        }
+        Task {
+            await connections.check(defaultsOf: [], savedOf: [request.connection.harness],
+                connectionIDs: [request.connection.id], policy: .restart, runtimeSelections: runtimeSelections)
+        }
+    }
+
+    private func tasksUsing(_ connection: ProviderConnection) -> Int { tasksUsingAccount?(connection) ?? 0 }
+
+    private var removalTitle: String {
+        guard let pending = pendingRemoval else { return "" }
+        return L10n.format(pending.kind == .fromList ? "Remove %@ from the List?" : "Sign Out of %@ and Delete It?", pending.connection.name)
+    }
+
+    /// One or two sentences, as the Claude and Codex apps confirm a sign-out: what stays, what goes,
+    /// and what happens to the account's tasks.
+    private var removalMessage: String {
+        guard let pending = pendingRemoval else { return "" }
+        let connection = pending.connection
+        let tasks = tasksUsing(connection)
+        switch pending.kind {
+        case .fromList:
+            return tasks == 0 ? L10n.string("The login and its folder stay.")
+                : L10n.format("The login and its folder stay. The %lld tasks on this account go on in that folder as before.",
+                              Int64(tasks))
+        case .signOutAndDelete:
+            guard tasks == 0 else {
+                return L10n.format("%lld tasks on this account use its folder, so deleting it would stop them. Remove the account from the list instead; the folder stays.",
+                                   Int64(tasks))
+            }
+            return L10n.string(connections.keepsConversationsInDefaultFolder(connection)
+                ? "The folder Yardlet made for this account goes to the Trash. Conversations and settings stay in the default folder."
+                : "The folder Yardlet made for this account goes to the Trash, with the conversations kept only there.")
+        }
+    }
+
+    private func remove(_ connection: ProviderConnection, _ kind: AccountRemoval) {
+        pendingRemoval = nil
+        Task {
+            do {
+                switch kind {
+                case .fromList: try connections.remove(connection)
+                case .signOutAndDelete:
+                    try await connections.signOutAndDelete(connection,
+                        executableURL: runtimeSelections.selectedURL(for: connection.harness))
+                }
+            } catch {
+                accountNote = error.localizedDescription
+            }
+            await connections.findUnsavedAccountHomes()
         }
     }
 

@@ -16,8 +16,9 @@ public enum RemoteBridgeChange: Equatable, Sendable {
 
 /// What a command asks of the Mac.
 public enum RemoteCommand: Equatable, Sendable {
-    case sendMessage(taskID: String, text: String)
-    case answerApproval(taskID: String, requestID: String, answer: RemoteApprovalAnswer)
+    case sendMessage(taskID: String, text: String, images: [RemoteImage] = [], followUp: RemoteFollowUpMode? = nil,
+                     files: [RemoteFile] = [])
+    case answerApproval(taskID: String, requestID: String, answer: RemoteApprovalAnswer, note: String? = nil)
     case stopTurn(taskID: String)
     case markRead(taskID: String)
     case answerQuestion(taskID: String, requestID: String, answers: [RemoteQuestionAnswer])
@@ -25,6 +26,12 @@ public enum RemoteCommand: Equatable, Sendable {
     case actOnSuggestion(taskID: String, suggestionID: String, action: RemoteSuggestionAction)
     case setPinned(taskID: String, pinned: Bool)
     case archiveTask(taskID: String)
+    case continueWithAccount(taskID: String, accountID: String)
+    case setAutoContinue(taskID: String, enabled: Bool)
+    case actOnQueued(taskID: String, itemID: String, action: RemoteQueuedAction)
+    case answerHandoff(taskID: String, requestID: String, answer: RemoteHandoffAnswer)
+    case chooseAnswer(taskID: String, requestID: String, choice: String, note: String? = nil,
+                      values: [String: RemoteFormValue] = [:])
 }
 
 /// The path a connection came over (§11.1), for Settings.
@@ -88,10 +95,24 @@ public protocol RemoteBridge: AnyObject, Sendable {
     func perform(_ command: RemoteCommand) async -> RemoteError?
     /// The tasks some phone reads the conversation of.
     func setWatchedTasks(_ taskIDs: Set<String>) async
-    /// Starts a task as the Mac's new-task composer would (§15.5); the new task's ID.
-    func createTask(projectID: String, text: String) async -> Result<String, RemoteError>
+    /// Starts a task as the Mac's new-task composer would (§15.5, §15.16); the new task's ID.
+    func createTask(_ start: RemoteTaskStart) async -> Result<String, RemoteError>
     /// What a line holds beyond its title (§15.8).
     func itemDetail(taskID: String, itemID: String) async -> Result<RemoteItemDetail, RemoteError>
+    /// What a task started in the project may run on (§15.16).
+    func newTaskOptions(projectID: String?, harness: String?, settings: [String: String]) async -> Result<RemoteNewTaskOptions, RemoteError>
+    /// The accounts a task a plan limit stopped may continue under (§15.17).
+    func limitAccounts(taskID: String) async -> Result<[RemoteAccount], RemoteError>
+}
+
+extension RemoteBridge {
+    public func newTaskOptions(projectID: String?, harness: String?, settings: [String: String]) async -> Result<RemoteNewTaskOptions, RemoteError> {
+        .failure(RemoteError(.unavailable))
+    }
+
+    public func limitAccounts(taskID: String) async -> Result<[RemoteAccount], RemoteError> {
+        .failure(RemoteError(.unavailable))
+    }
 }
 
 /// The remote's protocol, connection by connection (docs/REMOTE_PROTOCOL.md): authentication and
@@ -113,6 +134,8 @@ public actor RemoteServer {
         public var windowLimits = RemoteConversationWindow.Limits()
         /// The Mac's static public key, for link codes (§12.1).
         public var macKey: Data?
+        /// Where files a phone sends are kept (§15.20).
+        public var uploadDirectory = RemoteUploadStore.defaultDirectory
 
         public init(server: RemoteServerInfo, macKey: Data? = nil) {
             self.server = server
@@ -182,6 +205,7 @@ public actor RemoteServer {
     private var hasPushDevices = false
     /// The Mac's static public key, for link codes (§12.1); made the first time the remote is used.
     private var macKey: Data?
+    private var uploads: RemoteUploadStore
 
     public init(
         configuration: Configuration,
@@ -192,6 +216,7 @@ public actor RemoteServer {
     ) {
         self.configuration = configuration
         macKey = configuration.macKey
+        uploads = RemoteUploadStore(directory: configuration.uploadDirectory)
         self.bridge = bridge
         self.devices = devices
         self.audit = audit
@@ -260,8 +285,12 @@ public actor RemoteServer {
 
     /// A frame the connection received. Frames are handled one at a time, in order.
     public func receive(_ data: Data, on id: UUID) {
-        guard connections[id] != nil else { return }
-        guard data.count <= RemoteProtocol.maxClientFrameBytes else {
+        guard let connection = connections[id] else { return }
+        // A paired v2 phone's joined chunks can carry images (§13.2, §15.14); a link request still waiting for
+        // approval only keeps its connection alive.
+        let limit = connection.version == 2 && connection.deviceID != nil
+            ? RemoteProtocol.maxSecureClientMessageBytes : RemoteProtocol.maxClientFrameBytes
+        guard data.count <= limit else {
             close(id, .messageTooBig)
             return
         }
@@ -542,7 +571,12 @@ public actor RemoteServer {
             return
         }
         if request.isSecureOnly, connection.version != 2 {
-            respond(.failure(envelope.id, RemoteError(.unknownType, "Unknown type \(request.type)")), to: id)
+            switch request {
+            case .sendMessage, .answerApproval:
+                respond(.failure(envelope.id, RemoteError(.badRequest, "Not on protocol 1")), to: id)
+            default:
+                respond(.failure(envelope.id, RemoteError(.unknownType, "Unknown type \(request.type)")), to: id)
+            }
             return
         }
         guard connection.deviceID != nil else {
@@ -574,14 +608,20 @@ public actor RemoteServer {
                 return await self.bridge.perform(.reviewPlan(taskID: taskID, requestID: requestID, decision: decision,
                                                              reason: reason))
             }
-        case let .createTask(projectID, text):
+        case let .createTask(start):
             var created: String?
             await command(envelope.id, request: request, on: id) {
-                if let error = Self.validateMessage(text) { return error }
-                switch await self.bridge.createTask(projectID: projectID,
-                                                    text: text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                if let error = Self.validateMessage(start.text) ?? Self.validateImages(start.images) { return error }
+                var trimmed = start
+                trimmed.text = start.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                switch self.uploadedFiles(start.files, on: id) {
+                case let .success(files): trimmed.attachedFiles = files
+                case let .failure(error): return error
+                }
+                switch await self.bridge.createTask(trimmed) {
                 case let .success(taskID):
                     created = taskID
+                    self.uploads.release(start.files)
                     return nil
                 case let .failure(error):
                     return error
@@ -632,6 +672,63 @@ public actor RemoteServer {
             await command(envelope.id, request: request, on: id) {
                 await self.answerLink(requestID, approve: approve) ? nil : RemoteError(.requestNotFound)
             }
+        case let .newTaskOptions(projectID, harness, settings):
+            switch await bridge.newTaskOptions(projectID: projectID, harness: harness, settings: settings) {
+            case let .success(options):
+                var response = RemoteResponse(re: envelope.id)
+                response.harness = options.harness.harness
+                response.harnessName = options.harness.harnessName
+                response.harnesses = options.harnesses
+                response.settings = options.settings
+                response.worktree = options.worktree
+                respond(response, to: id)
+            case let .failure(error):
+                respond(.failure(envelope.id, error), to: id)
+            }
+        case let .limitAccounts(taskID):
+            switch await bridge.limitAccounts(taskID: taskID) {
+            case let .success(accounts):
+                var response = RemoteResponse(re: envelope.id)
+                response.taskId = taskID
+                response.accounts = accounts
+                respond(response, to: id)
+            case let .failure(error):
+                respond(.failure(envelope.id, error), to: id)
+            }
+        case let .continueWithAccount(taskID, accountID):
+            await command(envelope.id, request: request, on: id) {
+                await self.bridge.perform(.continueWithAccount(taskID: taskID, accountID: accountID))
+            }
+        case let .setAutoContinue(taskID, enabled):
+            await command(envelope.id, request: request, on: id) {
+                await self.bridge.perform(.setAutoContinue(taskID: taskID, enabled: enabled))
+            }
+        case let .actOnQueued(taskID, itemID, action):
+            await command(envelope.id, request: request, on: id) {
+                await self.bridge.perform(.actOnQueued(taskID: taskID, itemID: itemID, action: action))
+            }
+        case let .answerHandoff(taskID, requestID, answer):
+            await command(envelope.id, request: request, on: id) {
+                await self.bridge.perform(.answerHandoff(taskID: taskID, requestID: requestID, answer: answer))
+            }
+        case let .chooseAnswer(taskID, requestID, choice, note, values):
+            await command(envelope.id, request: request, on: id) {
+                if (note?.count ?? 0) > RemoteProtocol.maxAnswerCharacters { return RemoteError(.tooLarge) }
+                if let note, Self.isSlashCommand(note) { return RemoteError(.unsupportedCommand, "Slash commands stay on the Mac") }
+                return await self.bridge.perform(.chooseAnswer(taskID: taskID, requestID: requestID, choice: choice, note: note,
+                                                               values: values))
+            }
+        case let .uploadFile(part):
+            guard let deviceID = connection.deviceID else { return }
+            switch uploads.receive(part, from: deviceID, now: now()) {
+            case let .success(received):
+                var response = RemoteResponse(re: envelope.id)
+                response.uploadId = part.uploadID
+                response.received = received
+                respond(response, to: id)
+            case let .failure(error):
+                respond(.failure(envelope.id, error), to: id)
+            }
         case .ping:
             var response = RemoteResponse(re: envelope.id)
             response.pong = true
@@ -642,7 +739,10 @@ public actor RemoteServer {
             var response = RemoteResponse(re: envelope.id)
             response.projects = published?.projects ?? []
             response.tasks = published?.tasks ?? []
-            if connection.version == 2 { response.newTask = published?.newTask }
+            if connection.version == 2 {
+                response.newTask = published?.newTask
+                response.followUp = published?.followUp
+            }
             response.serverTime = RemoteJSON.milliseconds(now())
             respond(response, to: id)
             connections[id]?.receivesTaskEvents = true
@@ -654,15 +754,27 @@ public actor RemoteServer {
             connections[id]?.subscriptions[taskID] = nil
             respond(RemoteResponse(re: envelope.id), to: id)
             await updateWatched()
-        case let .sendMessage(taskID, text):
+        case let .sendMessage(taskID, text, images, followUp, ids):
             await command(envelope.id, request: request, on: id) {
-                if let error = Self.validateMessage(text) { return error }
-                return await self.bridge.perform(.sendMessage(taskID: taskID,
-                                                              text: text.trimmingCharacters(in: .whitespacesAndNewlines)))
+                if let error = Self.validateMessage(text, images: images, hasFiles: !ids.isEmpty) { return error }
+                let files: [RemoteFile]
+                switch self.uploadedFiles(ids, on: id) {
+                case let .success(found): files = found
+                case let .failure(error): return error
+                }
+                let error = await self.bridge.perform(.sendMessage(taskID: taskID,
+                                                                   text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                                   images: images, followUp: followUp, files: files))
+                if error == nil { self.uploads.release(ids) }
+                return error
             }
-        case let .answerApproval(taskID, requestID, answer):
+        case let .answerApproval(taskID, requestID, answer, note):
             await command(envelope.id, request: request, on: id) {
-                await self.bridge.perform(.answerApproval(taskID: taskID, requestID: requestID, answer: answer))
+                if (note?.count ?? 0) > RemoteProtocol.maxAnswerCharacters { return RemoteError(.tooLarge) }
+                // A note may become the task's next message (§15.13), and commands stay on the Mac.
+                if let note, Self.isSlashCommand(note) { return RemoteError(.unsupportedCommand, "Slash commands stay on the Mac") }
+                return await self.bridge.perform(.answerApproval(taskID: taskID, requestID: requestID, answer: answer,
+                                                                 note: note))
             }
         case let .stopTurn(taskID):
             await command(envelope.id, request: request, on: id) { await self.bridge.perform(.stopTurn(taskID: taskID)) }
@@ -744,12 +856,32 @@ public actor RemoteServer {
                       result: error?.code.rawValue ?? "ok", at: now())
     }
 
-    /// `sendMessage` text the Mac would not send (§4.4).
-    static func validateMessage(_ text: String) -> RemoteError? {
+    /// The finished uploads a message names (§15.20), sent by this connection's device.
+    private func uploadedFiles(_ ids: [String], on id: UUID) -> Result<[RemoteFile], RemoteError> {
+        guard !ids.isEmpty else { return .success([]) }
+        guard let deviceID = connections[id]?.deviceID else { return .failure(RemoteError(.unauthenticated)) }
+        guard Set(ids.map { $0.uppercased() }).count == ids.count else {
+            return .failure(RemoteError(.badRequest, "A file is named twice"))
+        }
+        return uploads.files(ids, from: deviceID)
+    }
+
+    /// `sendMessage` text and images the Mac would not send (§4.4, §15.14). With images or files the
+    /// text may be empty.
+    static func validateMessage(_ text: String, images: [RemoteImage] = [], hasFiles: Bool = false) -> RemoteError? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return RemoteError(.emptyMessage) }
+        if trimmed.isEmpty, images.isEmpty, !hasFiles { return RemoteError(.emptyMessage) }
         if trimmed.count > RemoteProtocol.maxMessageCharacters { return RemoteError(.tooLarge) }
         if isSlashCommand(trimmed) { return RemoteError(.unsupportedCommand, "Slash commands stay on the Mac") }
+        return validateImages(images)
+    }
+
+    /// Images the Mac would not attach (§15.14): too many, too large, or not JPEG or PNG.
+    static func validateImages(_ images: [RemoteImage]) -> RemoteError? {
+        if images.count > RemoteProtocol.maxImages || images.contains(where: { $0.data.count > RemoteProtocol.maxImageBytes }) {
+            return RemoteError(.tooLarge, "At most \(RemoteProtocol.maxImages) images of 3 MiB each")
+        }
+        if images.contains(where: { $0.format == nil }) { return RemoteError(.badRequest, "Images are JPEG or PNG") }
         return nil
     }
 
@@ -990,6 +1122,7 @@ public actor RemoteServer {
             event.pendingRequest = task.pendingRequest
             event.requestId = task.attention == .waiting ? request : nil
             event.summary = task.attention == .waiting ? new.requestSummaries[task.id] : nil
+            event.pendingKind = task.attention == .waiting ? task.pendingKind : nil
             attention.append(event)
         }
         return (tasksEvent, attention)
@@ -1001,6 +1134,7 @@ public actor RemoteServer {
         guard let connection = connections[id] else { return }
         var response = response
         if connection.version == 1, let items = response.items { response.items = items.map { $0.forVersion1() } }
+        if connection.version == 1, let tasks = response.tasks { response.tasks = tasks.map { $0.forVersion1() } }
         connection.channel.send(RemoteJSON.string(response))
     }
 
@@ -1011,6 +1145,8 @@ public actor RemoteServer {
         event.seq = connection.seq + 1
         if connection.version == 1 {
             if let items = event.items { event.items = items.map { $0.forVersion1() } }
+            if let tasks = event.tasks { event.tasks = tasks.map { $0.forVersion1() } }
+            event.pendingKind = nil
             event.changes = event.changes?.map { change in
                 var change = change
                 change.item = change.item?.forVersion1()
@@ -1067,6 +1203,7 @@ public actor RemoteServer {
         }
         if pairing != nil, livePairing == nil { pairing = nil }
         if let spent = spentPairing, spent.expiresAt <= time { spentPairing = nil }
+        uploads.sweep(now: time)
         if let pending = linkRequest, pending.request.expiresAt <= time {
             resolveLink(pending.request.id, approve: false, code: .idle)
         }
@@ -1142,7 +1279,7 @@ public actor RemoteServer {
     }
 
     /// Runs `operation` and returns when it ends or after `seconds`, whichever is first.
-    static func waitAtMost(_ seconds: TimeInterval, _ operation: @escaping @Sendable () async -> Void) async {
+    public static func waitAtMost(_ seconds: TimeInterval, _ operation: @escaping @Sendable () async -> Void) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let once = RemoteOnce(continuation)
             Task {

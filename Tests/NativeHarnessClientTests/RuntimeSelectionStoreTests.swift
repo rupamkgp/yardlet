@@ -134,7 +134,71 @@ final class RuntimeSelectionStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedURL(for: .pi), URL(filePath: "/usr/bin/true"))
     }
 
-    func testCodexCandidatesPreferUserManagedInstallsBeforeChatGPTBundle() {
+    /// With no runtime chosen, a harness uses its newest install: before the versions are read,
+    /// the first in order; after, the newest, also at the next launch without running anything.
+    /// A file that changed is read again, and nothing is saved as the person's choice.
+    func testAHarnessWithNoChosenRuntimeUsesItsNewestInstall() async throws {
+        let root = try temporaryFolder("nhc-newest-runtime")
+        let homebrew = try versionScript(root.appending(path: "opt/homebrew/bin/codex"), "codex-cli 0.163.0")
+        let chatGPT = try versionScript(root.appending(path: "ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+                                        "codex-cli 0.164.0-alpha.11.1")
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("NativeHarnessClientTests")))
+        let reads = ReadLog()
+        func store() -> RuntimeSelectionStore {
+            RuntimeSelectionStore(defaults: defaults, candidates: { $0 == .codex ? [homebrew, chatGPT] : [] },
+                versions: RuntimeVersionCache(defaults: defaults) { url in
+                    reads.add(url)
+                    return await RuntimeVersionCache.readVersion(url)
+                })
+        }
+
+        let first = store()
+        XCTAssertEqual(first.selectedURL(for: .codex), homebrew.standardizedFileURL)
+        await first.findNewest()
+        XCTAssertEqual(first.selectedURL(for: .codex), chatGPT.standardizedFileURL)
+        XCTAssertEqual(reads.count, 2)
+        XCTAssertNil(first.newerInstalls[.codex])
+        XCTAssertNil(defaults.string(forKey: "runtime.codex.executablePath"))
+
+        let next = store()
+        XCTAssertEqual(next.selectedURL(for: .codex), chatGPT.standardizedFileURL)
+        await next.findNewest()
+        XCTAssertEqual(reads.count, 2)
+
+        // Homebrew moves past the app's bundle: only that file runs `--version` again.
+        try versionScript(homebrew, "codex-cli 0.170.12")
+        await next.findNewest()
+        XCTAssertEqual(next.selectedURL(for: .codex), homebrew.standardizedFileURL)
+        XCTAssertEqual(reads.urls.dropFirst(2), [homebrew.standardizedFileURL])
+    }
+
+    /// A runtime the person chose stays when a newer install appears elsewhere. The newer one is
+    /// offered (an older one is not), and using it drops the choice.
+    func testAChosenRuntimeStaysAndANewerInstallIsOffered() async throws {
+        let root = try temporaryFolder("nhc-chosen-runtime")
+        let local = try versionScript(root.appending(path: ".local/bin/codex"), "codex-cli 0.150.0")
+        let homebrew = try versionScript(root.appending(path: "opt/homebrew/bin/codex"), "codex-cli 0.163.0")
+        let chatGPT = try versionScript(root.appending(path: "ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+                                        "codex-cli 0.164.0-alpha.11.1")
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("NativeHarnessClientTests")))
+        defaults.set(homebrew.path(percentEncoded: false), forKey: "runtime.codex.executablePath")
+        let store = RuntimeSelectionStore(defaults: defaults, candidates: { $0 == .codex ? [local, homebrew, chatGPT] : [] },
+                                          versions: RuntimeVersionCache(defaults: defaults))
+
+        await store.findNewest()
+        XCTAssertEqual(store.selectedURL(for: .codex), homebrew.standardizedFileURL)
+        XCTAssertEqual(store.newerInstalls[.codex],
+                       RuntimeSelectionStore.Install(url: chatGPT.standardizedFileURL, version: "0.164.0-alpha.11.1"))
+        XCTAssertEqual(defaults.string(forKey: "runtime.codex.executablePath"), homebrew.path(percentEncoded: false))
+
+        store.useNewest(for: .codex)
+        XCTAssertEqual(store.selectedURL(for: .codex), chatGPT.standardizedFileURL)
+        XCTAssertNil(store.newerInstalls[.codex])
+        XCTAssertNil(defaults.string(forKey: "runtime.codex.executablePath"))
+    }
+
+    /// The order breaks a tie between equal versions (product document 13.100).
+    func testCodexCandidatesListUserManagedInstallsBeforeChatGPTBundle() {
         let home = URL(filePath: "/Users/example")
         let candidates = RuntimeSelectionStore.codexCandidates(
             home: home,
@@ -196,4 +260,31 @@ final class RuntimeSelectionStoreTests: XCTestCase {
             ["2.1.227", "2.1.195", "2.1.99"]
         )
     }
+
+    private func temporaryFolder(_ name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "\(name)-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    /// An executable that prints `version` for `--version`, as a harness CLI does.
+    @discardableResult
+    private func versionScript(_ url: URL, _ version: String) throws -> URL {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\necho '\(version)'\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path(percentEncoded: false))
+        return url
+    }
+}
+
+/// The runtimes a version cache ran `--version` on, in order.
+private final class ReadLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [URL] = []
+
+    func add(_ url: URL) { lock.withLock { all.append(url.standardizedFileURL) } }
+    var urls: [URL] { lock.withLock { all } }
+    var count: Int { urls.count }
 }

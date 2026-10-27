@@ -228,6 +228,25 @@ final class RemoteSecureTests: XCTestCase {
         await harness.server.receive(Data(#"{"id":"2","type":"createTask","projectId":"P","text":"Hi"}"#.utf8), on: try XCTUnwrap(v1.id))
         let refused = try await v1.response("2")
         XCTAssertEqual(refused.error?.code, .unknownType)
+        // So are the answers and fields v2 added to v1's own requests (§15.12).
+        await harness.server.receive(Data(#"{"id":"3","type":"answerApproval","taskId":"A","requestId":"r","answer":"allowForSession"}"#.utf8),
+                                     on: try XCTUnwrap(v1.id))
+        let session = try await v1.response("3")
+        XCTAssertEqual(session.error?.code, .badRequest)
+        // Nor does a v1 phone see what v2 added to tasks.
+        var snapshot = FakeBridge.snapshot
+        snapshot.tasks[0].acceptsImages = true
+        snapshot.tasks[0].steers = true
+        snapshot.followUp = .steer
+        await harness.bridge.setSnapshot(snapshot)
+        await harness.server.receive(Data(#"{"id":"4","type":"snapshot"}"#.utf8), on: try XCTUnwrap(v1.id))
+        let old = try await v1.response("4")
+        XCTAssertEqual(old.tasks?.first?.acceptsImages, nil)
+        XCTAssertEqual(old.tasks?.first?.steers, nil)
+        XCTAssertNil(old.followUp)
+        let new = try await v2.request(#"{"id":"5","type":"snapshot"}"#)
+        XCTAssertEqual(new.tasks?.first?.acceptsImages, true)
+        XCTAssertEqual(new.followUp, .steer)
     }
 
     func testNewRequestsReachTheBridge() async throws {
@@ -251,6 +270,53 @@ final class RemoteSecureTests: XCTestCase {
         ])
         let createdTasks = await harness.bridge.createdTasks
         XCTAssertEqual(createdTasks.map(\.text), ["Add a dark mode toggle"])
+
+        // Since 2026-10-27 (§15.13–§15.15): a photo larger than v1's 64 KB frame comes through in chunks, a
+        // file that is not one is refused, and a denial carries its note.
+        let photo = Data([0xFF, 0xD8, 0xFF, 0xE0]) + Data(repeating: 7, count: 300_000)
+        let sent = try await phone.request(#"{"id":"7","type":"sendMessage","taskId":"A","text":"","followUp":"queue","images":[{"type":"image/jpeg","data":"\#(photo.base64EncodedString())"}]}"#)
+        XCTAssertTrue(sent.ok, "\(String(describing: sent.error))")
+        let text = try await phone.request(#"{"id":"8","type":"sendMessage","taskId":"A","text":"Hi","images":[{"type":"image/png","data":"aGVsbG8="}]}"#)
+        XCTAssertEqual(text.error?.code, .badRequest)
+        _ = try await phone.request(#"{"id":"9","type":"answerApproval","taskId":"A","requestId":"r","answer":"deny","note":"Run only the unit tests"}"#)
+        let later = await harness.bridge.commands.dropFirst(3)
+        XCTAssertEqual(Array(later), [
+            .sendMessage(taskID: "A", text: "", images: [RemoteImage(type: "image/jpeg", data: photo)], followUp: .queue),
+            .answerApproval(taskID: "A", requestID: "r", answer: .deny, note: "Run only the unit tests")
+        ])
+
+        // A file goes up in parts (§15.20): a part sent again after a dropped connection adds nothing, and the
+        // message takes the finished file from a folder of its own, readable by the person only.
+        defer { try? FileManager.default.removeItem(at: harness.uploads) }
+        harness.clock.advance(by: 60) // The commands above spent the burst (§7).
+        let upload = UUID().uuidString
+        let first = Data(repeating: 1, count: 3_000_000), second = Data(repeating: 2, count: 1_000)
+        func part(_ id: String, offset: Int, _ data: Data, first: Bool = false) -> String {
+            let head = first ? #","name":"../../notes/report.pdf","mediaType":"application/pdf","size":\#(3_001_000)"# : ""
+            return #"{"id":"\#(id)","type":"uploadFile","uploadId":"\#(upload)","offset":\#(offset),"data":"\#(data.base64EncodedString())"\#(head)}"#
+        }
+        let one = try await phone.request(part("10", offset: 0, first, first: true))
+        XCTAssertEqual(one.received, 3_000_000)
+        let again = try await phone.request(part("11", offset: 0, first))
+        XCTAssertEqual(again.received, 3_000_000, "The same part again adds nothing")
+        let early = try await phone.request(#"{"id":"12","type":"sendMessage","taskId":"A","text":"Read this","files":["\#(upload)"]}"#)
+        XCTAssertEqual(early.error?.code, .notFound, "An unfinished upload is not a file yet")
+        let two = try await phone.request(part("13", offset: 3_000_000, second))
+        XCTAssertEqual(two.received, 3_001_000)
+        let sentFile = try await phone.request(#"{"id":"14","type":"sendMessage","taskId":"A","text":"Read this","files":["\#(upload)"]}"#)
+        XCTAssertTrue(sentFile.ok, "\(String(describing: sentFile.error))")
+        guard case let .sendMessage(_, _, _, _, files)? = await harness.bridge.commands.last else { return XCTFail("No message") }
+        let file = try XCTUnwrap(files.first)
+        XCTAssertEqual(file.name, "report.pdf")
+        XCTAssertEqual(file.url.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL,
+                       harness.uploads.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: file.url), first + second)
+        let mode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: file.url.path)[.posixPermissions] as? Int)
+        XCTAssertEqual(mode, 0o600, "Readable by the person, never executable")
+        let reused = try await phone.request(#"{"id":"15","type":"sendMessage","taskId":"A","text":"Again","files":["\#(upload)"]}"#)
+        XCTAssertEqual(reused.error?.code, .notFound, "A message took it")
+        let huge = try await phone.request(#"{"id":"16","type":"uploadFile","uploadId":"\#(UUID().uuidString)","name":"big.bin","size":\#(RemoteProtocol.maxFileBytes + 1),"offset":0,"data":""}"#)
+        XCTAssertEqual(huge.error?.code, .tooLarge)
     }
 
     // MARK: - Push (§16)
@@ -468,10 +534,12 @@ struct SecureHarness {
     let devices = RemoteDeviceStore(fileURL: nil)
     let identity = RemoteIdentity.generate()
     let clock = RemoteTestClock()
+    let uploads = FileManager.default.temporaryDirectory.appending(path: "remote-uploads-\(UUID().uuidString)", directoryHint: .isDirectory)
 
     init() async throws {
         var configuration = RemoteServer.Configuration(server: RemoteServerInfo(name: "Test Mac", appVersion: "test"),
                                                        macKey: identity.noise.publicKey)
+        configuration.uploadDirectory = uploads
         configuration.tasksInterval = .milliseconds(10)
         configuration.conversationInterval = .milliseconds(10)
         configuration.sweepInterval = .seconds(3600)

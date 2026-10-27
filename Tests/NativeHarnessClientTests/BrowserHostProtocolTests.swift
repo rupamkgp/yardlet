@@ -30,8 +30,13 @@ final class BrowserHostProtocolTests: XCTestCase {
         XCTAssertEqual(try json(BrowserHostCommand.open(tab: 2, url: "about:blank", viewport: BrowserViewport(
             width: 400, height: 300, scale: 2), profile: BrowserTabProfile(key: "task-b", seedFrom: "task-a"))),
             #"{"open":{"profile":{"key":"task-b","seedFrom":"task-a"},"tab":2,"url":"about:blank","viewport":{"height":300,"scale":2,"screenX":0,"screenY":0,"width":400}}}"#)
-        XCTAssertEqual(try json(BrowserHostCommand.copyCookies(from: "task-a", to: nil, domain: "example.com")),
-                       #"{"copyCookies":{"domain":"example.com","from":"task-a"}}"#)
+        XCTAssertEqual(try json(BrowserHostCommand.open(tab: 3, url: "about:blank", viewport: BrowserViewport(
+            width: 400, height: 300, scale: 2), profile: BrowserTabProfile(key: "task-c", follow: ["example.com"], fill: true))),
+            #"{"open":{"profile":{"fill":true,"follow":["example.com"],"key":"task-c"},"tab":3,"url":"about:blank","viewport":{"height":300,"scale":2,"screenX":0,"screenY":0,"width":400}}}"#)
+        XCTAssertEqual(try json(BrowserHostCommand.cookieDigest(request: 4, profile: nil, site: "example.com")),
+                       #"{"cookieDigest":{"request":4,"site":"example.com"}}"#)
+        XCTAssertEqual(try json(BrowserHostCommand.copyCookies(from: "task-a", to: nil, domain: "example.com", replace: true)),
+                       #"{"copyCookies":{"domain":"example.com","from":"task-a","replace":true}}"#)
     }
 
     func testTheViewportCarriesTheDisplayRefreshRateOnlyWhenKnown() throws {
@@ -73,6 +78,11 @@ final class BrowserHostProtocolTests: XCTestCase {
         XCTAssertEqual(external.tab, 3)
         XCTAssertEqual(try decoder.decode(BrowserHostEvent.self, from: Data(#"{"newDocument":{"tab":3,"url":"https://a.test/"}}"#.utf8)),
                        .newDocument(tab: 3, url: "https://a.test/"))
+        // The memory saver's discards, which the host's TabDiscarder answers by hand (BROWSER_HOST section 3, "Memory saver").
+        XCTAssertEqual(try json(BrowserHostCommand.discard(tab: 3, urgent: false)), #"{"discard":{"tab":3,"urgent":false}}"#)
+        XCTAssertEqual(try decoder.decode(BrowserHostEvent.self, from: Data(#"{"discarded":{"tab":3}}"#.utf8)), .discarded(tab: 3))
+        XCTAssertEqual(try decoder.decode(BrowserHostEvent.self, from: Data(#"{"discardRefused":{"tab":3,"reason":"media"}}"#.utf8)),
+                       .discardRefused(tab: 3, reason: "media"))
         // Chromium's own windows over their tabs (BROWSER_HOST section 3, "Chromium's windows and tabs").
         XCTAssertEqual(try json(BrowserHostCommand.presentChromiumWindows(placements: [
             BrowserChromiumWindowPlacement(window: 7, frame: BrowserRect(x: 10, y: 20, width: 300, height: 200), above: 3),

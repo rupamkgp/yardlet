@@ -45,6 +45,35 @@ final class WorkspaceFileTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFileService.read(.init(relativePath: "../outside.txt"), in: root))
     }
 
+    /// A link the person clicks opens any file on the Mac, as the Codex and Claude apps do: one outside
+    /// the task's folder by its absolute path, read-only, and one inside through `/private` all the same.
+    func testAPersonOpensAFileOutsideTheFolderReadOnly() throws {
+        let root = try workspace(), outside = try workspace()
+        let inside = try write("Sources/a.swift", text: "a\n", in: root)
+        let external = try write("Application Support/notes.md", text: "outside\n", in: outside)
+        let location = try WorkspaceFileLocation.opening(URL(filePath: external.path + ":1"), in: root)
+        XCTAssertTrue(location.isOutsideWorkspace)
+        XCTAssertEqual(location.line, 1)
+        XCTAssertEqual(try WorkspaceFileLocation.opening(
+            URL(string: "../\(outside.lastPathComponent)/Application%20Support/notes.md")!, in: root).relativePath,
+            location.relativePath)
+        let document = try WorkspaceFileService.read(location, in: root)
+        XCTAssertEqual(document.text, "outside\n")
+        XCTAssertFalse(document.isEditable)
+        XCTAssertThrowsError(try WorkspaceFileService.save(path: location.relativePath, text: "changed", expectedDigest: document.sourceDigest!,
+                                                           encoding: .utf8, in: root))
+        XCTAssertEqual(try String(contentsOf: external, encoding: .utf8), "outside\n")
+        let link = outside.appending(path: "AGENTS.md")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: external)
+        XCTAssertEqual(try WorkspaceFileService.read(.opening(link, in: root), in: root).text, "outside\n")
+        let linked = URL(filePath: "/private" + inside.path(percentEncoded: false))
+        XCTAssertEqual(try WorkspaceFileLocation.opening(inside.path.hasPrefix("/var/") ? linked : inside, in: root),
+                       .init(relativePath: "Sources/a.swift"))
+        for url in [URL(string: "https://example.com/file.txt")!, URL(string: "file://other-host/tmp/file.txt")!] {
+            XCTAssertThrowsError(try WorkspaceFileLocation.opening(url, in: root), "\(url)")
+        }
+    }
+
     func testIndexOmitsCachesAndEscapingLinksWithoutRequiringGit() throws {
         let root = try workspace(), outside = try workspace()
         let file = try write("Sources/한글.swift", text: "", in: root)
@@ -70,6 +99,13 @@ final class WorkspaceFileTests: XCTestCase {
         XCTAssertEqual(try WorkspaceFileService.read(.init(relativePath: "utf16.txt"), in: root).text, exact)
         _ = try write("empty.txt", text: "", in: root)
         XCTAssertEqual(try WorkspaceFileService.read(.init(relativePath: "empty.txt"), in: root).lineStarts, [0])
+        // Text that is not UTF-8 (zsh's history keeps Korean in its own bytes) reads with U+FFFD, read-only.
+        try Data("echo ".utf8 + [0x83, 0xED, 0x95] + Array("\nls\n".utf8)).write(to: root.appending(path: ".zsh_history"))
+        let history = try WorkspaceFileService.read(.init(relativePath: ".zsh_history"), in: root)
+        XCTAssertTrue(history.text.hasPrefix("echo \u{FFFD}"))
+        XCTAssertTrue(history.text.hasSuffix("\nls\n"))
+        XCTAssertTrue(history.isLossy)
+        XCTAssertFalse(history.isEditable)
     }
 
     func testMissingBinaryAndDirectoryReadsFail() throws {
@@ -266,7 +302,11 @@ final class WorkspaceFileTests: XCTestCase {
         await state.loadIndex(in: root, force: true)
         XCTAssertNil(state.fileError)
         XCTAssertTrue(state.matches.isEmpty)
+        // A file outside the folder opens too; one that is not there says so.
         state.open(URL(filePath: "/outside-workspace.txt"), in: root)
+        for _ in 0..<100 where state.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(state.fileError)
+        state.open(URL(string: "file://other-host/tmp/file.txt")!, in: root)
         XCTAssertNotNil(state.fileError)
         XCTAssertNil(state.preferences.selectedPath)
         state.showPicker()

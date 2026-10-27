@@ -78,7 +78,8 @@ final class ComposerImageChipTests: XCTestCase {
         // As the label chip reads: the group, the image by its name, its remove button.
         let chip = [L10n.string("Attached input"), L10n.string("Image"), L10n.string("Remove attachment")]
         XCTAssertEqual(Array(elements.prefix(3).map(\.label)), chip, "\(elements)")
-        XCTAssertEqual(elements[1].role, "AXImage")
+        // A click opens it over the window, so it reads as a button, as a sent message's thumbnail does.
+        XCTAssertEqual(elements[1].role, "AXButton")
         XCTAssertFalse(elements.contains { $0.value == "image.png" || $0.label == "image.png" })
         XCTAssertTrue(host.hosting.pressAccessibilityElement(labelled: L10n.string("Remove attachment")))
         host.settle()

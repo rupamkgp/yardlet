@@ -39,6 +39,95 @@ import XCTest
         XCTAssertTrue(store.checkingKeys.isEmpty, "Drawing the lists checked nothing")
     }
 
+    /// Settings › Accounts with one address signed in to a personal and a team organization, and
+    /// the folders found with a login that are not saved yet; then the sheet that shows what linking
+    /// a found Claude folder with its own history would change.
+    func testSettingsNamesOrganizationsAndOffersFoldersFound() async throws {
+        let directory = try WindowlessRender.directory("account-list-qa")
+        let root = FileManager.default.temporaryDirectory.appending(path: "account-found-render-\(UUID().uuidString)")
+        roots.append(root)
+        let home = root.appending(path: "home")
+        let primary = home.appending(path: ".claude")
+        for folder in [".claude/projects/-work", ".claude/skills", ".claude/plugins", ".claude-work/projects/-old",
+                       "\(AccountHomeDiscovery.sessionSwitchAccounts)/a1b2c3d4-0000-4000-8000-000000000001/plugins/synced",
+                       "codex-alt/sessions"] {
+            try FileManager.default.createDirectory(at: home.appending(path: folder), withIntermediateDirectories: true)
+        }
+        for file in [".claude/settings.json", ".claude/history.jsonl", ".claude-work/projects/-old/one.jsonl"] {
+            try Data("{}".utf8).write(to: home.appending(path: file))
+        }
+        let team = home.appending(path: "\(AccountHomeDiscovery.sessionSwitchAccounts)/a1b2c3d4-0000-4000-8000-000000000001")
+        try FileManager.default.createSymbolicLink(at: team.appending(path: "projects"),
+            withDestinationURL: primary.appending(path: "projects"))
+        try Data(#"{"oauthAccount":{"emailAddress":"owner@example.test","organizationName":"Example Team"}}"#.utf8)
+            .write(to: team.appending(path: ".claude.json"))
+        try Data(#"{"oauthAccount":{"emailAddress":"work@example.test","organizationName":"work@example.test's Organization"}}"#.utf8)
+            .write(to: home.appending(path: ".claude-work/.claude.json"))
+        try "alias cw='CLAUDE_CONFIG_DIR=~/.claude-work claude'\nexport CODEX_HOME=$HOME/codex-alt\n"
+            .write(to: home.appending(path: ".zshrc"), atomically: true, encoding: .utf8)
+
+        let store = ProviderConnectionStore()
+        store.homeURL = home
+        store.defaultLoginEnvironment = ["CLAUDE_CONFIG_DIR": primary.path]
+        let now = Date()
+        // The same address in its own organization and, through another folder, in a team's.
+        for (id, organization, short) in [("personal", "owner@example.test's Organization", 22.0), ("team", "Example Team", 61)] {
+            let folder = root.appending(path: id)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: folder.appending(path: "projects"),
+                withDestinationURL: primary.appending(path: "projects"))
+            let connection = ProviderConnection(id: id, name: "owner@example.test", harness: .claudeCode,
+                providerID: nil, homePath: folder.path, credentialSelector: nil)
+            try store.save(connection)
+            let reading = try claude("owner@example.test", short: short, weekly: 40, at: now)
+            store.publish(HarnessAccountSnapshot(id: id, harness: .claudeCode, providerID: nil, state: .signedIn,
+                accountLabel: "owner@example.test", accountOrganization: organization,
+                accountPlan: L10n.format("Claude %@ plan", id == "team" ? "Team" : "Max"), detail: "", credentialOwner: "",
+                checkedAt: now, usage: reading.usage, canLogin: false, canLogout: true), for: connection)
+        }
+        await store.findUnsavedAccountHomes()
+        store.usesFixtureSnapshots = true
+        store.publishDefaults([HarnessAccountSnapshot(id: "claude-code", harness: .claudeCode, providerID: nil,
+            state: .signedOut, accountLabel: nil, detail: "", credentialOwner: "", checkedAt: now, usage: [],
+            canLogin: true, canLogout: false),
+            HarnessAccountSnapshot(id: "codex", harness: .codex, providerID: "openai-codex", state: .signedIn,
+            accountLabel: "codex@example.test", accountPlan: "ChatGPT Pro", detail: "", credentialOwner: "",
+            checkedAt: now, usage: [], canLogin: false, canLogout: true)])
+        XCTAssertEqual(store.discoveredHomes.map(\.title), ["work@example.test · " + L10n.string("Personal"),
+            ProjectSidebarPresentation.abbreviatedPath(for: home.appending(path: "codex-alt")),
+            "owner@example.test · Example Team"])
+        XCTAssertEqual(store.choices(for: [.claudeCode]).compactMap(\.organizationTitle),
+                       [L10n.string("Personal"), "Example Team"])
+
+        let runtime = RuntimeSelectionStore(discoversRuntimes: false)
+        let size = NSSize(width: 629, height: 640)
+        for capture in try WindowlessRender.hostedInBothAppearances("manage-found", in: directory, size: size, content: { appearance in
+            AccountList(mode: .manage, store: store, runtimeSelections: runtime, onChoose: { _ in },
+                onConnect: { _ in }, onAdd: { _ in }, onShare: { _ in }, onRemove: { _, _ in }, onAddFound: { _ in },
+                harnessUsage: AccountHarnessScope.Usage(withTasks: [.codex, .claudeCode], chosenForNewTask: .claudeCode))
+                .padding(.horizontal, 16).padding(.top, 16)
+                .frame(width: size.width, height: size.height, alignment: .top)
+                .background(ParityTheme.canvas)
+                .environment(\.colorScheme, appearance.colorScheme)
+        }) {
+            XCTAssertTrue(WindowlessRender.drawsContent(capture.bitmap, step: 4, from: 4, background: (1, 1)))
+        }
+
+        let work = try XCTUnwrap(store.discoveredHomes.first)
+        let plan = try XCTUnwrap(store.sharingPlan(for: work.connection))
+        XCTAssertTrue(plan.keepsOwnConversations)
+        let sheetSize = NSSize(width: 520, height: 470)
+        for capture in try WindowlessRender.hostedInBothAppearances("share-sheet", in: directory, size: sheetSize, content: { appearance in
+            AccountHomeShareSheet(request: .init(connection: work.connection, found: work, plan: plan),
+                defaultFolder: primary, onShare: {}, onKeep: {}, onCancel: {})
+                .frame(width: sheetSize.width, height: sheetSize.height, alignment: .top)
+                .background(ParityTheme.elevated)
+                .environment(\.colorScheme, appearance.colorScheme)
+        }) {
+            XCTAssertTrue(WindowlessRender.drawsContent(capture.bitmap, step: 4, from: 4, background: (1, 1)))
+        }
+    }
+
     private func list(_ mode: AccountListMode, store: ProviderConnectionStore, runtime: RuntimeSelectionStore)
         -> some View {
         let isSheet: Bool = if case .switchTask = mode { true } else { false }

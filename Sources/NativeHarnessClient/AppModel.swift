@@ -52,6 +52,9 @@ final class AppModel {
     /// and published only when it changes, so streaming does not redraw the sidebar. Tasks with
     /// nothing to say are absent.
     private(set) var taskAttentionDetails: [UUID: TaskAttentionDetail] = [:]
+    /// The browser tabs each task's agent handed to the person and still waits on (`browser_handoff`),
+    /// oldest first, which the phone remote shows as a wait (REMOTE_PROTOCOL §15.18).
+    var browserHandoffWaits: [UUID: [BrowserHandoffWait]] = [:]
     /// Each task's latest finished message's first line (`TaskAttentionDetail.answerLine`), which the
     /// home shows under a finished task. One task at a time, so a running turn's messages redraw only
     /// what reads that task's line.
@@ -143,6 +146,18 @@ final class AppModel {
     private(set) var sessionJobsBySessionID: [UUID: [ClaudeSessionJob]] = [:]
     /// When each task's runtime started, for the wakeups it armed since.
     @ObservationIgnored private var runtimeStartedAt: [UUID: Date] = [:]
+    /// The memory saver for harness runtimes (`HarnessMemorySaver`): when each task was last on screen, the tasks on
+    /// screen at the last look, and its last sweep for memory pressure.
+    @ObservationIgnored private var lastOnScreen: [UUID: Date] = [:]
+    @ObservationIgnored private var memorySaverOnScreen = Set<UUID>()
+    @ObservationIgnored private var lastMemoryPressureSweep: Date?
+    @ObservationIgnored private var harnessMemorySaverTask: Task<Void, Never>?
+    @ObservationIgnored private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+    /// Runtimes the memory saver is closing; a new attach of the task waits for its close to finish.
+    @ObservationIgnored private var memorySaverClosings: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var harnessMemorySaverTiming = HarnessMemorySaver.Timing()
+    /// The tasks the phone shows now (`AppModelRemoteBridge`), which the memory saver counts as on screen.
+    @ObservationIgnored var remoteWatchedTaskIDs = Set<UUID>()
     @ObservationIgnored private var sessionJobReads: [UUID: Task<Void, Never>] = [:]
     /// The cards of the questions a restart cut off, asked again until the person answers in their
     /// next message, sends anything else, or a turn starts (`RestartResumePolicy.Plan.questions`).
@@ -290,6 +305,13 @@ final class AppModel {
     /// Each task's delivered approval notifications, by the request each asks about ("" for one
     /// that names no request), withdrawn once the request is answered.
     @ObservationIgnored var approvalNotificationIDs: [UUID: [String: String]] = [:]
+    /// The browser whose tabs' waits on the person the tasks show (`followBrowserWaits(of:)`), and each task's wait.
+    @ObservationIgnored weak var browserWaitSource: BrowserHostClient?
+    @ObservationIgnored var browserWaits: [UUID: BrowserTaskWait] = [:]
+#if DEBUG
+    /// The browser waits announced, by their notification's identifier, for QA (notifications are not delivered there).
+    @ObservationIgnored var browserWaitAnnouncements: [String] = []
+#endif
     /// Asks the window to show archived tasks: a notification led to a task that was archived.
     var archivedTasksRevealRequest = 0
     private let restoresIndexOnLaunch: Bool
@@ -467,6 +489,7 @@ final class AppModel {
         store.onSelectionChange = { [weak splits, weak self] id in
             splits?.focusSession(id)
             self?.taskOpened(id)
+            self?.noteMemorySaverScreen()
         }
         resourceMonitor.request = { [weak self] in self?.taskResourceRequest() ?? TaskResourceRequest() }
         resourceMonitor.describe = { [weak self] in self?.taskResourceDescription($0) }
@@ -784,7 +807,8 @@ final class AppModel {
         takesDraftWorkspace: Bool = false,
         holdsInitialPrompt: Bool = false
     ) async -> SessionRecord? {
-        runtimeSelections.select(runtimeExecutableURL, for: harness)
+        // The task records its runtime; the harness's runtime stays the person's choice or the
+        // newest install (`RuntimeSelectionStore`), not whichever runtime the last task started with.
         // A folder chosen directly still belongs to a project: find the one that owns it, or
         // make a one-folder project for it. The chosen folder stays the task's cwd. A folder
         // that is a worktree of a repository a project already owns joins that project instead
@@ -1207,6 +1231,9 @@ final class AppModel {
     /// runs holds both in Yardlet until then. Either way it shows as queued, not as a sent bubble,
     /// until the provider has it. With no turn running, a steered message is sent as any other, and
     /// a queued one waits for the queue's next send.
+    /// What Return does while a turn runs (Settings), which the phone remote starts its own choice from.
+    var followUpMode: FollowUpMode { FollowUpMode.current(in: preferences) }
+
     func submitFollowUp(_ input: HarnessUserInput, action: CodexComposerAction, to source: SessionRecord) async {
         personActed(on: source.id)
         switch FollowUpPolicy(harness: source.harness) {
@@ -1846,6 +1873,7 @@ final class AppModel {
             }
         }
         if connectionResumes[id]?.isWaiting == true { detail.isReconnecting = true }
+        if let wait = browserWaits[id] { detail.browserWait = wait.wait }
         if detail == .none {
             if taskAttentionDetails[id] != nil { taskAttentionDetails.removeValue(forKey: id) }
         } else if taskAttentionDetails[id] != detail {
@@ -3901,18 +3929,25 @@ final class AppModel {
 
     /// Imports each conversation in turn, as the list showed them, without opening any: the
     /// sidebar gains the tasks and the selection stays. Claude's go under `claudeConnection`, Codex's
-    /// under the default Codex login. Each task keeps the other app's last activity as its place in
-    /// the sidebar. Returns why each conversation that could not be imported failed, by its ID.
+    /// under `codexConnection` (nil is the default login). Each task keeps the other app's last
+    /// activity as its place in the sidebar. Returns why each conversation that could not be
+    /// imported failed, by its ID.
     func importConversations(
         _ conversations: [ImportableConversation],
         claudeConnection: ProviderConnection?,
+        codexConnection: ProviderConnection? = nil,
         onEach: (ImportableConversation) -> Void = { _ in }
     ) async -> [String: String] {
         var failures: [String: String] = [:]
         let roots = importProjectRoots(among: conversations)
         for conversation in conversations {
+            let connection: ProviderConnection? = switch conversation.harness {
+            case .claudeCode: claudeConnection
+            case .codex: codexConnection
+            default: nil
+            }
             do {
-                _ = try await importTask(conversation, connection: conversation.harness == .claudeCode ? claudeConnection : nil,
+                _ = try await importTask(conversation, connection: connection,
                                          selects: false, lastActivityAt: conversation.updatedAt, projectRoots: roots)
             } catch {
                 failures[conversation.id] = error.localizedDescription
@@ -3947,6 +3982,8 @@ final class AppModel {
                 L10n.format("%@ is not installed.", conversation.harness.displayName))
         }
         try connection?.validate(for: conversation.harness)
+        // A folder found with a login becomes a saved account once a conversation comes in under it.
+        try connections.saveIfFound(connection)
         let project = importProject(for: conversation, projectRoots: projectRoots ?? importProjectRoots(among: []))
         // A worktree stands in for its repository's folder; the project's other roots come along.
         let primaryFolder = conversation.workspaceOrigin?.originWorkspaceURL ?? conversation.workspaceURL
@@ -4052,11 +4089,13 @@ final class AppModel {
     }
 
     /// The conversations open in the Claude and Codex apps, to import them all at once. Claude's are
-    /// the desktop app's open Code sessions whose transcript is in `claudeConnection`'s history;
-    /// Codex's are the threads a person started under the default Codex login, every folder's.
-    /// Reading starts no thread and no turn. A source that cannot be read says why, and the other
-    /// is still listed.
-    func otherAppConversations(claudeConnection: ProviderConnection?) async -> OtherAppConversations {
+    /// the desktop app's open Code sessions whose transcript is in `claudeConnection`'s history,
+    /// then that history's most recent other conversations (Claude Code run in a terminal or by
+    /// another tool); Codex's are the threads a person started under `codexConnection` (nil is the default Codex
+    /// login), every folder's. Reading starts no thread and no turn. A source that cannot be read
+    /// says why, and the other is still listed.
+    func otherAppConversations(claudeConnection: ProviderConnection?,
+                               codexConnection: ProviderConnection? = nil) async -> OtherAppConversations {
         var result = OtherAppConversations()
         guard !isVisualFixture else {
             result.codex = visualFixtureCodexHistory.map { ImportableConversation(codex: $0) }
@@ -4064,11 +4103,17 @@ final class AppModel {
         }
         let root = claudeDesktopSessionsRoot
         let config = ClaudeSubagentTranscriptReader.configDirectory(connection: claudeConnection)
+        let history = modelCatalogs.locations.folder(for: .claudeCode, connection: claudeConnection) ?? config
+        // The Claude app's open sessions, then what Claude Code ran elsewhere under this account
+        // (a terminal, another tool's account folder).
         result.claude = await Task.detached(priority: .userInitiated) {
-            ClaudeDesktopSessionCatalog.conversations(root: root, configDirectory: config)
+            let app = ClaudeDesktopSessionCatalog.conversations(root: root, configDirectory: config)
+            let listed = Set(app.map(\.providerSessionID))
+            return app + ClaudeConversationCatalog.recentConversations(configDirectory: history)
+                .filter { !listed.contains($0.providerSessionID) }
         }.value
         do {
-            let provider = try await codexHistoryProvider(connection: nil)
+            let provider = try await codexHistoryProvider(connection: codexConnection)
             result.codex = try await codexInteractiveThreads(provider, archived: false).map { ImportableConversation(codex: $0) }
         } catch {
             result.codexError = error.localizedDescription
@@ -5309,6 +5354,164 @@ final class AppModel {
             && (!askingRefusal || sendRefusal(for: session) == nil)
     }
 
+    // MARK: Memory saver (HarnessMemorySaver)
+
+    /// Starts the memory saver's looks at the tasks' runtimes (`checkHarnessMemory`): every minute, and at once when
+    /// macOS reports memory pressure.
+    func startHarnessMemorySaver() {
+        guard harnessMemorySaverTask == nil else { return }
+        harnessMemorySaverTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.harnessMemorySaverTiming.checkInterval else { return }
+                try? await Task.sleep(for: .seconds(interval))
+                await self?.checkHarnessMemory()
+            }
+        }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { _ = Task { await self?.checkHarnessMemory() } }
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    /// Ends the runtimes `HarnessMemorySaver` picks, while the setting is on. A Codex thread with a background terminal
+    /// stays: only its attached thread says so.
+    func checkHarnessMemory(now: Date = Date(), pressure: MacLoad.MemoryPressure = MacConditionReader.memoryPressure(),
+                            physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) async {
+        noteMemorySaverScreen(now: now)
+        guard MemorySaverPreference.isOn(in: preferences) else { return }
+        let runtimes = store.sessions.compactMap { session -> HarnessMemorySaver.Runtime? in
+            guard handlesBySessionID[session.id] != nil else { return nil }
+            let kind: HarnessMemorySaver.Kind
+            switch session.harness {
+            case .claudeCode: kind = .claudeProcess
+            case .codex: kind = .codexThread
+            default: return nil
+            }
+            let idleSince = [session.updatedAt, providerActivityBySessionID[session.id], lastOnScreen[session.id],
+                             runtimeStartedAt[session.id]].compactMap { $0 }.max() ?? session.updatedAt
+            return HarnessMemorySaver.Runtime(task: session.id, kind: kind, idleSince: idleSince,
+                                              keptBy: memorySaverKeeps(session))
+        }
+        let pressureSweep = pressure >= .warning
+            && lastMemoryPressureSweep.map { now.timeIntervalSince($0) >= harnessMemorySaverTiming.pressureSpacing } ?? true
+        if pressureSweep { lastMemoryPressureSweep = now }
+        for id in HarnessMemorySaver.releases(runtimes, now: now, pressureSweep: pressureSweep,
+                                              physicalMemory: physicalMemory, timing: harnessMemorySaverTiming) {
+            await endRuntimeToSaveMemory(id)
+        }
+    }
+
+    /// The tasks on screen: the window's task or split panes, the side chat each shows, and the tasks the phone shows.
+    private func memorySaverOnScreenIDs() -> Set<UUID> {
+        var onScreen = sessionToolOnScreenIDs().union(remoteWatchedTaskIDs)
+        for id in onScreen {
+            guard let workspace = taskWorkspaces.loadedState(for: id), workspace.panels.trailingSurfaceID == "sideChat",
+                  let side = workspace.sideChatSessionID else { continue }
+            onScreen.insert(side)
+        }
+        return onScreen
+    }
+
+    /// Records which tasks are on screen: the window's task or split panes, the side chat it shows, and the tasks the
+    /// phone shows. A task that leaves the screen starts its idle time then.
+    func noteMemorySaverScreen(now: Date = Date()) {
+        let onScreen = memorySaverOnScreenIDs()
+        for id in onScreen.union(memorySaverOnScreen) { lastOnScreen[id] = now }
+        memorySaverOnScreen = onScreen
+    }
+
+    /// What keeps an attached task's runtime whatever the memory saver's rules say, in a word for the log and tests;
+    /// nil when the saver may end it. When in doubt it keeps the runtime: the task on screen, a turn or its question,
+    /// messages waiting to go, the harness's background shells and schedules, a server of the task or its processes
+    /// keeping a core busy, its terminal, child tasks and subagents still working, and an edit, move or continuation
+    /// under way.
+    func memorySaverKeeps(_ session: SessionRecord) -> String? {
+        let id = session.id
+        if memorySaverOnScreenIDs().contains(id) { return "on screen" }
+        if session.status == .running || session.status == .waitingForApproval
+            || codexPresentationBySessionID[id]?.activeTurnID != nil || runningShellCommandBySessionID[id] != nil {
+            return "turn"
+        }
+        if TaskAttentionProjection.waitingRequest(of: session, detail: taskAttentionDetails[id]) != nil
+            || !heldRequests(in: id).isEmpty {
+            return "question"
+        }
+        if !followUps.queue(for: id).isEmpty || pendingShellDeliveries[id]?.isEmpty == false { return "queued" }
+        if !BackgroundTasksProjection(entries: transcriptBySessionID[id] ?? []).rows.isEmpty { return "background" }
+        if !sessionJobs(of: id).isEmpty { return "schedule" }
+        if !resourceMonitor.servers(of: id).isEmpty || !resourceMonitor.busyCPU(of: [id]).isEmpty { return "processes" }
+        if taskWorkspaces.hasRunningTerminal(id) { return "terminal" }
+        if sessionTools.runs(hostedBy: id).contains(where: { !$0.state.isFinished })
+            || sessionTools.queue.contains(where: { $0.callerID == id })
+            || store.sessions.contains(where: { $0.parentTaskID == id && ($0.status == .running || $0.status == .waitingForApproval) }) {
+            return "children"
+        }
+        if composerDrafts.tasks.existingDraft(for: id)?.editState != nil || sessionMutations.contains(id)
+            || switchingAccounts.contains(id) || forkingSessions.contains(id) || restartingSessions.contains(id)
+            || openingSideChats.contains(id) || unarchivingSessionIDs.contains(id) || recreatingTaskWorktrees.contains(id) {
+            return "changing"
+        }
+        if restartResumesToContinue[id] != nil || restartResumesWhenOpened[id] != nil || sessionJobRelaunches.contains(id)
+            || restartResumeLine.waiting.contains(id) || restartResumeLine.starting.contains(id)
+            || connectionResumes[id] != nil || usageLimitAutoContinue[id] != nil {
+            return "continuing"
+        }
+        return nil
+    }
+
+    /// Ends an idle task's runtime to free its memory, as an idle runtime that ends on its own does
+    /// (`eventStreamEnded`), but the task stays ready and its next message resumes the same provider session. Nothing
+    /// is sent to the conversation. A Codex thread with a background terminal stays, and so does one whose terminals the
+    /// App Server could not list.
+    func endRuntimeToSaveMemory(_ id: UUID) async {
+        guard let adapter = adaptersBySessionID[id], let handle = handlesBySessionID[id],
+              let session = store.sessions.first(where: { $0.id == id }), memorySaverKeeps(session) == nil else { return }
+        if session.harness == .codex {
+            guard let terminals = await codexBackgroundTerminals(of: session), terminals.isEmpty else { return }
+        }
+        let finalState: CodexTaskState?
+        if let provider = adapter as? any CodexPresentationProviding {
+            finalState = try? await provider.presentationState(for: handle)
+        } else {
+            finalState = nil
+        }
+        // The person may have come back to it meanwhile.
+        guard handlesBySessionID[id] == handle, let current = store.sessions.first(where: { $0.id == id }),
+              memorySaverKeeps(current) == nil else { return }
+        eventTasksBySessionID.removeValue(forKey: id)?.cancel()
+        codexPresentationTasks.removeValue(forKey: id)?.cancel()
+        followUpDrainTasks.removeValue(forKey: id)?.cancel()
+        flushTranscriptDeltas(for: id)
+        followUps.holdAllSent(in: id)
+        if var state = finalState ?? codexPresentationBySessionID[id] {
+            mergePersistedCodexServerRequests(into: &state, for: id)
+            mergePersistedCodexTimelineItems(into: &state, for: id)
+            CodexTaskReducer().endRuntime(in: &state)
+            codexPresentations[id] = state
+            persistCodexServerRequests(state, for: id)
+            persistCodexTimelineItems(state, for: id)
+            persistCodexTranscriptSnapshot(state, for: id)
+        }
+        mutateTranscript(for: id, publishImmediately: true) { $0.endRuntime() }
+        handlesBySessionID.removeValue(forKey: id)
+        adaptersBySessionID.removeValue(forKey: id)
+        // An adapter no task uses any more may have ended its process for good (a Codex App Server stops with its
+        // last task): the next attach, which waits for this, makes a new one, as after archiving.
+        let closing = Task { @MainActor [registry] in
+            await adapter.close(handle)
+            let identity = ObjectIdentifier(adapter as AnyObject)
+            if !self.adaptersBySessionID.values.contains(where: { ObjectIdentifier($0 as AnyObject) == identity }) {
+                await registry.invalidate(harness: session.harness, executableURL: session.runtimeExecutableURL,
+                                          environmentScope: session.environmentScope, connection: session.connection)
+            }
+        }
+        memorySaverClosings[id] = closing
+        await closing.value
+        memorySaverClosings[id] = nil
+    }
+
     /// Begins the continuations in line while fewer than `RestartResumePolicy.launchLimit` are
     /// starting. One Yardlet asked for keeps its place until its provider shows work or
     /// `RestartResumePolicy.startWindow` passes; one with nothing to continue gives it up at once.
@@ -5668,6 +5871,9 @@ final class AppModel {
                 L10n.string("Task was deleted during harness attach")
             )
         }
+        // The memory saver's close of the task's last runtime ends before another starts: it clears the task's state in
+        // the adapter.
+        if let closing = memorySaverClosings[session.id] { await closing.value }
         if handlesBySessionID[session.id] != nil { return }
         // Two processes must not continue one Claude conversation: one another app still holds
         // is followed read-only until it lets the conversation go.
@@ -6115,6 +6321,8 @@ final class AppModel {
             )
             if previous == .running || previous == .waitingForApproval, status != .running, status != .waitingForApproval {
                 recordTurnForRoutingEvaluation(event.localSessionID, status: status, at: event.timestamp)
+                // A dialog the agent's own input opened and left unanswered is now the person's to answer.
+                refreshBrowserWaits()
             }
             if status == .waitingForApproval {
                 announceApproval(in: event.localSessionID)

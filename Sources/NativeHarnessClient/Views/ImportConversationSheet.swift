@@ -63,8 +63,10 @@ struct ImportConversationSheet: View {
 
     private var accounts: [AccountChoice] { Self.accounts(for: harness, in: model.connections) }
 
+    /// The harness's accounts, then its folders found with a login or history that are not saved
+    /// (importing under one saves it).
     private static func accounts(for harness: HarnessKind, in connections: ProviderConnectionStore) -> [AccountChoice] {
-        connections.choices(for: [harness]).filter(\.canSelect)
+        connections.importChoices(for: harness)
     }
 
     /// The account the harness's new tasks start on, else its first.
@@ -121,6 +123,7 @@ struct ImportConversationSheet: View {
         }
         .task(id: "\(harness.rawValue)|\(workspacePath)|\(accountID)|\(search)") { await load() }
         .task(id: harness) {
+            await model.connections.findUnsavedAccountHomes()
             // The default login and the saved accounts: one without a login gives way to a
             // signed-in account once both have answered.
             await model.connections.check(defaultsOf: [harness], savedOf: [harness],

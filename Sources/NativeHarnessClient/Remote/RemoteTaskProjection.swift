@@ -69,7 +69,8 @@ enum RemoteTaskProjection {
         }
         let indicator: RemoteIndicator? = switch SidebarTaskIndicatorProjection.status(of: session, detail: detail, isShellBusy: isShellBusy) {
         case .awaitingApproval?: .awaitingApproval
-        case .needsInput?: .needsInput
+        // The phone's protocol has no word for a browser tab waiting; the person answers it on the Mac.
+        case .needsInput?, .waitingInBrowser?: .needsInput
         case .failed?: .failed
         case .usageLimit?: .usageLimit
         // The phone's protocol has no word for waiting on the network; the task is still working.

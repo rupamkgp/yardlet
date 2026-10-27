@@ -105,6 +105,8 @@ struct SettingsAccountsContext {
     var harnessUsage: AccountHarnessScope.Usage? = nil
     var codexEnvironmentManager: CodexEnvironmentManager? = nil
     var localSessionUsage: LocalSessionUsageOverview? = nil
+    /// How many tasks run under a saved account, so removing one keeps a folder they use.
+    var tasksUsingAccount: ((ProviderConnection) -> Int)? = nil
     var fixtureSnapshots: [HarnessAccountSnapshot]? = nil
     var fixtureLogin: (HarnessKind, AccountInteractiveCommand)? = nil
 }
@@ -160,6 +162,8 @@ struct SettingsCenterView: View {
     /// Read when Yardlet quits and when it opens again (`RestartResumePolicy`).
     @AppStorage(RestartResumePreference.key) private var continuesWorkAfterRestart = true
     @AppStorage(KeepScreenAwakePreference.key) private var keepsScreenAwake = false
+    /// Read by the browser host client as it changes and by each memory check (`MemorySaverPreference`).
+    @AppStorage(MemorySaverPreference.key) private var savesMemory = true
     /// Asked of a Claude Code task's CLI when it starts or resumes; the composer reads it live.
     @AppStorage(NextMessageSuggestionPreference.key) private var suggestsNextMessage = true
     @AppStorage(PullRequestAutoFixPrompt.preferenceKey) private var autoFixPrompt = PullRequestAutoFixPrompt.ask.rawValue
@@ -336,6 +340,7 @@ struct SettingsCenterView: View {
             setupExpanded: $setupExpanded,
             isFixture: accounts.fixtureSnapshots != nil,
             localSessionUsage: accounts.localSessionUsage,
+            tasksUsingAccount: accounts.tasksUsingAccount,
             // Settings stays open after an add or sign-in step; the list shows the result.
             onFinish: {}
         )
@@ -459,6 +464,23 @@ struct SettingsCenterView: View {
                 .padding(.vertical, 14)
                 Divider().padding(.leading, Self.dividerLeading)
                 HStack(spacing: 12) {
+                    settingsControlIcon("memorychip")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(L10n.string("Memory saver")).font(.callout.weight(.medium))
+                        Text(L10n.string("Frees memory from tasks you haven't used in a while and brings them back when you return."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle(L10n.string("Memory saver"), isOn: $savesMemory)
+                        .labelsHidden()
+                        .toggleStyle(.paritySwitch)
+                        .controlSize(.small)
+                }
+                .padding(.vertical, 14)
+                Divider().padding(.leading, Self.dividerLeading)
+                HStack(spacing: 12) {
                     settingsControlIcon("text.append")
                     Text(L10n.string("Follow-up behavior")).font(.callout.weight(.medium))
                     Spacer(minLength: 8)
@@ -549,7 +571,7 @@ struct SettingsCenterView: View {
         case .remote:
             if let remote { RemoteSettingsView(service: remote) }
         case .cliUpdates:
-            if let cliUpdates { CLIUpdateSettingsView(center: cliUpdates) }
+            if let cliUpdates { CLIUpdateSettingsView(center: cliUpdates, runtimes: accounts?.runtimeSelections) }
         case .accounts, .harnesses:
             EmptyView()
         }

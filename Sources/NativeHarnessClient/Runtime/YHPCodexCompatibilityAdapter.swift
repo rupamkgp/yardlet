@@ -52,6 +52,9 @@ actor YHPCodexCompatibilityAdapter:
     /// The thread's MCP servers (`mcpServerStatus/list`) have no YHP operation; the read goes to
     /// the wrapped adapter.
     private let mcpStatusReading: (any HarnessMCPServerStatusReading)?
+    /// Nor have the thread's background terminals (`thread/backgroundTerminals/list`, App Server 0.163): the session
+    /// rail lists them and the memory saver keeps a thread that has one.
+    private let backgroundTerminalControl: (any CodexBackgroundTerminalControlling)?
 
     init(adapter: any HarnessAdapter, manifest: HarnessAdapterManifest) {
         precondition(adapter.kind == .codex && manifest.harness == .codex)
@@ -59,6 +62,7 @@ actor YHPCodexCompatibilityAdapter:
         acceptsPresentationPatches = manifest.supports(.codexPresentationPatches)
         launchFacets = WrappedAdapterLaunchFacets(wrapping: adapter)
         mcpStatusReading = adapter as? any HarnessMCPServerStatusReading
+        backgroundTerminalControl = adapter as? any CodexBackgroundTerminalControlling
         core = YHPCompatibilityAdapter(
             adapter: adapter,
             manifest: manifest,
@@ -764,6 +768,27 @@ actor YHPCodexCompatibilityAdapter:
 }
 
 /// The thread lifecycle crosses YHP as the typed `yardlet.codex.thread.*` requests.
+extension YHPCodexCompatibilityAdapter: CodexBackgroundTerminalControlling {
+    func backgroundTerminals(in session: HarnessSessionHandle) async throws -> [CodexBackgroundTerminal] {
+        try await requireBackgroundTerminals().backgroundTerminals(in: session)
+    }
+
+    func terminateBackgroundTerminal(processID: String, in session: HarnessSessionHandle) async throws {
+        try await requireBackgroundTerminals().terminateBackgroundTerminal(processID: processID, in: session)
+    }
+
+    func cleanBackgroundTerminals(in session: HarnessSessionHandle) async throws {
+        try await requireBackgroundTerminals().cleanBackgroundTerminals(in: session)
+    }
+
+    private func requireBackgroundTerminals() throws -> any CodexBackgroundTerminalControlling {
+        guard let backgroundTerminalControl else {
+            throw HarnessAdapterError.capabilityUnavailable("Background terminals are unavailable")
+        }
+        return backgroundTerminalControl
+    }
+}
+
 extension YHPCodexCompatibilityAdapter: HarnessSessionLifecycleProviding {
     func archiveProviderSession(_ session: HarnessSessionHandle) async throws {
         try await archiveThread(session)

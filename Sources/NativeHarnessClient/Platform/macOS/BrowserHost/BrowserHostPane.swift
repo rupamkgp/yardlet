@@ -53,6 +53,21 @@ final class BrowserHostPaneController {
     /// as a bar over the page, with its "Always allow" box.
     private(set) var externalAppQuestion: BrowserExternalAppQuestion?
     var alwaysAllowExternalApp = false
+    /// The shown tab's JavaScript dialog (`BrowserTab.javaScriptDialog`), drawn over the page as Chrome draws a tab's
+    /// dialog over its tab: only this tab waits on it, the rest of the window stays the person's, and it stays with the
+    /// tab while another is shown.
+    private(set) var javaScriptDialog: BrowserJavaScriptDialog?
+    /// What a prompt's field holds.
+    var dialogText = ""
+    /// The dialog takes the keyboard: the page had it when the dialog came, as a tab's dialog takes its page's focus.
+    private(set) var dialogTakesKeyboard = false
+    /// The shown tab's file chooser (`BrowserTab.fileDialog`). One the person's input opened opens over the panel;
+    /// one the agent's input opened waits in a bar, for the agent (`browser_file_upload`) or for the person to open,
+    /// so it takes no keyboard from what the person is doing.
+    private(set) var fileDialog: BrowserFileDialog?
+    private(set) var fileDialogByAgent = false
+    /// Shows a file chooser over the panel (the system's open and save panels; QA fixtures put their own).
+    @ObservationIgnored var fileChooser: any BrowserFileChooserPresenting = BrowserFileChooserPanel()
     /// Pop-ups the page opened without a click, which the browser blocked (`BrowserTab.blockedPopups`): Chrome's
     /// "Pop-ups blocked" in the address field, from which the person opens one.
     private(set) var blockedPopups: [String] = []
@@ -102,7 +117,6 @@ final class BrowserHostPaneController {
     @ObservationIgnored private var isPanelOccluded = false
     @ObservationIgnored private var agentIndicatorTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
-    @ObservationIgnored private var openAlert: (dialog: Int, alert: NSAlert)?
     /// Called for every event of the attached tab (QA fixtures record them).
     @ObservationIgnored var eventObserver: ((BrowserHostEvent) -> Void)?
     /// Called for every page frame placed on screen, on the thread that placed it, with its
@@ -146,6 +160,16 @@ final class BrowserHostPaneController {
             guard let self, self.isPickingElement else { return false }
             self.stopPickingElement()
             return true
+        }
+        // Whether the person is using the shown tab: their keyboard is in its page (`BrowserHostClient.personUse`).
+        view.onKeyboardChange = { [weak self] hasKeyboard in
+            guard let self, let tab = self.tab else { return }
+            self.client.setPanelKeyboard(hasKeyboard, on: tab)
+        }
+        // A chooser the person asked for opens once the panel is in a window.
+        view.onWindowChange = { [weak self] in
+            guard let self, let tab = self.tab else { return }
+            self.showFileDialog(of: tab)
         }
         // The pane follows its tab whoever opens, fronts or closes tabs.
         if tabsObserver == nil {
@@ -230,7 +254,11 @@ final class BrowserHostPaneController {
     /// Stops showing a tab: its dialogs, accessibility, frames and events go back to nobody.
     private func release(_ tab: BrowserTab) {
         stopPickingElement()
-        dismissAlert(sendingResult: true)
+        // The tab's dialog and file chooser stay with it, waiting for the next panel that shows it.
+        javaScriptDialog = nil
+        fileDialog = nil
+        fileChooser.dismiss()
+        client.setPanelKeyboard(false, on: tab)
         stopAccessibility(sendingDisable: true)
         // The keyboard focus stays with the view for the next tab; this page no longer has it.
         if view?.hasKeyboardFocus == true { tab.send(.focus(tab: tab.id, isFocused: false)) }
@@ -319,10 +347,13 @@ final class BrowserHostPaneController {
         // Chromium's window over this tab (a passkey dialog) shows over this panel.
         MacBrowserHost.shared.panelShows(tab.id, in: view)
         view.resendViewport()
+        client.setPanelKeyboard(view.hasKeyboardFocus && view.window?.isKeyWindow == true, on: tab)
         // A tab opened again shows the page it opens before the page reports its address.
         showAddress(tab.currentURL ?? workspace.browserTabs.tab(key)?.address ?? "")
-        // The person closed this tab while another showed, and its page asks first: the panel brought it here to ask.
-        if let question = tab.closeQuestion { presentJavaScriptDialog(question) }
+        // What the page waits on shows now, also what it asked while another tab or task was shown (a "Leave site?"
+        // the person's close brought this tab forward for, among them).
+        showJavaScriptDialog(tab.javaScriptDialog)
+        showFileDialog(of: tab)
     }
 
     // MARK: Screen sizes
@@ -427,6 +458,8 @@ final class BrowserHostPaneController {
         isPanelOccluded = occluded
         client.setPanelOccluded(occluded, on: tab)
         MacBrowserHost.shared.chromiumWindows.present()
+        // A chooser the person asked for opens once the panel is on screen (a window that was not drawn yet).
+        if !occluded { showFileDialog(of: tab) }
     }
 
     // MARK: Navigation
@@ -658,12 +691,11 @@ final class BrowserHostPaneController {
         case .pageCrashed:
             // The crash shows instead (`crash`); a load error before it was the ended page's.
             clearError()
-        case .javaScriptDialog(_, let dialog):
-            presentJavaScriptDialog(dialog)
-        case .javaScriptDialogReset:
-            dismissAlert(sendingResult: true)
-        case .fileDialog(_, let dialog):
-            presentFileDialog(dialog)
+        case .javaScriptDialog, .javaScriptDialogReset, .fileDialog, .dialogClosed:
+            if let tab {
+                showJavaScriptDialog(tab.javaScriptDialog)
+                showFileDialog(of: tab)
+            }
         case .permissionPrompt, .permissionPromptDismissed:
             permissionPrompt = tab?.permissionPrompt
         case .externalAppHandled, .newDocument, .newWindow:
@@ -685,7 +717,9 @@ final class BrowserHostPaneController {
         case .terminated(let reason):
             picker = nil
             isPickingElement = false
-            dismissAlert(sendingResult: false)
+            javaScriptDialog = nil
+            fileDialog = nil
+            fileChooser.dismiss()
             stopAccessibility(sendingDisable: false)
             tab = nil
             view?.tabID = nil
@@ -873,90 +907,60 @@ final class BrowserHostPaneController {
         return L10n.format("%@ wants to: %@", origin, wants.joined(separator: ", "))
     }
 
-    private func presentJavaScriptDialog(_ dialog: BrowserJavaScriptDialog) {
-        guard let tab, openAlert?.dialog != dialog.id else { return }
-        guard let window = view?.window, openAlert == nil else {
-            tab.send(.javaScriptDialogResult(tab: tab.id, dialog: dialog.id, accepted: false, text: nil))
-            return
-        }
-        let alert = NSAlert()
-        let origin = URL(string: dialog.origin)?.host() ?? dialog.origin
-        var field: NSTextField?
-        switch dialog.kind {
-        case .beforeUnload:
-            // Chrome's words, for a move and for closing the tab alike.
-            alert.messageText = dialog.isReload ? L10n.string("Reload site?") : L10n.string("Leave site?")
-            alert.informativeText = L10n.string("Changes you made may not be saved.")
-            alert.addButton(withTitle: dialog.isReload ? L10n.string("Reload") : L10n.string("Leave"))
-            alert.addButton(withTitle: L10n.string("Cancel"))
-        case .alert, .confirm, .prompt:
-            alert.messageText = origin.isEmpty ? L10n.string("This page says") : L10n.format("%@ says", origin)
-            alert.informativeText = dialog.message
-            alert.addButton(withTitle: L10n.string("OK"))
-            if dialog.kind != .alert { alert.addButton(withTitle: L10n.string("Cancel")) }
-            if dialog.kind == .prompt {
-                let input = NSTextField(string: dialog.defaultPrompt)
-                input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
-                alert.accessoryView = input
-                alert.window.initialFirstResponder = input
-                field = input
-            }
-        }
-        openAlert = (dialog.id, alert)
-        let tabID = tab.id
-        alert.beginSheetModal(for: window) { [weak self, weak tab] response in
-            MainActor.assumeIsolated {
-                guard let self, self.openAlert?.dialog == dialog.id else { return }
-                self.openAlert = nil
-                tab?.send(.javaScriptDialogResult(tab: tabID, dialog: dialog.id,
-                                                  accepted: response == .alertFirstButtonReturn,
-                                                  text: field?.stringValue))
-            }
-        }
+    /// Shows the tab's JavaScript dialog over the page, or none.
+    private func showJavaScriptDialog(_ dialog: BrowserJavaScriptDialog?) {
+        guard dialog != javaScriptDialog else { return }
+        javaScriptDialog = dialog
+        dialogText = dialog?.defaultPrompt ?? ""
+        dialogTakesKeyboard = dialog != nil && view?.hasKeyboardFocus == true
     }
 
-    private func dismissAlert(sendingResult: Bool) {
-        guard let (dialog, alert) = openAlert else { return }
-        openAlert = nil
-        if sendingResult, let tab {
-            tab.send(.javaScriptDialogResult(tab: tab.id, dialog: dialog, accepted: false, text: nil))
-        }
-        alert.window.sheetParent?.endSheet(alert.window, returnCode: .abort)
+    /// The person's answer to the dialog over the page: OK (Leave, Reload), or Cancel.
+    func answerJavaScriptDialog(accept: Bool) {
+        guard let tab, let dialog = javaScriptDialog else { return }
+        let hadKeyboard = dialogTakesKeyboard
+        tab.send(.javaScriptDialogResult(tab: tab.id, dialog: dialog.id, accepted: accept,
+                                         text: dialog.kind == .prompt ? dialogText : nil))
+        showJavaScriptDialog(tab.javaScriptDialog)
+        // The page has the keyboard again, as when Chrome's dialog closes.
+        if hadKeyboard, let view { view.window?.makeFirstResponder(view) }
     }
 
-    private func presentFileDialog(_ dialog: BrowserFileDialog) {
-        guard let tab else { return }
+    /// The dialog's title, in Chrome's words, with the asking page's host so a page cannot pose as Yardlet; a page with
+    /// no host (a `data:` or `file:` page) is "This page", as Chrome names it, rather than its whole address.
+    static func dialogTitle(_ dialog: BrowserJavaScriptDialog) -> String {
+        if dialog.kind == .beforeUnload {
+            return dialog.isReload ? L10n.string("Reload site?") : L10n.string("Leave site?")
+        }
+        let host = URL(string: dialog.origin)?.host() ?? ""
+        return host.isEmpty ? L10n.string("This page says") : L10n.format("%@ says", host)
+    }
+
+    /// Shows the tab's file chooser: one the person's input opened opens over the panel, one the agent's waits in a bar.
+    private func showFileDialog(of tab: BrowserTab) {
+        if fileDialog != tab.fileDialog { fileDialog = tab.fileDialog }
+        if fileDialogByAgent != tab.fileDialogByAgent { fileDialogByAgent = tab.fileDialogByAgent }
+        guard let dialog = tab.fileDialog else { return fileChooser.dismiss() }
+        if fileChooser.presented != dialog.id, !tab.fileDialogByAgent { chooseFile() }
+    }
+
+    /// Opens the page's waiting file chooser over this panel; the person's files, or Cancel, go back to the page.
+    func chooseFile() {
+        guard let tab, let dialog = tab.fileDialog, let view, view.window != nil, !isPanelOccluded else { return }
 #if DEBUG
         if fileDialogOverride { return }
 #endif
-        guard let window = view?.window else {
-            tab.send(.fileDialogResult(tab: tab.id, dialog: dialog.id, paths: nil))
-            return
-        }
-        let panel: NSSavePanel
-        if dialog.mode == .save {
-            panel = NSSavePanel()
-            panel.nameFieldStringValue = (dialog.defaultPath as NSString).lastPathComponent
-        } else {
-            let open = NSOpenPanel()
-            open.canChooseFiles = dialog.mode != .openFolder
-            open.canChooseDirectories = dialog.mode == .openFolder
-            open.allowsMultipleSelection = dialog.mode == .openMultiple
-            panel = open
-        }
-        if !dialog.title.isEmpty { panel.message = dialog.title }
-        let types = dialog.extensions.compactMap { UTType(filenameExtension: $0) }
-        if !types.isEmpty, dialog.mode != .openFolder { panel.allowedContentTypes = types }
         let tabID = tab.id
-        panel.beginSheetModal(for: window) { [weak tab] response in
-            MainActor.assumeIsolated {
-                var paths: [String]?
-                if response == .OK {
-                    paths = ((panel as? NSOpenPanel)?.urls ?? panel.url.map { [$0] } ?? []).map { $0.path(percentEncoded: false) }
-                }
-                tab?.send(.fileDialogResult(tab: tabID, dialog: dialog.id, paths: paths))
-            }
+        fileChooser.present(dialog, over: view) { [weak tab] paths in
+            guard let tab, tab.fileDialog?.id == dialog.id else { return }
+            tab.send(.fileDialogResult(tab: tabID, dialog: dialog.id, paths: paths))
         }
+    }
+
+    /// The bar's Cancel for a chooser the agent's input opened: the page hears Cancel.
+    func cancelFileDialog() {
+        guard let tab, let dialog = tab.fileDialog else { return }
+        tab.send(.fileDialogResult(tab: tab.id, dialog: dialog.id, paths: nil))
     }
 
     /// What the error card says of a tab the host could not open.
@@ -1067,6 +1071,7 @@ struct BrowserHostPane: View {
                     if controller.isUnresponsive { unresponsiveBar }
                     if let prompt = controller.permissionPrompt { permissionBar(prompt) }
                     if let question = controller.externalAppQuestion { externalAppBar(question) }
+                    if let chooser = controller.fileDialog, controller.fileDialogByAgent { fileChooserBar(chooser) }
                     if let offer = controller.vaultOffer { vaultOfferBar(offer) }
                     if let offer = controller.vaultSetupOffer { vaultSetupBar(offer) }
                     if let offer = controller.vaultCodeOffer { vaultCodeBar(offer) }
@@ -1079,6 +1084,10 @@ struct BrowserHostPane: View {
                             .background(.background)
                             .overlay(alignment: .bottom) { Rectangle().fill(ParityTheme.separator).frame(height: 1) }
                     }
+                }
+                if let dialog = controller.javaScriptDialog {
+                    BrowserJavaScriptDialogView(dialog: dialog, controller: controller)
+                        .id(dialog.id)
                 }
             }
             .background(Color(nsColor: .textBackgroundColor))
@@ -1336,6 +1345,36 @@ struct BrowserHostPane: View {
                 .controlSize(.small)
             Button(L10n.format("Open %@", question.app)) { controller.answerExternalApp(open: true) }
                 .controlSize(.small)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ParityTheme.subtleFill)
+        .background(.background)
+        .overlay(alignment: .bottom) { Rectangle().fill(ParityTheme.separator).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// A file chooser the agent's input opened, waiting in its tab: the agent answers it (`browser_file_upload`), or the
+    /// person opens it here, rather than the system's panel opening over whatever the person is doing.
+    private func fileChooserBar(_ chooser: BrowserFileDialog) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.badge.ellipsis").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(chooser.mode == .save ? L10n.string("The page asks where to save a file")
+                                           : L10n.string("The page asks for a file"))
+                    .font(.callout.weight(.semibold))
+                Text(L10n.string("The agent's action opened it. The agent can answer it, or you can choose."))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(L10n.string("Cancel")) { controller.cancelFileDialog() }
+                .controlSize(.small)
+            Button(chooser.mode == .save ? L10n.string("Choose Location…") : L10n.string("Choose File…")) {
+                controller.chooseFile()
+            }
+            .controlSize(.small)
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -18,6 +18,8 @@ struct NativeMCPServer: Equatable, Hashable, Sendable, Identifiable {
         case codex
         /// Antigravity `mcp_config.json`.
         case antigravity
+        /// An editor or app that is not a Yardlet harness (`NativeMCPApp`).
+        case app(NativeMCPApp)
     }
 
     var name: String
@@ -25,12 +27,26 @@ struct NativeMCPServer: Equatable, Hashable, Sendable, Identifiable {
     var url: URL?
     /// A stdio server's program, by file name alone (`npx`).
     var command: String?
+    /// The program as the settings wrote it, path included; kept only to tell an app's own helper
+    /// apart. Nil for a remote server.
+    var launchPath: String?
     /// For `npx`-style launches, the first argument naming a package (`@browserbasehq/mcp`).
     var package: String?
     var scope: Scope
     var isEnabled: Bool = true
 
     var id: String { "\(scope)|\(name)" }
+
+    /// A program inside an app's bundle (Codex's `node_repl` and computer use, a browser
+    /// extension's host): it works only for that app, so it is not offered elsewhere.
+    var isAppHelper: Bool { launchPath?.contains(".app/Contents/") == true }
+
+    /// The program and package it starts, as a program connector would name them, for noticing
+    /// the same server started twice; nil for a remote server or a program without a package.
+    var programKey: String? {
+        guard let command, let package else { return nil }
+        return ConnectorPrograms.key(program: command, package: package)
+    }
 
     /// What a row shows after the name: the host and path, or the program and package.
     var detail: String {
@@ -240,6 +256,7 @@ struct CodexNativeMCPConfig: Equatable, Sendable {
             } else if let command = entry.command {
                 server = NativeMCPServer(name: name, command: NativeMCPConfigFiles.programName(command),
                                          package: entry.package, scope: .codex)
+                server.launchPath = command
             } else {
                 return nil
             }
@@ -312,6 +329,48 @@ enum CodexAppToolsCache {
     }
 }
 
+/// Apps that keep MCP servers of their own and are not Yardlet harnesses: the Claude app
+/// (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`) and VS Code (`mcp.json` in the
+/// user folder, which may hold comments). Read only, like the harnesses' files.
+enum NativeMCPApp: String, CaseIterable, Equatable, Hashable, Sendable {
+    case claudeApp
+    case cursor
+    case vscode
+    case vscodeInsiders
+
+    var name: String {
+        switch self {
+        case .claudeApp: L10n.string("Claude app")
+        case .cursor: "Cursor"
+        case .vscode: "VS Code"
+        case .vscodeInsiders: "VS Code Insiders"
+        }
+    }
+
+    func file(home: URL) -> URL {
+        let support = home.appending(path: "Library/Application Support", directoryHint: .isDirectory)
+        return switch self {
+        case .claudeApp: support.appending(path: "Claude/claude_desktop_config.json")
+        case .cursor: home.appending(path: ".cursor/mcp.json")
+        case .vscode: support.appending(path: "Code/User/mcp.json")
+        case .vscodeInsiders: support.appending(path: "Code - Insiders/User/mcp.json")
+        }
+    }
+
+    /// VS Code keeps its servers under `servers`; the others under `mcpServers`.
+    var serversKey: String {
+        switch self {
+        case .vscode, .vscodeInsiders: "servers"
+        case .claudeApp, .cursor: "mcpServers"
+        }
+    }
+
+    static func parse(_ data: Data, app: NativeMCPApp) -> [NativeMCPServer] {
+        guard let root = NativeMCPConfigFiles.json(data) else { return [] }
+        return ClaudeNativeMCPConfig.servers(root[app.serversKey], scope: .app(app))
+    }
+}
+
 /// Antigravity's `mcp_config.json` (`{"mcpServers": {...}}`, remote servers under `serverUrl`).
 enum AntigravityNativeMCPConfig {
     static func parse(_ data: Data) -> [NativeMCPServer] {
@@ -335,6 +394,7 @@ enum NativeMCPConfigFiles {
         } else if let command = entry["command"]?.stringValue {
             let package = packageName(in: (entry["args"]?.arrayValue ?? []).compactMap(\.stringValue))
             server = NativeMCPServer(name: name, command: programName(command), package: package, scope: scope)
+            server.launchPath = command
         } else {
             return nil
         }
@@ -398,6 +458,58 @@ enum NativeMCPConfigFiles {
         parsed(file, AntigravityNativeMCPConfig.parse) ?? []
     }
 
+    static func app(_ app: NativeMCPApp, file: URL) -> [NativeMCPServer] {
+        parsed(file) { NativeMCPApp.parse($0, app: app) } ?? []
+    }
+
+    /// JSON, or JSON with comments and trailing commas as VS Code writes it.
+    static func json(_ data: Data) -> JSONValue? {
+        if let value = try? JSONDecoder().decode(JSONValue.self, from: data) { return value }
+        return try? JSONDecoder().decode(JSONValue.self, from: withoutComments(data))
+    }
+
+    /// Drops `//` and `/* */` comments outside strings, and a comma before `}` or `]`.
+    static func withoutComments(_ data: Data) -> Data {
+        let bytes = [UInt8](data)
+        var output: [UInt8] = []
+        output.reserveCapacity(bytes.count)
+        var index = 0
+        var inString = false
+        while index < bytes.count {
+            let byte = bytes[index]
+            if inString {
+                output.append(byte)
+                if byte == UInt8(ascii: "\\"), index + 1 < bytes.count {
+                    output.append(bytes[index + 1])
+                    index += 2
+                    continue
+                }
+                if byte == UInt8(ascii: "\"") { inString = false }
+                index += 1
+                continue
+            }
+            if byte == UInt8(ascii: "\"") {
+                inString = true
+            } else if byte == UInt8(ascii: "/"), index + 1 < bytes.count, bytes[index + 1] == UInt8(ascii: "/") {
+                while index < bytes.count, bytes[index] != UInt8(ascii: "\n") { index += 1 }
+                continue
+            } else if byte == UInt8(ascii: "/"), index + 1 < bytes.count, bytes[index + 1] == UInt8(ascii: "*") {
+                index += 2
+                while index + 1 < bytes.count, !(bytes[index] == UInt8(ascii: "*") && bytes[index + 1] == UInt8(ascii: "/")) { index += 1 }
+                index += 2
+                continue
+            } else if byte == UInt8(ascii: "}") || byte == UInt8(ascii: "]") {
+                // A trailing comma before the close.
+                if let last = output.lastIndex(where: { ![0x20, 0x09, 0x0A, 0x0D].contains($0) }), output[last] == UInt8(ascii: ",") {
+                    output.remove(at: last)
+                }
+            }
+            output.append(byte)
+            index += 1
+        }
+        return Data(output)
+    }
+
     /// The ChatGPT apps a Codex home has connected, by connector ID, with the names Codex cached
     /// beside their tools (`cache/codex_apps_tools/*.json`), the newest file last so its names win.
     /// Only IDs and names are kept, never a tool's schema; OpenAI's own built-in apps are left out.
@@ -440,6 +552,8 @@ struct NativeMCPHome: Equatable, Hashable, Sendable, Identifiable {
         case claude(file: URL)
         case codex(home: URL)
         case antigravity(file: URL)
+        /// An app that is not a harness: its servers can be connected through Yardlet, nothing more.
+        case app(NativeMCPApp, file: URL)
     }
 
     var kind: Kind
@@ -451,14 +565,17 @@ struct NativeMCPHome: Equatable, Hashable, Sendable, Identifiable {
         case .claude(let file): "claude|\(file.path(percentEncoded: false))"
         case .codex(let home): "codex|\(home.path(percentEncoded: false))"
         case .antigravity(let file): "antigravity|\(file.path(percentEncoded: false))"
+        case .app(let app, let file): "\(app.rawValue)|\(file.path(percentEncoded: false))"
         }
     }
 
-    var harness: HarnessKind {
+    /// The harness it belongs to; nil for an app that is not one.
+    var harness: HarnessKind? {
         switch kind {
         case .claude: .claudeCode
         case .codex: .codex
         case .antigravity: .antigravityCLI
+        case .app: nil
         }
     }
 
@@ -506,11 +623,14 @@ struct NativeMCPHome: Equatable, Hashable, Sendable, Identifiable {
         let gemini = homeURL.appending(path: ".gemini", directoryHint: .isDirectory)
         homes.append(NativeMCPHome(kind: .antigravity(file: gemini.appending(path: "antigravity/mcp_config.json"))))
         homes.append(NativeMCPHome(kind: .antigravity(file: gemini.appending(path: "config/mcp_config.json"))))
+        for app in NativeMCPApp.allCases {
+            homes.append(NativeMCPHome(kind: .app(app, file: app.file(home: homeURL))))
+        }
         // A saved account and a Session Switch folder can be the same folder.
         var seen = Set<String>()
         return homes.filter { home in
             let key: String = switch home.kind {
-            case .claude(let file), .antigravity(let file): file.resolvingSymlinksInPath().path(percentEncoded: false)
+            case .claude(let file), .antigravity(let file), .app(_, let file): file.resolvingSymlinksInPath().path(percentEncoded: false)
             case .codex(let home): home.resolvingSymlinksInPath().path(percentEncoded: false)
             }
             return seen.insert(key).inserted
@@ -555,6 +675,9 @@ enum NativeMCPInventory {
             case .antigravity(let file):
                 let servers = NativeMCPConfigFiles.antigravity(file)
                 return servers.isEmpty ? nil : NativeMCPInventoryEntry(home: home, servers: servers, accountConnectors: [])
+            case .app(let app, let file):
+                let servers = NativeMCPConfigFiles.app(app, file: file)
+                return servers.isEmpty ? nil : NativeMCPInventoryEntry(home: home, servers: servers, accountConnectors: [])
             }
         }
     }
@@ -596,6 +719,18 @@ enum NativeMCPInventory {
         originWorkspaceURL: URL? = nil,
         homeURL: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [HarnessRemoteServer] {
+        loadedServers(harness: harness, configFolder: configFolder, workspaceURL: workspaceURL,
+                      originWorkspaceURL: originWorkspaceURL, homeURL: homeURL).compactMap(HarnessRemoteServer.init)
+    }
+
+    /// Every server a task's harness loads itself, remote or a program it starts.
+    static func loadedServers(
+        harness: HarnessKind,
+        configFolder: URL?,
+        workspaceURL: URL,
+        originWorkspaceURL: URL? = nil,
+        homeURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [NativeMCPServer] {
         guard let configFolder else { return [] }
         switch harness {
         case .claudeCode:
@@ -613,10 +748,10 @@ enum NativeMCPInventory {
             }
             servers += approvedProjectServers(folder: workspaceURL, config: config, folders: folders,
                                               configFolder: configFolder)
-            return servers.filter { $0.isEnabled && !disabled.contains($0.name) }.compactMap(HarnessRemoteServer.init)
+            return servers.filter { $0.isEnabled && !disabled.contains($0.name) }
         case .codex:
             let config = NativeMCPConfigFiles.codex(home: configFolder) ?? CodexNativeMCPConfig()
-            return config.servers.filter(\.isEnabled).compactMap(HarnessRemoteServer.init)
+            return config.servers.filter(\.isEnabled)
         default:
             return []
         }
@@ -647,5 +782,178 @@ enum NativeMCPInventory {
             all = all || settings["enableAllProjectMcpServers"]?.boolValue == true
         }
         return servers.filter { !disabled.contains($0.name) && (all || enabled.contains($0.name)) }
+    }
+}
+
+/// How one program server in another app's or harness's settings starts, read again when the
+/// person asks to run it through Yardlet, and only then: its program, arguments and environment.
+/// Values that refer to something else (`${input:key}`, `${env:NAME}`, `${NAME}`) are not followed;
+/// they are left for the person to fill in. The file is not changed.
+struct NativeMCPLaunch: Equatable, Sendable {
+    var command: String
+    var arguments: [String]
+    var environment: [String: String]
+    /// Environment variables whose value the settings left to something Yardlet does not follow.
+    var unresolved: [String] = []
+
+    static func from(_ entry: JSONValue) -> NativeMCPLaunch? {
+        guard let command = entry["command"]?.stringValue, !command.isEmpty, entry["url"] == nil, entry["serverUrl"] == nil else {
+            return nil
+        }
+        let arguments = (entry["args"]?.arrayValue ?? []).compactMap(\.stringValue)
+        var environment: [String: String] = [:]
+        var unresolved: [String] = []
+        for (name, value) in entry["env"]?.objectValue ?? [:] where MCPRegistryCheck.isEnvironmentName(name) {
+            guard let text = value.stringValue else { continue }
+            if text.contains("${") { unresolved.append(name) } else { environment[name] = text }
+        }
+        return NativeMCPLaunch(command: command, arguments: arguments, environment: environment, unresolved: unresolved.sorted())
+    }
+
+    /// The program server named `name` in a home, as its file says now.
+    static func read(_ server: NativeMCPServer, in home: NativeMCPHome) -> NativeMCPLaunch? {
+        switch home.kind {
+        case .claude(let file):
+            guard let root = NativeMCPConfigFiles.data(file).flatMap(NativeMCPConfigFiles.json) else { return nil }
+            switch server.scope {
+            case .claudeLocal(let project): return root["projects"]?[project]?["mcpServers"]?[server.name].flatMap(from)
+            default: return root["mcpServers"]?[server.name].flatMap(from)
+            }
+        case .codex(let codexHome):
+            guard let data = NativeMCPConfigFiles.data(codexHome.appending(path: "config.toml")) else { return nil }
+            return CodexNativeMCPConfig.launch(String(decoding: data, as: UTF8.self), server: server.name)
+        case .antigravity(let file):
+            return NativeMCPConfigFiles.data(file).flatMap(NativeMCPConfigFiles.json)?["mcpServers"]?[server.name].flatMap(from)
+        case .app(let app, let file):
+            return NativeMCPConfigFiles.data(file).flatMap(NativeMCPConfigFiles.json)?[app.serversKey]?[server.name].flatMap(from)
+        }
+    }
+}
+
+extension CodexNativeMCPConfig {
+    /// One server's `command`, `args` and `env` from `config.toml`: `[mcp_servers.<name>]` with
+    /// `env = { … }` inline or an `[mcp_servers.<name>.env]` table. Strings, arrays of strings
+    /// (on one line or several) and inline tables of strings are read; anything else is skipped.
+    static func launch(_ text: String, server: String) -> NativeMCPLaunch? {
+        var command: String?
+        var arguments: [String] = []
+        var environment: [String: String] = [:]
+        var section: String?
+        var pending: (key: String, text: String)?
+        func assign(_ key: String, _ value: String) {
+            switch (section, key) {
+            case ("server", "command"): command = TOMLValue.string(value)
+            case ("server", "args"): arguments = TOMLValue.strings(value) ?? arguments
+            case ("server", "env"): environment.merge(TOMLValue.table(value) ?? [:]) { $1 }
+            case ("env", _): if let text = TOMLValue.string(value) { environment[key] = text }
+            default: break
+            }
+        }
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if var open = pending {
+                open.text += " " + line
+                if TOMLValue.isComplete(open.text) { assign(open.key, open.text); pending = nil } else { pending = open }
+                continue
+            }
+            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+            if line.hasPrefix("[") {
+                let header = line.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+                let path = header.split(separator: ".", omittingEmptySubsequences: false).map {
+                    $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                }
+                section = if path == ["mcp_servers", server] { "server" }
+                    else if path == ["mcp_servers", server, "env"] { "env" }
+                    else { nil }
+                continue
+            }
+            guard section != nil, let equals = line.firstIndex(of: "=") else { continue }
+            let key = line[..<equals].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+            if TOMLValue.isComplete(value) { assign(key, value) } else { pending = (key, value) }
+        }
+        guard let command, !command.isEmpty else { return nil }
+        let unresolved = environment.filter { $0.value.contains("${") }.map(\.key).sorted()
+        for name in unresolved { environment[name] = nil }
+        return NativeMCPLaunch(command: command, arguments: arguments,
+                               environment: environment.filter { MCPRegistryCheck.isEnvironmentName($0.key) }, unresolved: unresolved)
+    }
+}
+
+/// The few TOML values MCP settings use: basic and literal strings, arrays of them, and inline
+/// tables of them.
+private enum TOMLValue {
+    /// Brackets and braces balance outside strings.
+    static func isComplete(_ text: String) -> Bool {
+        var depth = 0
+        var quote: Character?
+        var escaped = false
+        for character in text {
+            if let open = quote {
+                if escaped { escaped = false } else if character == "\\", open == "\"" { escaped = true } else if character == open { quote = nil }
+                continue
+            }
+            switch character {
+            case "\"", "'": quote = character
+            case "[", "{": depth += 1
+            case "]", "}": depth -= 1
+            case "#": return depth <= 0
+            default: break
+            }
+        }
+        return depth <= 0
+    }
+
+    /// The strings in order, each with where it ended.
+    static func strings(in text: String) -> [(value: String, end: String.Index)] {
+        var found: [(String, String.Index)] = []
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "#" { break }
+            guard character == "\"" || character == "'" else { index = text.index(after: index); continue }
+            var value = ""
+            var cursor = text.index(after: index)
+            while cursor < text.endIndex, text[cursor] != character {
+                if character == "\"", text[cursor] == "\\", text.index(after: cursor) < text.endIndex {
+                    let next = text[text.index(after: cursor)]
+                    value.append(["n": "\n", "t": "\t", "\"": "\"", "\\": "\\"][next] ?? next)
+                    cursor = text.index(cursor, offsetBy: 2)
+                    continue
+                }
+                value.append(text[cursor])
+                cursor = text.index(after: cursor)
+            }
+            guard cursor < text.endIndex else { break }
+            found.append((value, cursor))
+            index = text.index(after: cursor)
+        }
+        return found
+    }
+
+    static func string(_ text: String) -> String? {
+        guard let first = text.first, first == "\"" || first == "'" else { return nil }
+        return strings(in: text).first?.value
+    }
+
+    static func strings(_ text: String) -> [String]? {
+        guard text.hasPrefix("[") else { return nil }
+        return strings(in: text).map { $0.value }
+    }
+
+    /// `{ KEY = "value", "OTHER" = "x" }`: keys and values alternate as strings once bare keys
+    /// are quoted.
+    static func table(_ text: String) -> [String: String]? {
+        guard text.hasPrefix("{") else { return nil }
+        let quotedKeys = text.replacingOccurrences(of: #"([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*="#, with: "$1\"$2\" =",
+                                                   options: .regularExpression)
+        let values = strings(in: quotedKeys).map { $0.value }
+        var table: [String: String] = [:]
+        var index = 0
+        while index + 1 < values.count {
+            table[values[index]] = values[index + 1]
+            index += 2
+        }
+        return table
     }
 }

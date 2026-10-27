@@ -383,9 +383,23 @@ final class BrowserPanelTabsQATests: XCTestCase {
             "Shown tab Docs (blue favicon), agent tab Status (green favicon) behind, no tab strip inside the browser pane"
         ])
 
+        // The memory saver discards the hidden 'Login — Dev' (BROWSER_HOST section 3, "Memory saver"): its tab stays in the
+        // strip with its icon in a dashed ring, and pressing it loads its page again.
+        client.isMemorySaverOn = true
+        defer { client.isMemorySaverOn = false }
+        standIn.eventHandler?(.discarded(tab: firstTab.id))
+        host.settle(passes: 10, interval: 0.03)
+        XCTAssertEqual(workspace.browserTabs.tab(first)?.isDiscarded, true)
+        try draw(host, "discarded-tab", appearance)
+        describe("'Login — Dev' discarded by the memory saver", strip(in: host), notes: [
+            "Its globe smaller and fainter in a dashed ring; Docs and Status as before"
+        ])
+
         // A background tab pressed in the strip shows; the engine fronts it for the agent's tools.
         XCTAssertTrue(press("Login — Dev", in: host, among: threeTabs))
         XCTAssertEqual(workspace.panels.trailingSurfaceID, Navigation.browserTabID(first))
+        XCTAssertTrue(standIn.sent.contains(.navigation(tab: firstTab.id, action: .reload)), "shown, it loads its page again")
+        XCTAssertFalse(firstTab.isDiscarded)
         XCTAssertTrue(client.tab(forSession: task.id) === firstTab)
         try draw(host, "background-tab-pressed", appearance)
         describe("Background tab 'Login — Dev' pressed", strip(in: host), notes: [

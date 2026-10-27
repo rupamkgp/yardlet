@@ -203,6 +203,9 @@ struct SidebarAccountMenuContext {
     var checksForUpdates = false
     /// Whether a refresh from the Claude app and Codex is running, read when the menu opens.
     var refreshing: () -> Bool = { false }
+    /// A staged build ready to install, for the strip over the button (`SidebarUpdateStrip`), read as
+    /// the sidebar draws, so the sidebar follows it.
+    var update: () -> MenuBarMenu.UpdateLine? = { nil }
     var onSelect: (SidebarAccountMenu.Destination) -> Void = { _ in }
 
     /// The menu as it is now.
@@ -405,5 +408,66 @@ struct SidebarAccountMark: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+/// "Restart to update" over the account button while a staged build is ready to install, as the
+/// Claude app puts "Relaunch to update" over its account button once an update has downloaded
+/// (`df-update-strip`: a filled pill as high as the footer button, the title in primary text at medium
+/// weight, an arrow at the end that darkens on hover, "Relaunch to update · v1.2.3" as its tooltip).
+/// It opens what Install Update… opens. While the update waits for tasks it reads "Waiting to Update"
+/// and does nothing, as the app menu's line does.
+struct SidebarUpdateStrip: View {
+    let line: MenuBarMenu.UpdateLine
+    let onRestart: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        if line == .waiting {
+            SidebarUpdateStripLabel(line: line)
+                .help(line.help)
+                .accessibilityElement(children: .combine)
+        } else {
+            Button(action: onRestart) {
+                SidebarUpdateStripLabel(line: line, isHovering: isHovering)
+            }
+            .buttonStyle(.plain)
+            .parityPointer()
+            .onHover { isHovering = $0 }
+            .help(line.help)
+        }
+    }
+}
+
+/// The strip's face: the title on the sidebar's hover fill, the selected fill under the pointer.
+struct SidebarUpdateStripLabel: View {
+    let line: MenuBarMenu.UpdateLine
+    var isHovering = false
+    @Environment(\.yardletInterfaceScale) private var interfaceScale
+
+    var body: some View {
+        let isWaiting = line == .waiting
+        HStack(spacing: 6) {
+            if isWaiting {
+                Image(systemName: "clock")
+                    .font(.system(size: 11 * interfaceScale, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            Text(line.title)
+                .font(.system(size: 13 * interfaceScale, weight: isWaiting ? .regular : .medium))
+                .foregroundStyle(isWaiting ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
+            if !isWaiting {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10 * interfaceScale, weight: .semibold))
+                    .foregroundStyle(isHovering ? .secondary : .tertiary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: SidebarAccountButton.height * interfaceScale)
+        .contentShape(Rectangle())
+        .background(isHovering ? ParityTheme.selectedFill : ParityTheme.hoverFill, in: SidebarMetrics.rowShape())
     }
 }

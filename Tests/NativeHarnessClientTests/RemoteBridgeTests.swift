@@ -139,14 +139,16 @@ final class RemoteBridgeTests: XCTestCase {
             harness: .claudeCode, status: .waitingForApproval, latestTurnIsComplete: false)
     }
 
-    func testAPlainApprovalOffersAllowOnceAndDenyAndASessionRuleStaysOnTheMac() {
-        func answers(_ actions: [PermissionRequestAction]) -> [RemoteApprovalAnswer] {
+    func testAPlainApprovalOffersAllowOnceTheSessionsAllowAndDenyAndAStandingRuleStaysOnTheMac() throws {
+        func pending(_ actions: [PermissionRequestAction]) -> ConversationRequest? {
             let request = PermissionRequest(id: "r", title: "Run", detail: nil, command: "ls", actions: actions)
             let presentation = TranscriptConversationProjection.presentation(
                 from: [TranscriptEntry(content: .user(text: "Go")), TranscriptEntry(content: .permission(request, state: .pending))],
                 harness: .openCode, status: .waitingForApproval, latestTurnIsComplete: false)
-            guard let pending = presentation.turns.last?.requests.first else { return [] }
-            return RemoteApprovalPolicy.answers(for: pending)
+            return presentation.turns.last?.requests.first
+        }
+        func answers(_ actions: [PermissionRequestAction]) -> [RemoteApprovalAnswer] {
+            pending(actions).map(RemoteApprovalPolicy.answers(for:)) ?? []
         }
         XCTAssertEqual(answers([]), [.allowOnce, .deny])
         XCTAssertEqual(answers([
@@ -157,6 +159,72 @@ final class RemoteBridgeTests: XCTestCase {
             PermissionRequestAction(id: "allow", label: "Allow", decision: .allow, kind: "allow_once"),
             PermissionRequestAction(id: "reject_always", label: "Never", decision: .deny, kind: "reject_always")
         ]), [.allowOnce], "A standing deny is a rule too")
+
+        // Claude Code's suggestion kept for the session joins them (§15.13); one saved to a file does not.
+        let session = [
+            PermissionRequestAction(id: "allow", label: "Allow", decision: .allow, kind: "allow_once"),
+            PermissionRequestAction(id: "allow_session", label: "Allow and switch to Accept edits mode for this session",
+                                    decision: .allow, kind: "allow_session"),
+            PermissionRequestAction(id: "deny", label: "Deny", decision: .deny, kind: "reject_once")
+        ]
+        XCTAssertEqual(answers(session), [.allowOnce, .allowForSession, .deny])
+        let item = RemoteConversationProjection.request(try XCTUnwrap(pending(session)), turnID: "t", inWork: false)
+        XCTAssertEqual(item.optionTitles?["allowForSession"], "Allow and switch to Accept edits mode for this session")
+        XCTAssertNil(item.moreOnMac)
+        XCTAssertEqual(item.forVersion1().options, ["allowOnce", "deny"], "A v1 phone never sees the session's allow")
+        XCTAssertEqual(item.forVersion1().moreOnMac, true)
+        XCTAssertNil(item.forVersion1().optionTitles)
+        let saved = [
+            PermissionRequestAction(id: "allow", label: "Allow", decision: .allow, kind: "allow_once"),
+            PermissionRequestAction(id: "allow_always", label: "Always allow in this project (saved to .claude/settings.local.json)",
+                                    decision: .allow, kind: "allow_always"),
+            PermissionRequestAction(id: "deny", label: "Deny", decision: .deny, kind: "reject_once")
+        ]
+        XCTAssertEqual(answers(saved), [.allowOnce, .deny])
+        let kept = RemoteConversationProjection.request(try XCTUnwrap(pending(saved)), turnID: "t", inWork: false)
+        // Every answer of the card, in its order and words, is a choice; the one saved to a file asks once more (§15.19).
+        XCTAssertEqual(kept.choices?.map(\.title), try XCTUnwrap(pending(saved)).responses.map(\.title))
+        XCTAssertEqual(kept.choices?.filter { $0.standing == true }.map(\.title),
+                       ["Always allow in this project (saved to .claude/settings.local.json)"])
+        XCTAssertEqual(item.choices?.contains { $0.standing == true }, false, "Allow for session ends with the task")
+        XCTAssertNil(kept.forVersion1().choices)
+        XCTAssertTrue(RemoteApprovalPolicy.leavesStandingRule(.codex(.mcpElicitation(action: .accept, meta: .object(["persist": .string("always")])))))
+        XCTAssertFalse(RemoteApprovalPolicy.leavesStandingRule(.codex(.mcpElicitation(action: .accept, meta: .object(["persist": .string("session")])))))
+        XCTAssertTrue(RemoteApprovalPolicy.leavesStandingRule(.codex(.command(.acceptWithExecpolicyAmendment(["swift", "test"])))))
+        XCTAssertFalse(RemoteApprovalPolicy.leavesStandingRule(.codex(.command(.acceptForSession))))
+        XCTAssertEqual(kept.moreOnMac, true)
+        XCTAssertEqual(kept.macNote, L10n.format("Only on the Mac: %@",
+                                                 "Always allow in this project (saved to .claude/settings.local.json)"))
+    }
+
+    func testANewTaskFromThePhoneOffersTheNewTaskScreensChoicesButNotThoseTheMacConfirms() {
+        // Claude Code launches in a permission mode; Bypass permissions asks first on the Mac, so the
+        // phone is not offered it (§15.16), and a createTask naming it finds no such choice.
+        let options = ComposerSessionOptionsProjection.newTask(harness: .claudeCode, choice: nil, catalogs: HarnessModelCatalogStore(),
+                                                               connection: nil, workspaceURL: nil)
+        let settings = AppModelRemoteBridge.settings(options)
+        let permission = settings.first { $0.id == ClaudeLaunchOption.permissionMode }
+        XCTAssertEqual(permission?.value, ClaudePermissionMode.manual)
+        XCTAssertTrue(permission?.choices.contains { $0.value == ClaudePermissionMode.plan } == true)
+        XCTAssertFalse(permission?.choices.contains { $0.value == ClaudePermissionMode.bypassPermissions } == true)
+        XCTAssertTrue(ClaudePermissionMode.selectable.contains(ClaudePermissionMode.bypassPermissions),
+                      "The Mac's own menu still offers it, after asking")
+    }
+
+    func testAPhonesFormValuesAreTheFormsOwnOrRefused() {
+        let form = CodexMCPElicitationForm(fields: [
+            .init(id: "count", title: "Count", description: nil, isRequired: true,
+                  kind: .number(isInteger: true, minimum: nil, maximum: nil), defaultValue: nil),
+            .init(id: "private", title: "Private", description: nil, isRequired: false, kind: .boolean, defaultValue: .flag(true))
+        ])
+        XCTAssertEqual(try? AppModelRemoteBridge.fieldValues(["count": .number(3), "private": .flag(false)], for: form).get(),
+                       ["count": .text("3"), "private": .flag(false)])
+        // A number too large for an integer does not stop Yardlet: the form's own check refuses it.
+        let huge = try? AppModelRemoteBridge.fieldValues(["count": .number(1e20)], for: form).get()
+        XCTAssertNotNil(huge.flatMap { form.issue(of: form.fields[0], in: $0) })
+        // A value of the wrong kind is refused, never replaced by the default.
+        XCTAssertNil(try? AppModelRemoteBridge.fieldValues(["private": .text("false")], for: form).get())
+        XCTAssertNil(try? AppModelRemoteBridge.fieldValues(["other": .flag(true)], for: form).get())
     }
 
     func testTheCodexTimelineFixtureProjectsWithUniqueIDsAndCappedText() throws {
@@ -183,7 +251,15 @@ final class RemoteBridgeTests: XCTestCase {
                 NotificationApprovalProjection.allowOnce(for: server)
             } else { nil }
             XCTAssertEqual(item.options?.contains("allowOnce"), allowOnce != nil, request.id)
+            // And the card's allow for the session on a command or file change, never more permissions (§15.13).
+            let sessionAllows: [ConversationRequestRoute] = [.codex(.command(.acceptForSession)),
+                                                            .codex(.fileChange(.acceptForSession)),
+                                                            .codex(.legacyReview(.approvedForSession))]
+            XCTAssertEqual(item.options?.contains("allowForSession"),
+                           request.responses.contains { sessionAllows.contains($0.route) }, request.id)
         }
+        XCTAssertTrue(items.contains { $0.options?.contains("allowForSession") == true },
+                      "The fixture's command approval offers Allow for session")
     }
 
     func testEveryFixtureConversationProjects() throws {
@@ -254,7 +330,30 @@ final class RemoteBridgeTests: XCTestCase {
         XCTAssertEqual(lastItems.last?.id, "queued:\(queued.id.uuidString)")
         XCTAssertEqual(lastItems.last?.queued, true)
         XCTAssertEqual(lastItems.last?.text, "Then update the changelog")
+        XCTAssertEqual(lastItems.last?.options, ["sendNow", "stopAndSend", "remove"], "The chip's actions (§15.15)")
         XCTAssertNil(bridge.conversation(of: UUID().uuidString))
+        XCTAssertNotNil(snapshot.followUp, "A Mac that takes §15.13–§15.18 always says what Return does")
+        XCTAssertEqual(snapshot.tasks.map(\.steers), [true, true, true])
+        XCTAssertEqual(snapshot.tasks.map(\.acceptsImages), [true, true, true])
+
+        // A tab the agent handed to the person is a wait on the phone, with the bar's two answers (§15.18).
+        model.browserHandoffWaits[child.id] = [BrowserHandoffWait(notice: "yardlet-handoff-1", tabKey: nil,
+                                                                  reason: "Sign in to GitHub")]
+        try await waitUntil { bridge.snapshot().tasks.first { $0.id == child.id.uuidString }?.attention == .waiting }
+        let handedOver = try XCTUnwrap(bridge.snapshot().tasks.first { $0.id == child.id.uuidString })
+        XCTAssertEqual(handedOver.pendingKind, "browserHandoff")
+        XCTAssertEqual(handedOver.pendingSummary, "Sign in to GitHub")
+        let handoff = try XCTUnwrap(bridge.conversation(of: child.id.uuidString)?.turns.last?.items.last)
+        XCTAssertEqual(handoff.requestKind, "browserHandoff")
+        XCTAssertEqual(handoff.options, ["done", "decline"])
+        let gone = await bridge.perform(.answerHandoff(taskID: child.id.uuidString, requestID: "yardlet-handoff-1", answer: .done))
+        XCTAssertEqual(gone?.code, .requestNotFound, "No tab, nothing to answer")
+        model.browserHandoffWaits[child.id] = nil
+
+        let removed = await bridge.perform(.actOnQueued(taskID: waiting.id.uuidString, itemID: "queued:\(queued.id.uuidString)",
+                                                        action: .remove))
+        XCTAssertNil(removed)
+        try await waitUntil { model.followUps.queue(for: waiting.id).isEmpty }
 
         // Marking read is the window's own call, and the change is told.
         let error = await bridge.perform(.markRead(taskID: unread.id.uuidString))
@@ -308,6 +407,19 @@ final class RemoteBridgeTests: XCTestCase {
         let decisions = await adapter.permissionDecisions
         XCTAssertEqual(decisions["bash-1"], .allow)
         XCTAssertTrue(model.transcriptBySessionID[session.id]?.contains { $0.content == .permission(permission, state: .allowed) } == true)
+
+        // A choice the card offers goes by its own route (§15.19).
+        let second = PermissionRequest(id: "bash-2", title: "Bash", detail: nil, command: "rm -rf build")
+        await adapter.emit(.permissionRequested(second), for: session.id, sequence: 4)
+        try await waitUntil { bridge.conversation(of: taskID)?.turns.last?.items.contains { $0.requestId == "bash-2" } == true }
+        let choices = try XCTUnwrap(bridge.conversation(of: taskID)?.turns.last?.items.last { $0.requestId == "bash-2" }?.choices)
+        let deny = try XCTUnwrap(choices.first { $0.role == "destructive" })
+        let wrong = await bridge.perform(.chooseAnswer(taskID: taskID, requestID: "bash-2", choice: "9"))?.code
+        XCTAssertEqual(wrong, .notAllowed)
+        let chosen = await bridge.perform(.chooseAnswer(taskID: taskID, requestID: "bash-2", choice: deny.id))
+        XCTAssertNil(chosen)
+        let denied = await adapter.permissionDecisions
+        XCTAssertEqual(denied["bash-2"], .deny)
 
         // Editing a message on the Mac: the phone's text is not taken as the edit.
         model.composerDrafts.tasks.draft(for: session.id).editState = ConversationEditState(

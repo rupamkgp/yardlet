@@ -7,8 +7,10 @@ in `relay/` implements §14. The design is in [REMOTE_V2_DESIGN](REMOTE_V2_DESIG
 A phone watches and drives the tasks running in Yardlet on the person's Mac: it lists projects and tasks
 with the sidebar's attention states, reads a task's conversation (latest first, older on scroll, live while
 it streams), sends a message to a task, answers a pending approval (allow once or deny), stops a running
-turn, and marks a task read. Protocol v2 adds answering questions and plan reviews, starting a task, and
-push notifications. Nothing else: no settings, accounts, files, diffs, terminals or connectors.
+turn, and marks a task read. Protocol v2 adds answering questions and plan reviews, starting a task (on a
+harness, model and worktree the phone picks), images, a line's output and diffs, suggested and queued messages,
+continuing a task a plan limit stopped under another account, answering a browser handoff, and push
+notifications. Nothing else: no settings, connectors, file browsing or terminals.
 
 **Two versions.**
 
@@ -613,6 +615,11 @@ Still protocol version 1: every revision only adds optional fields or states a r
   - §2, §3.2, §3.3, §4.1: `serverTime` on the `pair`, `hello` and `snapshot` responses, for clock skew.
 - 2026-10-24: protocol v2 (§11–§16) beside v1. v1 is unchanged on the wire; a v1 connection never sees
   the v2 answers in `options` (§15.12).
+- 2026-10-27, v2 only: allow for the session and a note with a denial (§15.13), images (§15.14, and phone
+  messages up to 8 MiB in §13.2), choosing steer or queue and the queue's actions (§15.15), choosing a new task's
+  harness, model, effort, permission mode and worktree (§15.16), continuing a task a plan limit stopped (§15.17),
+  and answering a browser handoff (§15.18). Later the same day: every answer the Mac's card gives, MCP forms and
+  secret answers (§15.19), and files in resumable parts (§15.20).
 
 ## 11. v2 transport
 
@@ -759,8 +766,9 @@ more Noise transport messages:
   byte (`0x01` the last chunk, `0x00` more follow) and the chunk; encrypted with the sender's cipher,
   empty associated data, one transport message per binary frame (≤ 65,535 bytes).
 - The receiver decrypts in order and joins the chunks. A message that fails to decrypt closes the
-  connection (4401). A message from the phone over 65,536 bytes closes it (1009); the Mac's messages can
-  be up to 8 MiB.
+  connection (4401). A message from the phone over 8 MiB closes it (1009), as do the Mac's over 8 MiB. Before
+  2026-10-27 a Mac closed a phone message over 65,536 bytes; a phone sends a larger one (images, §15.14) only to
+  a Mac that offers images.
 - Nonces start at 0 in each direction and grow by one per message (Noise).
 
 ### 13.3 Keepalive and closing
@@ -868,8 +876,9 @@ phone ask one of them to link (§12.1); it never carries tasks or conversations.
 - Projects carry `canCreateTask: true` where `createTask` may start one (projects with a folder, and
   Chats).
 - A waiting task carries `pendingSummary` (the newest request's line, as the `attention` event's `summary`)
-  and `pendingKind` (`approval`, `question`, `planReview`, `form`), so a list says what waits without opening
-  the task. v1 phones ignore them.
+  and `pendingKind` (`approval`, `question`, `planReview`, `form`, and since 2026-10-27 `browserHandoff`, §15.18),
+  so a list says what waits without opening the task. Since 2026-10-27 the `attention` event of a waiting task
+  (§5.2), and so its push (§16), carries the same `pendingKind` (not on a v1 connection). v1 phones ignore them.
 - `newTask` comes only with `snapshot`; a phone about to start a task asks for a `snapshot` again when it
   needs the Mac's current choice.
 
@@ -998,8 +1007,237 @@ As the sidebar's Pin and Archive. Commands. An archived task leaves the list (`r
 
 ### 15.12 On v1 connections
 
-The requests of §15.3–§15.11 get `unknownType`. Approval items sent to a v1 connection keep only `allowOnce` and
-`deny` in `options` and set `moreOnMac` when they dropped another answer.
+The requests of §15.3–§15.11 and §15.13–§15.20 get `unknownType`. Approval items sent to a v1 connection keep only
+`allowOnce` and `deny` in `options` and set `moreOnMac` when they dropped another answer. None of the fields
+§15.13–§15.20 add reach a v1 connection.
+
+The sections below were added on 2026-10-27 (REMOTE_V2_DESIGN 5.2). Each only adds optional fields and
+requests, so a phone learns what a Mac offers from the fields it sends: an older Mac never sends them, and a phone
+that does not know them ignores them.
+
+### 15.13 Approvals: for the session, and a note with a denial
+
+- `options` may also hold `allowForSession`: the narrowest allow the Mac's card offers that lasts for the rest of
+  the task's session (Codex's "Allow for session" on a command or file change; Claude Code's suggestion kept for
+  the session, which may switch its mode for the session too). Never an answer that writes a rule to a settings
+  file or a policy ("Always allow in this project", a Codex policy amendment), and never a Codex request for more
+  permissions (sandbox, network); those stay on the Mac.
+- `optionTitles: {"allowForSession": "Allow and switch to Accept edits mode for this session"}`: the card's own
+  words, in the Mac's language, for an option whose meaning depends on the provider. Show them; fall back to the
+  phone's words for an option without one.
+- `answerApproval` takes `"answer": "allowForSession"`. With `"answer": "deny"` it takes an optional `note`
+  (≤ 4,000 characters): what the agent should do instead. Claude Code reads it as the denial's message, as its own
+  "No, and tell Claude what to do differently", also when the request is a Claude Code subagent's the task runs;
+  every other harness gets the denial, then the note as the task's next message, as the Mac's composer sends one
+  (§15.15).
+- `macNote` on a pending request with `moreOnMac`: one line in the Mac's language naming what only the Mac's card
+  does, for example "“Always allow in this project (saved to .claude/settings.local.json)” is on the Mac", "This
+  question takes a secret answer. Answer it on the Mac.", "Fill in this form on the Mac." Show it in place of a
+  generic "more on the Mac".
+- Errors as §4.4; `tooLarge` for a longer note, `unsupportedCommand` for a note that is a slash command.
+
+### 15.14 Images
+
+- A task carries `acceptsImages: true` when a message to it can carry images (the Mac composer's own rule for its
+  harness and session). `newTaskOptions` (§15.16) says the same of each harness.
+- `sendMessage` and `createTask` take `images`:
+
+  ```json
+  {"id": "22", "type": "sendMessage", "taskId": "4C1F…", "text": "This is what the page looks like",
+   "images": [{"type": "image/jpeg", "data": "<base64>"}]}
+  ```
+
+  At most 4 images, each `image/jpeg` or `image/png` (the Mac checks the bytes, not the label) and at most
+  3 MiB decoded, the whole message within 8 MiB as JSON (base64 adds a third). With images, a message's `text`
+  may be empty; a new task still needs its first words, as on the Mac. The Mac writes each image where its composer writes a pasted
+  one (a private temporary folder) and sends the message with them, so the provider reads them as the Mac's own
+  attachments. They are not stored anywhere else and not sent back: the sent item has `imageCount`.
+- A phone message on v2 may be up to 8 MiB once joined (§13.2). Send images only to a Mac that offered them
+  (`acceptsImages`): an older Mac closes a phone message over 65,536 bytes (1009).
+- Errors: `notAllowed` (the task's harness takes no images), `tooLarge`, `badRequest` (not a JPEG or PNG image).
+
+### 15.15 Follow-ups while a turn runs
+
+- A task carries `steers: true` when a message sent while its turn runs can go into that turn now (Codex adds it
+  to the running turn; Claude Code reads it at its next step). Every other harness holds it until the turn ends.
+- The snapshot carries `followUp`: `"steer"` or `"queue"`, what Return does on the Mac while a turn runs
+  (Settings). A phone's own choice starts from it. A Mac from 2026-10-27 on always sends it on v2, so a phone
+  may read its presence as that Mac taking everything in §15.13–§15.18 (a denial's `note` above all, which an
+  older Mac would drop without a word).
+- `sendMessage` takes `followUp`: `"steer"` sends the message into the running turn, `"queue"` holds it until
+  the turn ends. Absent: the Mac's setting. No turn running: the message starts one either way.
+- Queued `user` items (§6.2) carry `options`, the queue chip's actions on the Mac: `sendNow` (send it into the
+  running turn now, without stopping it), `stopAndSend` (Claude Code: stop the turn for it), `remove`.
+
+  ```json
+  {"id": "23", "type": "actOnQueued", "taskId": "4C1F…", "itemId": "queued:8A3E…", "action": "sendNow"}
+  ```
+
+  A command. Errors: `notFound` (no such queued message), `notAllowed` (the action is not offered now), `busy`.
+
+### 15.16 Choosing what a new task runs on
+
+```json
+{"id": "24", "type": "newTaskOptions", "projectId": "6A1E…", "harness": "codex"}
+```
+
+```json
+{"re": "24", "ok": true, "harness": "codex", "harnessName": "Codex",
+ "harnesses": [{"harness": "codex", "harnessName": "Codex", "acceptsImages": true},
+               {"harness": "claude-code", "harnessName": "Claude Code", "acceptsImages": true}],
+ "settings": [{"id": "model", "name": "Model", "value": "gpt-6", "choices": [{"value": "gpt-6", "name": "GPT-6"}]},
+              {"id": "reasoningEffort", "name": "Reasoning effort", "value": "high",
+               "choices": [{"value": "medium", "name": "Medium"}, {"value": "high", "name": "High"}]}],
+ "worktree": false}
+```
+
+- `harness` (optional): the harness to describe; absent, the one the Mac's new-task composer has chosen.
+  `harnesses`: what that composer offers, in its order. `settings` (optional, as `createTask` takes them): the picks
+  made so far, so a setting that depends on another (an effort on its model) answers as it would after them; a pick
+  the menus do not offer is `notAllowed`.
+- `settings`: the new-task screen's model menu (model, effort) and, where the harness launches in one, its
+  permission mode, each with its value now and its choices. Choices the Mac asks to confirm (Bypass permissions,
+  full access) are left out. When the Mac has not read the harness's model list for this account yet it reads it
+  first, as opening the menu does (up to about 10 s); until then the menu holds only the value now.
+- `worktree`: present for a project in a Git repository, whether the Mac starts its tasks there in a new
+  worktree now.
+- `createTask` takes `harness`, `settings` (`{"model": "gpt-6", "reasoningEffort": "high"}`, ids and values from
+  this answer; the Mac applies them in the order its answer lists them, as picking them in its menus would),
+  `worktree` and `images` (§15.14). They apply to
+  this task only; the Mac's new-task composer keeps its own choices. Errors: `notAllowed` (a harness, setting or
+  value the Mac does not offer now).
+
+### 15.17 Plan limits
+
+- The `error` item with `errorKind` `usageLimit` (§6.7) on the latest turn of an idle task carries the limit
+  card's actions in `options`: `continueWithAccount` (another saved account shares the task's history) and
+  `autoContinue` (the task continues once the limit resets; Claude Code, when the limit names its reset), and
+  `autoContinue: true` while that is armed.
+- ```json
+  {"id": "25", "type": "limitAccounts", "taskId": "4C1F…"}
+  ```
+
+  ```json
+  {"re": "25", "ok": true, "taskId": "4C1F…",
+   "accounts": [{"id": "conn-2", "name": "work@example.test", "detail": "Claude Max",
+                 "usage": [{"label": "5-hour", "usedPercent": 12, "resetsAt": 1792170000000}],
+                 "available": true},
+                {"id": "conn-1", "name": "home@example.test", "detail": "Claude Pro", "current": true,
+                 "usage": [{"label": "5-hour", "usedPercent": 100, "resetsAt": 1792170000000}]}]}
+  ```
+
+  The card's account list: the task's account (`current`) and those that share its history, most limit left
+  first, each with its limit windows as the list shows them. `available`: the task may move to it now (not the
+  task's own, not signed out). The Mac first rereads the limits a check has not confirmed within the last minute,
+  as the list does when it opens (up to about 15 s).
+- `{"type": "continueWithAccount", "taskId": "4C1F…", "accountId": "conn-2"}`: the list's choice. The task moves
+  to that account and is asked to pick up where it stopped; nothing is sent unless the move completed. A command.
+  Errors: `notAllowed` (not an available account, or the card offers no action now), `busy`, `notFound`. When the
+  move fails afterwards, the error shows on the task as on the Mac.
+- `{"type": "setAutoContinue", "taskId": "4C1F…", "enabled": true}`: the card's "Auto-continue when limits reset".
+  A command. Errors: `notAllowed`.
+
+### 15.18 A browser tab handed to the person
+
+- While the agent waits on a tab it handed to the person (`browser_handoff`), the task is `waiting` with
+  `pendingRequest` `input` and `pendingKind` `browserHandoff`, and its latest turn ends with a pending `approval`
+  item, `requestKind` `browserHandoff`: `title` the site (host), `detail` the agent's reason, `options` `done` and
+  `decline`. The Mac's panel shows the tab with the same reason and the two buttons. This is the one wait the
+  Mac's sidebar does not mark (it shows the task running, and the panel's bar and a Mac notification say the
+  rest), so here `attention` is the phone's alone.
+- `{"type": "answerHandoff", "taskId": "4C1F…", "requestId": "…", "answer": "done"}`: the bar's "I'm done" or
+  "Decline". "Done" is for a step finished elsewhere (a sign-in approved in another app, a link opened on the
+  phone); the tab itself is not shown on the phone yet (REMOTE_V2_DESIGN 6.3). A command. Errors:
+  `requestNotFound`, `notAllowed`.
+- It is pushed (§16) like any other wait.
+
+### 15.19 Every answer the Mac's card gives
+
+Added later on 2026-10-27 (REMOTE_V2_DESIGN 5.3). A phone answers a request with the same choices the Mac's card
+shows, instead of the few §4.4 and §15.13 name.
+
+- A pending `approval` item without a question or plan form (`requestKind` `approval`, and `form` for an MCP form)
+  carries `choices`, the card's answers in its order:
+
+  ```json
+  "choices": [{"id": "0", "title": "Deny", "role": "destructive"},
+              {"id": "1", "title": "Always allow in this project (saved to .claude/settings.local.json)",
+               "role": "secondary", "standing": true},
+              {"id": "2", "title": "Allow once", "role": "primary"}]
+  ```
+
+  `title` is the card's words in the Mac's language; `role` is `primary` (the prominent answer), `secondary` or
+  `destructive` (a denial). `standing: true`: the answer leaves a rule beyond this task (a settings file, a policy,
+  an MCP tool allowed for good, an exec or network policy amendment). The phone asks once more before it sends one
+  (REMOTE_V2_DESIGN 5.3). The ids name the answers of this request only.
+- Answering:
+
+  ```json
+  {"id": "26", "type": "chooseAnswer", "taskId": "4C1F…", "requestId": "toolu_01…", "choice": "2"}
+  {"id": "27", "type": "chooseAnswer", "taskId": "4C1F…", "requestId": "toolu_01…", "choice": "0",
+   "note": "Run only the unit tests"}
+  ```
+
+  `note` goes with a `destructive` choice only, as §15.13's. A command. Errors: `requestNotFound`, `notAllowed`
+  (no such choice), `tooLarge`, `unsupportedCommand` (the note), `unavailable`.
+- An MCP form (`requestKind` `form` with `formFields`) is answered by a choice with `values`:
+
+  ```json
+  "formFields": [{"id": "repo", "label": "Repository", "type": "text", "required": true, "maxLength": 100},
+                 {"id": "private", "label": "Private", "type": "boolean", "default": true},
+                 {"id": "team", "label": "Team", "type": "choice",
+                  "options": [{"value": "web", "title": "Web"}, {"value": "ios", "title": "iOS"}]}]
+  ```
+
+  `type`: `text` (with `format` `email`, `uri`, `date` or `date-time`, `minLength`, `maxLength`), `number` or
+  `integer` (`minimum`, `maximum`), `boolean`, `choice` (one of `options`), `choices` (several, `minItems`,
+  `maxItems`). `default` is the field's value to start from. `{"type": "chooseAnswer", …, "choice": "1",
+  "values": {"repo": "acme/web", "private": true, "team": "web"}}`: the Mac checks the values as its card does and
+  answers `notAllowed` with the first problem in `message` ("Repository: Required") when one does not fit. A value
+  of the wrong kind for its field, or for no field, is refused the same way, never replaced by the field's default. The
+  form's item also keeps `moreOnMac` for phones that do not read `choices`.
+- A question step whose answer is a secret (`secret: true` in `questionSteps`) is answered on the phone as any other
+  step (§15.3). Such a question offers `answerSecret` in `options` instead of `answer`, with `moreOnMac` and a
+  `macNote`, so a phone from before 2026-10-27, which would show the value, still sends the person to the Mac. A
+  phone that reads `answerSecret` shows the field masked, keeps the value only until it is sent, and never stores or
+  logs it; the Mac sends it to the provider as its card does.
+- `moreOnMac` and `macNote` remain for a request with no choices: one Yardlet itself answers nothing for (its
+  `unanswerableReason`, in `macNote`). Steps that are not requests (Touch ID, a passkey or sign-in window, a macOS
+  permission prompt, a keychain prompt) are the Mac's, as before.
+- `options` (§6.5, §15.13) stays for phones that do not read `choices`.
+
+### 15.20 Files and photos from the camera
+
+Added later on 2026-10-27 (REMOTE_V2_DESIGN 5.3). Photos from the camera are images (§15.14). Any other file goes up
+in parts first, then a message or a new task names it.
+
+- A task carries `acceptsFiles: true` when a message to it can carry files; `newTaskOptions` says the same of each
+  harness (`acceptsFiles` beside `acceptsImages`).
+- ```json
+  {"id": "28", "type": "uploadFile", "uploadId": "<UUID>", "name": "report.pdf", "mediaType": "application/pdf",
+   "size": 5242880, "offset": 0, "data": "<base64 of up to 4 MiB>"}
+  ```
+
+  ```json
+  {"re": "28", "ok": true, "uploadId": "<UUID>", "received": 4194304}
+  ```
+
+  `uploadId` is the phone's own UUID for the file. The first part (`offset` 0) names the file (`name`, `mediaType`) and
+  its `size`, at most 500 MiB; a part takes the bytes at `offset` and the answer says how many the Mac holds. A part
+  at another offset than `received` adds nothing and gets the same answer, so after a dropped connection the phone
+  sends from `received` again. The Mac keeps an unfinished upload for 30 minutes after its last part, and a finished
+  one until a message takes it or 30 minutes pass; when Yardlet starts again it removes whatever no message took.
+  An `uploadId` is used once: a first part under an ID used before is refused. A part the Mac fails to write ends
+  the upload, and the phone starts the file again under a new ID. Not a command; at most 4 uploads open per device
+  (`busy`). Errors: `badRequest` (also a used ID), `tooLarge` (over 500 MiB, or the Mac's disk would keep less than
+  2 GB free), `notFound` (an unknown or expired upload at an offset after 0), `busy`.
+- `sendMessage` and `createTask` take `files: ["<uploadId>", …]`, at most 20, each finished and named once. The Mac writes each
+  file in a folder of its own under its temporary folder (never the task's folder), named as the phone named it
+  without any path, readable only by the person and never executable, and sends it as its composer sends a dropped
+  file: an image the harness can carry as an image, any other file as a reference to its path (Claude Code's `@`
+  path, a Codex mention). Nothing on the Mac opens or runs it. Errors: `notFound` (an upload that is not finished
+  or has expired), `notAllowed` (the harness takes no files).
+- Over the relay each part is ordinary encrypted chunks (§13.2): the relay sees only their size and timing.
 
 ## 16. Push notifications
 

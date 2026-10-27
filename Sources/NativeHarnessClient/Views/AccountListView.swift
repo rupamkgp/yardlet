@@ -18,6 +18,12 @@ struct AccountList: View {
     var onManage: (() -> Void)? = nil
     /// Closing the sheet the list is shown in.
     var onDone: (() -> Void)? = nil
+    /// Settings only: linking a saved Claude account's folder with the default folder, taking a
+    /// saved account off the list or signing it out and deleting it, and adding a folder found
+    /// with a login (`DiscoveredAccountHome`).
+    var onShare: ((ProviderConnection) -> Void)? = nil
+    var onRemove: ((ProviderConnection, AccountRemoval) -> Void)? = nil
+    var onAddFound: ((DiscoveredAccountHome) -> Void)? = nil
     /// Settings › Accounts' harness filter, and how harnesses are used for its default scope. Nil
     /// usage lists every available harness.
     var harnessFilter: Binding<HarnessKind?> = .constant(nil)
@@ -117,12 +123,25 @@ struct AccountList: View {
                 ForEach(groups) { group in
                     AccountListSection(group: group, mode: mode, store: store,
                         showsHarness: mode == .manage, onChoose: onChoose,
-                        onConnect: onConnect)
+                        onConnect: onConnect, onShare: onShare, onRemove: onRemove)
+                }
+                if let onAddFound, !found.isEmpty {
+                    DiscoveredAccountsSection(homes: found, onAdd: onAddFound)
                 }
             }
             .padding(.bottom, mode == .manage ? 16 : 0)
         }
         .frame(maxHeight: maxListHeight)
+    }
+
+    /// Folders with a login that are not saved accounts, for the harnesses and search the list shows.
+    private var found: [DiscoveredAccountHome] {
+        guard mode == .manage else { return [] }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.discoveredHomes.filter {
+            manageHarnesses.contains($0.harness)
+                && (query.isEmpty || ($0.title + " " + $0.subtitle).localizedCaseInsensitiveContains(query))
+        }
     }
 
     private func check(choices: [AccountChoice], policy: AccountCheckPolicy) async {
@@ -177,6 +196,8 @@ struct AccountListSection: View {
     var showsHarness = false
     let onChoose: (AccountChoice) -> Void
     var onConnect: ((AccountChoice) -> Void)? = nil
+    var onShare: ((ProviderConnection) -> Void)? = nil
+    var onRemove: ((ProviderConnection, AccountRemoval) -> Void)? = nil
 
     var body: some View {
         if group.choices.count == 1, let choice = group.choices.first {
@@ -211,7 +232,27 @@ struct AccountListSection: View {
             onConnect: onConnect.flatMap { connect in
                 AccountListProjection.offersConnect(choice, mode: mode) ? { connect(choice) } : nil
             },
-            onSetAutomaticAssignment: mode == .manage ? { store.setInAutomaticAssignment($0, for: choice) } : nil)
+            onSetAutomaticAssignment: mode == .manage ? { store.setInAutomaticAssignment($0, for: choice) } : nil,
+            onShare: sharing(choice),
+            onRemove: removals(choice))
+    }
+
+    /// A saved account can leave the list; one in a folder Yardlet made can also be signed out
+    /// and deleted. The default login keeps its own sign-out.
+    private func removals(_ choice: AccountChoice) -> [AccountRemoval: () -> Void] {
+        guard let onRemove, let connection = choice.connection else { return [:] }
+        var actions: [AccountRemoval: () -> Void] = [.fromList: { onRemove(connection, .fromList) }]
+        if store.canSignOutAndDelete(connection) {
+            actions[.signOutAndDelete] = { onRemove(connection, .signOutAndDelete) }
+        }
+        return actions
+    }
+
+    /// A saved Claude account whose conversations are not the default login's can be linked to it.
+    private func sharing(_ choice: AccountChoice) -> (() -> Void)? {
+        guard let onShare, let connection = choice.connection, choice.harness == .claudeCode,
+              !store.sharesConversationsWithDefaultLogin(choice) else { return nil }
+        return { onShare(connection) }
     }
 }
 
@@ -238,6 +279,9 @@ struct AccountRow: View {
     var onConnect: (() -> Void)? = nil
     /// The row's menu item that includes it in automatic assignment or leaves it out (Settings only).
     var onSetAutomaticAssignment: ((Bool) -> Void)? = nil
+    /// The row's menu items that link its folder with the default folder and remove the account.
+    var onShare: (() -> Void)? = nil
+    var onRemove: [AccountRemoval: () -> Void] = [:]
 
     var body: some View {
         HStack(spacing: 12) {
@@ -256,10 +300,18 @@ struct AccountRow: View {
                 Toggle(L10n.string("Include in Automatic Assignment"), isOn: Binding(
                     get: { automaticAssignment }, set: { onSetAutomaticAssignment($0) }))
             }
+            if let onShare { Button(L10n.string("Share With the Default Folder…"), action: onShare) }
+            if !onRemove.isEmpty { Divider() }
+            if let remove = onRemove[.fromList] { Button(L10n.string("Remove from List…"), action: remove) }
+            if let delete = onRemove[.signOutAndDelete] {
+                Button(L10n.string("Sign Out and Delete…"), role: .destructive, action: delete)
+            }
         }
     }
 
     private var title: String { style == .member ? memberTitle ?? choice.connectionTitle : choice.title }
+    /// The organization beside an account's address; a member row names its connection instead.
+    private var organization: String? { style == .member ? nil : choice.organizationTitle }
     private var subtitle: String { style == .member ? choice.subtitle : AccountListProjection.accountLine(choice) }
     /// Said only of an account that could otherwise be used: signed in, and left out.
     private var isExcludedFromAutomaticAssignment: Bool {
@@ -276,7 +328,7 @@ struct AccountRow: View {
                     HarnessLogoView(descriptor: descriptor, size: 24)
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    AccountTitleLine(title: title, organization: organization, weight: .medium)
                     Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                     if let freshness { AccountFreshnessLine(freshness: freshness) }
                     if isExcludedFromAutomaticAssignment {
@@ -290,7 +342,7 @@ struct AccountRow: View {
         // The row a task already runs under stays readable; it simply has nothing to do.
         .disabled(!canChoose && !selected)
         .allowsHitTesting(canChoose)
-        .accessibilityLabel(title + ", " + subtitle
+        .accessibilityLabel(title + (organization.map { ", " + $0 } ?? "") + ", " + subtitle
             + (isExcludedFromAutomaticAssignment ? ", " + L10n.string("Excluded from automatic assignment") : ""))
         .accessibilityValue(selected ? selectedValue : choice.status)
         .help(choice.snapshot?.detail ?? choice.status)
@@ -314,17 +366,19 @@ struct AccountRow: View {
 private struct AccountGroupHeader: View {
     let group: AccountGroup
     let freshness: AccountFreshness
+    private var organization: String? { group.choices.lazy.compactMap(\.organizationTitle).first }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(group.identity.displayLabel).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                AccountTitleLine(title: group.identity.displayLabel, organization: organization, weight: .semibold)
                 Text(AccountListProjection.groupLine(group)).font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(1)
                 AccountFreshnessLine(freshness: freshness)
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(group.identity.displayLabel + ", " + AccountListProjection.groupLine(group))
+                .accessibilityLabel(group.identity.displayLabel + (organization.map { ", " + $0 } ?? "") + ", "
+                    + AccountListProjection.groupLine(group))
             if group.usageBlocks.isEmpty {
                 Text(group.usageUnavailableText).font(.system(size: 11)).foregroundStyle(.secondary)
                     .frame(width: 190, alignment: .trailing)
@@ -337,6 +391,74 @@ private struct AccountGroupHeader: View {
             }
         }
         .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+    }
+}
+
+/// How a saved account leaves Settings › Accounts.
+enum AccountRemoval: Hashable {
+    /// Off Yardlet's list only; the login and its folder stay.
+    case fromList
+    /// Signed out by its CLI, then off the list with the folder Yardlet made in the Trash.
+    case signOutAndDelete
+}
+
+/// An account's address with its organization after it ("· Personal", "· Example Team"), so one
+/// address's two accounts read apart. In a narrow row the address shortens in the middle first,
+/// because the organization is what tells the two apart.
+struct AccountTitleLine: View {
+    let title: String
+    let organization: String?
+    var weight: Font.Weight = .medium
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title).lineLimit(1).truncationMode(organization == nil ? .tail : .middle)
+            if let organization {
+                Text("· " + organization).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+            }
+        }
+        .font(.system(size: 13, weight: weight))
+    }
+}
+
+/// Settings › Accounts' folders with a Claude or Codex login that are not saved accounts, each
+/// with where it was found and a button that adds it as it is (or, for a Claude folder whose
+/// conversations are apart, after showing what linking it would change).
+struct DiscoveredAccountsSection: View {
+    let homes: [DiscoveredAccountHome]
+    let onAdd: (DiscoveredAccountHome) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(L10n.string("Accounts You Can Add"))
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 4)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(homes) { home in
+                HStack(spacing: 12) {
+                    if let descriptor = HarnessCatalog.descriptor(for: home.harness) {
+                        HarnessLogoView(descriptor: descriptor, size: 24)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        AccountTitleLine(title: home.email ?? home.title,
+                                         organization: home.email == nil ? nil
+                                             : AccountIdentityProjection.organizationTitle(home.organization, of: home.email))
+                        Text(home.subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        if home.harness == .claudeCode, !home.sharesConversations {
+                            Text(L10n.string("Keeps its own conversation history"))
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    Button(L10n.string("Add")) { onAdd(home) }.controlSize(.small)
+                        .accessibilityLabel(L10n.format("Add %@", home.title))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .help(home.path)
+            }
+        }
     }
 }
 

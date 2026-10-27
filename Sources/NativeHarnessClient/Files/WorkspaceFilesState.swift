@@ -26,6 +26,8 @@ final class WorkspaceFilesState {
     var preferences: WorkspaceFilePreferences { didSet { if preferences != oldValue { onChange?() } } }
     private(set) var index = WorkspaceFileIndex(paths: [], isLimited: false)
     private(set) var document: WorkspaceFileDocument?
+    /// An image or a PDF the panel shows in place of text.
+    private(set) var media: WorkspaceFileMedia?
     private(set) var isIndexing = false
     private(set) var isLoading = false
     private(set) var isSaving = false
@@ -128,14 +130,16 @@ final class WorkspaceFilesState {
         if indexID == id { isIndexing = false }
     }
 
+    /// A file link the person clicked: a file outside the task's folder opens read-only.
     func open(_ url: URL, in workspace: URL) {
-        do { open(try WorkspaceFileLocation.resolve(url, in: workspace), in: workspace) }
+        do { open(try WorkspaceFileLocation.opening(url, in: workspace), in: workspace) }
         catch {
             loadTask?.cancel()
             loadID = UUID()
             preferences.selectedPath = nil
             requestedLocation = nil
             document = nil
+            media = nil
             fileError = error.localizedDescription
             isLoading = false
         }
@@ -151,6 +155,14 @@ final class WorkspaceFilesState {
         let id = UUID()
         loadID = id
         if refresh || document?.path != location.relativePath { document = nil }
+        // An image or a PDF shows as itself, whatever its bytes would read as.
+        if let media = WorkspaceFileMedia(WorkspaceFileLocation.url(for: location.relativePath, in: workspace)),
+           FileManager.default.fileExists(atPath: media.url.path(percentEncoded: false)) {
+            self.media = media
+            isLoading = false
+            return
+        }
+        media = nil
         isLoading = true
         let draft = preferences.drafts?[location.relativePath]
         loadTask = Task { [weak self] in
@@ -179,7 +191,7 @@ final class WorkspaceFilesState {
     }
 
     func restore(in workspace: URL) {
-        guard document == nil, !isLoading, let path = preferences.selectedPath else { return }
+        guard document == nil, media == nil, !isLoading, let path = preferences.selectedPath else { return }
         open(WorkspaceFileLocation(relativePath: path), in: workspace)
     }
 
@@ -188,6 +200,7 @@ final class WorkspaceFilesState {
         loadID = UUID()
         preferences.selectedPath = nil
         document = nil
+        media = nil
         fileError = nil
         isLoading = false
     }

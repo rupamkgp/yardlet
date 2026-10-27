@@ -6,6 +6,11 @@ import Foundation
 /// opens a profile on disk only in a direct child of its root cache); the vault's sign-ins stay shared.
 /// A new folder starts with the cookies of the task's parent, if it has a folder, else of the default
 /// profile. With shared storage every tab uses the default profile, as before.
+///
+/// Tasks follow the person's sign-ins (section 11): each site the person signs in to in a task's panel counts
+/// a sign-in, which the default profile and the tasks open then take in place of their cookies of that site,
+/// and every other task when its tab next opens. A site the task signed in to itself (its agent, or the person
+/// for it) stays the task's and follows nothing.
 @MainActor
 final class BrowserTaskProfiles {
     /// Settings › General "Keep cookies", as the Claude app's (`launchPreviewStorage`: per session or shared).
@@ -35,12 +40,33 @@ final class BrowserTaskProfiles {
     var parentOf: @MainActor (UUID) -> UUID? = { _ in nil }
 
     /// Saved in the root cache: tasks whose profile has another key (they took over the new-task
-    /// screen's tabs) and the key the new-task screen uses now.
+    /// screen's tabs), the key the new-task screen uses now, and the sign-ins tasks follow.
     private struct Saved: Codable {
         var aliases: [String: String] = [:]
         var draftKey: String?
+        var following: Following?
+    }
+
+    /// The person's sign-ins and which of them each profile holds, by profile key.
+    struct Following: Codable, Equatable {
+        /// Each site's count of the person's sign-ins since tasks began following them.
+        var signIns: [String: Int] = [:]
+        /// The sign-in of each site a profile holds; a site it has none of holds 0.
+        var received: [String: [String: Int]] = [:]
+        /// The profiles that started following: made since, or filled once from the default profile. Any other
+        /// predates following and has not opened since.
+        var followers: Set<String> = []
+        /// The sites each profile signed in to itself.
+        var own: [String: Set<String>] = [:]
+        /// The agents' earlier password manager fills were read into `own`, once.
+        var readAgentFills = false
     }
     private var saved: Saved
+
+    var following: Following {
+        get { saved.following ?? Following() }
+        set { saved.following = newValue }
+    }
 
     init(root: URL, defaults: UserDefaults = .yardlet) {
         self.root = root
@@ -77,7 +103,7 @@ final class BrowserTaskProfiles {
         FileManager.default.fileExists(atPath: folder(for: key).path(percentEncoded: false))
     }
 
-    /// What a tab of the task opens in; nil for the default profile (shared storage).
+    /// The profile a task's tabs use; nil for the default profile (shared storage).
     func profile(for session: UUID) -> BrowserTabProfile? {
         guard storage == .perTask else { return nil }
         let key = key(for: session)
@@ -87,6 +113,79 @@ final class BrowserTaskProfiles {
             if folderExists(parentKey) { seed = parentKey }
         }
         return BrowserTabProfile(key: key, seedFrom: seed)
+    }
+
+    /// What a tab of the task opens in, with the cookies it takes first: a new folder its seed's, then the person's
+    /// sign-ins it follows and has not yet; a folder that predates following, once, the default profile's sites it
+    /// has none of. From then on the profile counts as holding them.
+    func opening(for session: UUID) -> BrowserTabProfile? {
+        guard var profile = profile(for: session) else { return nil }
+        let key = profile.key
+        var following = following
+        if !folderExists(key) {
+            // The new folder holds what its seed holds: the default profile every sign-in, a parent task its own.
+            following.received[key] = profile.seedFrom.map { following.received[$0] ?? [:] } ?? following.signIns
+            following.own[key] = profile.seedFrom.flatMap { following.own[$0] }
+            following.followers.insert(key)
+        } else if !following.followers.contains(key) {
+            profile.fill = true
+            following.followers.insert(key)
+        }
+        let own = following.own[key] ?? []
+        let behind = following.signIns.filter { site, signIn in
+            !own.contains(site) && signIn > following.received[key]?[site] ?? 0
+        }
+        if !behind.isEmpty {
+            profile.follow = behind.keys.sorted()
+            following.received[key, default: [:]].merge(behind) { $1 }
+        }
+        if following != self.following {
+            self.following = following
+            save()
+        }
+        return profile
+    }
+
+    /// The person signed in to `site` in the task whose profile is `key`: another sign-in of the site, which goes to
+    /// the default profile (nil) and to each profile of `open` (tasks with tabs open) that follows the site. The
+    /// profiles to copy it to; none for a site the task signed in to itself, which stays its own.
+    func personSignedIn(to site: String, in key: String, open: Set<String>) -> [String?] {
+        var following = following
+        guard !(following.own[key]?.contains(site) ?? false) else { return [] }
+        let signIn = (following.signIns[site] ?? 0) + 1
+        following.signIns[site] = signIn
+        following.received[key, default: [:]][site] = signIn
+        var targets: [String?] = [nil]
+        for other in open.sorted() where other != key && !(following.own[other]?.contains(site) ?? false) {
+            following.received[other, default: [:]][site] = signIn
+            targets.append(other)
+        }
+        self.following = following
+        save()
+        return targets
+    }
+
+    /// The task signed in to `site` itself (its agent, or the person when the agent handed the page over): the site
+    /// stays the task's and follows none of the person's sign-ins.
+    func signedInItself(to site: String, in key: String) {
+        guard !(following.own[key]?.contains(site) ?? false) else { return }
+        following.own[key, default: []].insert(site)
+        save()
+    }
+
+    func isOwn(_ site: String, in key: String) -> Bool {
+        following.own[key]?.contains(site) ?? false
+    }
+
+    /// The agents' fills from the password manager before tasks followed sign-ins, once: each task's filled
+    /// sites become its own (`fills` gives each fill's task and site).
+    func adoptEarlierAgentFills(_ fills: () -> [(task: UUID, site: String)]) {
+        guard !following.readAgentFills else { return }
+        var following = following
+        following.readAgentFills = true
+        for fill in fills() { following.own[key(for: fill.task), default: []].insert(fill.site) }
+        self.following = following
+        save()
     }
 
     /// Tabs went from one task to another with their pages (the new-task screen's to the task it started):
@@ -105,6 +204,12 @@ final class BrowserTaskProfiles {
     func removeFolders(keeping tasks: Set<UUID>) -> [String] {
         let kept = Set(tasks.map(key(for:))).union([draftKey])
         saved.aliases = saved.aliases.filter { tasks.contains(UUID(uuidString: $0.key) ?? UUID()) }
+        if var following = saved.following {
+            following.received = following.received.filter { kept.contains($0.key) }
+            following.own = following.own.filter { kept.contains($0.key) }
+            following.followers = following.followers.intersection(kept)
+            saved.following = following
+        }
         save()
         // Only task profiles: the root cache also holds the default profile and Chromium's own folders.
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path(percentEncoded: false))) ?? []

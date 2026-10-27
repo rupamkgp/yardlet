@@ -60,6 +60,7 @@ struct ConnectorSettingsView: View {
             if !importDismissed, !suggestions.isEmpty {
                 ConnectorImportList(suggestions: suggestions, center: center,
                                     onSetUp: { preset in adding = .preset(preset) },
+                                    onReview: { draft in adding = .program(draft) },
                                     onDismiss: { importDismissed = true })
             }
 
@@ -397,7 +398,11 @@ private struct ConnectorRow: View {
         case .some:
             parts.append(L10n.string("On this Mac"))
         case nil:
-            if record.preset == nil { parts.append(record.serverURL.host() ?? record.serverURL.absoluteString) }
+            if let program = record.program {
+                parts.append(L10n.format("On this Mac · %@", program.summary))
+            } else if record.preset == nil {
+                parts.append(record.serverURL.host() ?? record.serverURL.absoluteString)
+            }
         }
         if case let .connected(tools) = state { parts.append(L10n.format("%lld tools", Int64(tools))) }
         if record.usesRegisteredClient { parts.append(L10n.string("Your OAuth client")) }
@@ -572,6 +577,10 @@ private struct ConnectorRow: View {
                         Button(L10n.string("Disconnect")) { center.disconnect(record.id) }
                     }
                 }
+                // A program stops and keeps what it starts with, for connecting again.
+                if record.program != nil {
+                    Button(L10n.string("Disconnect")) { center.disconnect(record.id) }
+                }
             }
             if record.isGoogle, let preset = record.preset {
                 Button(L10n.string("Google accounts and services…")) { onSetUp(preset) }
@@ -621,7 +630,10 @@ struct ConnectorImportList: View {
     let suggestions: [ConnectorImportSuggestion]
     let center: ConnectorCenter
     let onSetUp: (ConnectorPreset) -> Void
+    /// Opens a program's page with what its settings start, read from the file now.
+    var onReview: (ConnectorProgramDraft) -> Void = { _ in }
     let onDismiss: () -> Void
+    @State private var unreadable: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -635,7 +647,7 @@ struct ConnectorImportList: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(L10n.string("Found by name in your claude.ai accounts, Codex apps and plugins, and harness settings. Connect one here once and every harness and account gets it; the others stay as they are."))
+            Text(L10n.string("Found in your claude.ai accounts, Codex apps and plugins, harness settings, and the Claude app, Cursor, and VS Code. Connect one here once and every harness and account gets it; their settings stay as they are."))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -649,6 +661,9 @@ struct ConnectorImportList: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 10).stroke(ParityTheme.separator)
             }
+            if let unreadable {
+                Text(unreadable).font(.caption).foregroundStyle(.red)
+            }
         }
     }
 
@@ -657,7 +672,7 @@ struct ConnectorImportList: View {
             ConnectorIcon(name: suggestion.name, presetID: presetID(suggestion), size: 20)
             VStack(alignment: .leading, spacing: 1) {
                 Text(suggestion.name).font(.callout)
-                Text(suggestion.foundIn.joined(separator: ", "))
+                Text(([suggestion.foundIn.joined(separator: ", ")] + programDetail(suggestion)).joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -665,20 +680,44 @@ struct ConnectorImportList: View {
             }
             Spacer(minLength: 8)
             // One click for a service that signs in by itself; the setup assistant or the key's
-            // field for one that needs an app or a key first.
-            Button(L10n.string("Connect in Yardlet")) {
-                if suggestion.connectsInOneClick || (presetID(suggestion) == "github" && center.canSignInToGitHub) {
-                    connect(suggestion)
-                } else if case .preset(let preset) = suggestion.target {
-                    onSetUp(preset)
+            // field for one that needs an app or a key first; a program's page for a program.
+            if case .program(let name, let server, let home) = suggestion.target {
+                Button(L10n.string("Review…")) { review(name: name, server: server, home: home, place: suggestion.foundIn.first ?? "") }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.medium))
+            } else {
+                Button(L10n.string("Connect in Yardlet")) {
+                    if suggestion.connectsInOneClick || (presetID(suggestion) == "github" && center.canSignInToGitHub) {
+                        connect(suggestion)
+                    } else if case .preset(let preset) = suggestion.target {
+                        onSetUp(preset)
+                    }
                 }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.medium))
             }
-            .buttonStyle(.borderless)
-            .font(.caption.weight(.medium))
         }
         .padding(.vertical, 7)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(suggestion.name)
+    }
+
+    private func review(name: String, server: NativeMCPServer, home: NativeMCPHome, place: String) {
+        unreadable = nil
+        Task {
+            let launch = await Task.detached { NativeMCPLaunch.read(server, in: home) }.value
+            if let launch {
+                onReview(.imported(name: name, place: place, launch: launch))
+            } else {
+                unreadable = L10n.format("%@'s settings no longer have %@.", place, name)
+            }
+        }
+    }
+
+    /// What a program runs, by its program and package (`npx @example/notes-mcp`).
+    private func programDetail(_ suggestion: ConnectorImportSuggestion) -> [String] {
+        guard case .program(_, let server, _) = suggestion.target, !server.detail.isEmpty else { return [] }
+        return [server.detail]
     }
 
     private func presetID(_ suggestion: ConnectorImportSuggestion) -> String? {
@@ -689,7 +728,8 @@ struct ConnectorImportList: View {
     private func connect(_ suggestion: ConnectorImportSuggestion) {
         let preset: ConnectorPreset? = if case .preset(let preset) = suggestion.target { preset } else { nil }
         Task {
-            guard let record = try? await center.add(name: suggestion.name, serverURL: suggestion.serverURL, preset: preset)
+            guard let url = suggestion.serverURL,
+                  let record = try? await center.add(name: suggestion.name, serverURL: url, preset: preset)
             else { return }
             center.connect(record.id)
         }

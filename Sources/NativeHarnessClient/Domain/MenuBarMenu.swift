@@ -56,8 +56,34 @@ struct MenuBarMenu: Equatable, Sendable {
         var detail: String = ""
     }
 
+    /// A staged build ready to install (`YardletStagedUpdate`): one line before Quit, the sidebar's
+    /// strip over its account button too.
+    enum UpdateLine: Equatable, Sendable {
+        /// "Restart to update", the build in its help.
+        case ready(build: String?)
+        /// The update waits for tasks to finish, as the app menu's dimmed "Waiting to Update" says.
+        case waiting
+
+        var title: String {
+            switch self {
+            case .ready: L10n.string("Restart to update")
+            case .waiting: L10n.string("Waiting to Update")
+            }
+        }
+
+        /// The Claude app's strip says "Relaunch to update · v1.2.3"; a staged build has a commit
+        /// rather than a version.
+        var help: String {
+            switch self {
+            case let .ready(build): [title, build].compactMap { $0 }.joined(separator: " · ")
+            case .waiting: L10n.string("Yardlet installs the update and restarts once no task is running.")
+            }
+        }
+    }
+
     var sections: [Section] = []
     var usage: [UsageAccount] = []
+    var update: UpdateLine?
     /// The screen is kept unlocked while tasks work: the menu says so first, with a way to stop it.
     var keepsScreenAwake = false
     /// The setting is on, but a battery under 20% lets the screen lock: the menu says so first.

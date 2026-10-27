@@ -151,6 +151,12 @@ also offers **Restart When Tasks Finish**: Yardlet waits until no task has run f
 staged build is still the one chosen, and installs through the same quit; the Yardlet menu shows the wait and
 **Cancel Update** ends it.
 
+Yardlet shows a staged build without being asked, as the Claude app shows a downloaded update: **Restart to
+update** above the account button at the bottom of the sidebar, and the same line above Quit in the menu bar
+menu, both opening Install Update…. It looks when the window opens, when Yardlet comes to the front and once
+a minute, and only checks that the staged build is Yardlet's and not the one installed; the signature is
+checked when you install. A build that updates with Sparkle does not look.
+
 The bundle script uses SwiftPM's native build engine to retain its established resource layout.
 On toolchains that default to Swift Build, use `swift test --build-system native` for the same
 pipeline. Set `YARDLET_BUILD_SYSTEM` to override the engine used by the bundle script.

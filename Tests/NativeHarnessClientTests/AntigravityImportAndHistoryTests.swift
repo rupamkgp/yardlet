@@ -218,9 +218,9 @@ final class AntigravityImportAndHistoryTests: XCTestCase {
         XCTAssertEqual(listing.antigravity.map(\.providerSessionID), [Self.e, Self.a, Self.b])
         XCTAssertNil(listing.antigravityError)
         XCTAssertTrue(listing.all.contains { $0.providerSessionID == Self.b })
-        XCTAssertEqual(L10n.string("Conversations in the Claude and Codex apps and Antigravity CLI. Their history stays where it is.",
+        XCTAssertEqual(L10n.string("Conversations from the Claude and Codex apps, Claude Code and Codex run elsewhere, and Antigravity CLI. Their history stays where it is.",
                                    languageCode: "ko"),
-                       "Claude 앱과 Codex 앱, Antigravity CLI의 대화입니다. 기록은 원래 자리에 그대로 둡니다.")
+                       "Claude 앱과 Codex 앱, 그 밖에서 실행한 Claude Code·Codex, Antigravity CLI의 대화입니다. 기록은 원래 자리에 그대로 둡니다.")
     }
 
     /// The task's title is the one the CLI generated, read from the index.

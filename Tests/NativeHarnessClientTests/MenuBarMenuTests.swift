@@ -367,6 +367,28 @@ final class MenuBarMenuTests: XCTestCase {
         XCTAssertTrue(more.allSatisfy { $0.target === controller && $0.action != nil })
     }
 
+    /// A staged build ready to install adds "Restart to update" before Quit, which goes where Install
+    /// Update… goes; while the update waits for tasks the line is dimmed and does nothing.
+    func testAStagedBuildAddsRestartToUpdateBeforeQuit() throws {
+        var installs = 0
+        var actions = MenuBarMenuController.Actions()
+        actions.installUpdate = { installs += 1 }
+        let controller = MenuBarMenuController(content: { .empty }, actions: actions)
+        var menu = MenuBarMenu.empty
+        menu.update = .ready(build: "abc1234")
+        let items = controller.items(for: menu)
+        let restart = L10n.string("Restart to update")
+        XCTAssertEqual(describe(items), [newTask, "—", openYardlet, "—", restart, quitYardlet])
+        let line = try XCTUnwrap(items.first { $0.title == restart })
+        XCTAssertEqual(line.toolTip, "\(restart) · abc1234")
+        controller.chooseInstallUpdate(line)
+        XCTAssertEqual(installs, 1)
+
+        menu.update = .waiting
+        XCTAssertEqual(describe(controller.items(for: menu)),
+                       [newTask, "—", openYardlet, "—", "(\(L10n.string("Waiting to Update")))", quitYardlet])
+    }
+
     // MARK: - Choosing an item
 
     func testChoosingATaskOpensItAsANotificationClickDoesSplitPaneIncluded() async throws {

@@ -26,7 +26,26 @@ final class RemoteProtocolTests: XCTestCase {
             .answerQuestion(taskID: "T1", requestID: "q", answers: [RemoteQuestionAnswer(questionId: "a", options: ["Grid"]),
                                                                      RemoteQuestionAnswer(questionId: "b", skipped: true)]),
             .reviewPlan(taskID: "T1", requestID: "p", decision: .keepPlanning, reason: "Smaller steps"),
-            .createTask(projectID: "P", text: "Add a toggle"),
+            .createTask(RemoteTaskStart(projectID: "P", text: "Add a toggle")),
+            .createTask(RemoteTaskStart(projectID: "P", text: "", harness: "codex", settings: ["model": "gpt-6"], worktree: true,
+                                        images: [RemoteImage(type: "image/png", data: Data([0x89, 0x50, 0x4E, 0x47]))])),
+            .sendMessage(taskID: "T1", text: "Like this", images: [RemoteImage(type: "image/jpeg", data: Data([0xFF, 0xD8, 0xFF]))],
+                         followUp: .queue),
+            .answerApproval(taskID: "T1", requestID: "toolu_1", answer: .allowForSession),
+            .answerApproval(taskID: "T1", requestID: "toolu_1", answer: .deny, note: "Run only the unit tests"),
+            .newTaskOptions(projectID: "P", harness: nil),
+            .newTaskOptions(projectID: "P", harness: "antigravity-cli", settings: ["model": "gemini-3-pro"]),
+            .limitAccounts(taskID: "T1"),
+            .continueWithAccount(taskID: "T1", accountID: "conn-2"),
+            .setAutoContinue(taskID: "T1", enabled: true),
+            .actOnQueued(taskID: "T1", itemID: "queued:1", action: .stopAndSend),
+            .answerHandoff(taskID: "T1", requestID: "h", answer: .decline),
+            .chooseAnswer(taskID: "T1", requestID: "r", choice: "1"),
+            .chooseAnswer(taskID: "T1", requestID: "r", choice: "0", note: "Not now",
+                          values: ["repo": .text("acme/web"), "private": .flag(true), "count": .number(3), "teams": .list(["web"])]),
+            .uploadFile(RemoteUploadPart(uploadID: "6F9619FF-8B86-D011-B42D-00C04FC964FF", name: "a.pdf", mediaType: "application/pdf",
+                                         size: 3, offset: 0, data: Data([1, 2, 3]))),
+            .sendMessage(taskID: "T1", text: "", files: ["6F9619FF-8B86-D011-B42D-00C04FC964FF"]),
             .registerPush(provider: "fcm", token: "t"),
             .unregisterPush,
             .forgetDevice,
@@ -211,6 +230,44 @@ final class RemoteProtocolTests: XCTestCase {
     }
 
     // MARK: - Messages and limits
+
+    func testAFilesNameKeepsNoPathAndNoHiddenStart() {
+        XCTAssertEqual(RemoteUploadStore.safeName("../../etc/passwd"), "passwd")
+        XCTAssertEqual(RemoteUploadStore.safeName("C:\\Users\\me\\..\\report.pdf"), "report.pdf")
+        XCTAssertEqual(RemoteUploadStore.safeName(".zshrc"), "zshrc")
+        XCTAssertEqual(RemoteUploadStore.safeName("a:b\u{0007}.txt"), "ab.txt")
+        XCTAssertEqual(RemoteUploadStore.safeName("..."), "file")
+        let long = RemoteUploadStore.safeName(String(repeating: "x", count: 200) + ".pdf")
+        XCTAssertEqual(long.count, 120)
+        XCTAssertTrue(long.hasSuffix(".pdf"))
+        let combining = RemoteUploadStore.safeName("e" + String(repeating: "\u{0301}", count: 1_000) + ".txt")
+        XCTAssertLessThanOrEqual(combining.utf8.count, 200, "A file system name holds 255 bytes")
+        XCTAssertTrue(combining.hasSuffix(".txt"))
+    }
+
+    func testAnUploadIDIsNeverReusedAndWhatNoMessageTookGoesAtTheNextStart() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "remote-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var store = RemoteUploadStore(directory: directory)
+        let now = Date()
+        let taken = UUID().uuidString, left = UUID().uuidString
+        for id in [taken, left] {
+            XCTAssertEqual(try store.receive(RemoteUploadPart(uploadID: id, name: "a.txt", size: 2, offset: 0, data: Data("hi".utf8)),
+                                             from: "phone", now: now).get(), 2)
+        }
+        let file = try store.files([taken], from: "phone").get()[0]
+        XCTAssertEqual(store.files([taken], from: "other").map { _ in true }, .failure(RemoteError(.notFound, "An upload is not finished or has expired")))
+        store.release([taken])
+        // The same ID again, from any device, is refused and leaves the taken file alone.
+        let reuse = store.receive(RemoteUploadPart(uploadID: taken, name: "a.txt", size: 2, offset: 0, data: Data("no".utf8)),
+                                  from: "other", now: now)
+        XCTAssertEqual((try? reuse.get()), nil)
+        XCTAssertEqual(try String(contentsOf: file.url, encoding: .utf8), "hi")
+        // A new run keeps what a message took and removes the rest.
+        _ = RemoteUploadStore(directory: directory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: left).path))
+    }
 
     func testMessagesTheMacWouldNotSendAreRefused() {
         XCTAssertEqual(RemoteServer.validateMessage("   ")?.code, .emptyMessage)

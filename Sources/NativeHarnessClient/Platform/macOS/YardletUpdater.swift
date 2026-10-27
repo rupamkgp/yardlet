@@ -13,6 +13,13 @@ enum YardletUpdater {
         let hasUncommittedChanges: Bool
         let builtAt: Date?
         let executableDigest: String
+
+        /// The build as Install Update… names it: the commit, and "with uncommitted changes" when it was
+        /// built from a changed tree; nil when the manifest names neither.
+        var build: String? {
+            let words = [commit, hasUncommittedChanges ? L10n.string("with uncommitted changes") : nil].compactMap { $0 }
+            return words.isEmpty ? nil : words.joined(separator: " ")
+        }
     }
 
     enum Problem: LocalizedError, Equatable {
@@ -34,15 +41,17 @@ enum YardletUpdater {
             .appending(path: "Library/Application Support/Yardlet/Updates", directoryHint: .isDirectory)
     }
 
-    /// The staged build, if it belongs to this app and differs from the installed one.
-    static func pending(root: URL = rootURL, bundleIdentifier: String?, installedBundle: URL) throws -> Candidate {
+    /// The staged build, if it belongs to this app and differs from the installed one. `digests` reads
+    /// each executable's digest; a caller that looks again and again keeps one `ExecutableDigests`.
+    static func pending(root: URL = rootURL, bundleIdentifier: String?, installedBundle: URL,
+                        digests: ExecutableDigests = ExecutableDigests()) throws -> Candidate {
         let folder = root.appending(path: "Pending", directoryHint: .isDirectory)
         let bundle = folder.appending(path: "Yardlet.app", directoryHint: .isDirectory)
         guard let info = NSDictionary(contentsOf: bundle.appending(path: "Contents/Info.plist")) as? [String: Any]
         else { throw Problem.nothingStaged }
         guard let identifier = info["CFBundleIdentifier"] as? String, identifier == bundleIdentifier,
-              let digest = executableDigest(of: bundle) else { throw Problem.otherApp }
-        guard digest != executableDigest(of: installedBundle) else { throw Problem.alreadyInstalled }
+              let digest = digests.digest(of: bundle) else { throw Problem.otherApp }
+        guard digest != digests.digest(of: installedBundle) else { throw Problem.alreadyInstalled }
         let manifest = (try? Data(contentsOf: folder.appending(path: "manifest.json")))
             .flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
         return Candidate(bundleURL: bundle, commit: manifest?["commit"]?.stringValue,
@@ -126,12 +135,36 @@ enum YardletUpdater {
         return pid
     }
 
-    private static func executableDigest(of bundle: URL) -> String? {
-        guard let info = NSDictionary(contentsOf: bundle.appending(path: "Contents/Info.plist")) as? [String: Any],
-              let name = info["CFBundleExecutable"] as? String, !name.contains("/"),
-              let data = try? Data(contentsOf: bundle.appending(path: "Contents/MacOS/\(name)"), options: .mappedIfSafe)
-        else { return nil }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    /// SHA-256 of each bundle's executable, read again only when the file changes (another file
+    /// number, size or modification date). The staged build is moved into place whole, so a new one
+    /// is a new file; looking at an unchanged one reads its Info.plist and the file's attributes.
+    final class ExecutableDigests: @unchecked Sendable {
+        private struct Stamp: Equatable {
+            let device: Int
+            let file: Int
+            let size: Int
+            let modified: Date
+        }
+
+        private let lock = NSLock()
+        private var known: [String: (stamp: Stamp, digest: String)] = [:]
+
+        func digest(of bundle: URL) -> String? {
+            guard let info = NSDictionary(contentsOf: bundle.appending(path: "Contents/Info.plist")) as? [String: Any],
+                  let name = info["CFBundleExecutable"] as? String, !name.contains("/") else { return nil }
+            let executable = bundle.appending(path: "Contents/MacOS/\(name)")
+            let path = executable.path(percentEncoded: false)
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                  let device = attributes[.systemNumber] as? Int, let file = attributes[.systemFileNumber] as? Int,
+                  let size = attributes[.size] as? Int, let modified = attributes[.modificationDate] as? Date
+            else { return nil }
+            let stamp = Stamp(device: device, file: file, size: size, modified: modified)
+            if let entry = lock.withLock({ known[path] }), entry.stamp == stamp { return entry.digest }
+            guard let data = try? Data(contentsOf: executable, options: .mappedIfSafe) else { return nil }
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            lock.withLock { known[path] = (stamp, digest) }
+            return digest
+        }
     }
 
     static let installerScript = #"""

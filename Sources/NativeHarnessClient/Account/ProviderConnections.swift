@@ -164,8 +164,11 @@ extension TaskAccountSwitch {
 
 enum ProviderConnectionError: LocalizedError {
     case invalidBinding, unreadableStore, signedOut
+    /// The harness (named) could not sign an account out, so nothing was deleted.
+    case signOutFailed(String)
     var errorDescription: String? {
         switch self {
+        case .signOutFailed(let harness): L10n.format("%@ could not sign out, so nothing was deleted.", harness)
         case .invalidBinding: L10n.string("This account connection is not valid for the selected harness.")
         case .unreadableStore: L10n.string("Saved connections could not be read. Existing data has been preserved.")
         case .signedOut: L10n.string("This account is not signed in. Sign in from Accounts, then choose it again.")
@@ -239,6 +242,14 @@ final class ProviderConnectionStore {
     @ObservationIgnored private let assignmentDefaults: UserDefaults?
     /// The environment default logins are found in (`CLAUDE_CONFIG_DIR`); tests give their own.
     @ObservationIgnored var defaultLoginEnvironment = ProcessInfo.processInfo.environment
+    /// Where Yardlet makes the folders of accounts added with a new sign-in; tests give their own.
+    @ObservationIgnored var accountsRoot = CodexEnvironmentPaths.live().yardletRootURL.appending(path: "connections")
+    /// The home folder discovery looks in; tests give their own.
+    @ObservationIgnored var homeURL = FileManager.default.homeDirectoryForCurrentUser
+    /// Moves a deleted account's folder to the Trash; tests remove it instead.
+    @ObservationIgnored var moveToTrash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
+    /// Folders with a Claude or Codex login or history that are not saved accounts, as last found.
+    private(set) var discoveredHomes: [DiscoveredAccountHome] = []
     @ObservationIgnored private var readFailed = false
     @ObservationIgnored private var cache: AccountSnapshotCache
     /// The check running for each key; another request for the key waits for it.
@@ -386,6 +397,91 @@ final class ProviderConnectionStore {
         return connections.first { $0.id == id && $0.harness == harness }
     }
 
+    // MARK: - Account folders
+
+    /// The Claude config folder of the default login: the one other Claude folders share with.
+    var claudeDefaultHome: URL {
+        ClaudeSubagentTranscriptReader.configDirectory(connection: nil, environment: defaultLoginEnvironment, homeURL: homeURL)
+    }
+
+    var codexDefaultHome: URL {
+        codexEnvironmentManager?.paths.nativeHomeURL
+            ?? CodexEnvironmentPaths.live(environment: defaultLoginEnvironment, homeURL: homeURL).nativeHomeURL
+    }
+
+    /// Whether Yardlet made this account's folder for a new sign-in, so it may keep the folder's
+    /// links current and remove the folder with the account.
+    func isMadeByYardlet(_ connection: ProviderConnection) -> Bool {
+        guard let path = connection.homePath else { return false }
+        return Self.folder(URL(filePath: path)).hasPrefix(Self.folder(accountsRoot) + "/")
+    }
+
+    /// One spelling of a folder's path, to compare two spellings of one folder.
+    private static func folder(_ url: URL) -> String { ProjectSidebarPresentation.normalizedPath(for: url) }
+
+    /// Makes the folder for an account added with a new sign-in. A Claude folder shares everything
+    /// but its login with the default folder (`ClaudeAccountHome`), as Session Switch's do.
+    func makeAccountHome(for harness: HarnessKind) throws -> URL {
+        let home = accountsRoot.appending(path: UUID().uuidString).appending(path: harness.rawValue)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        if harness == .claudeCode { try ClaudeAccountHome.prepareNewHome(home, primary: claudeDefaultHome) }
+        return home
+    }
+
+    /// What sharing a Claude account's folder with the default folder would change; nil for other
+    /// accounts.
+    func sharingPlan(for connection: ProviderConnection) -> ClaudeAccountHome.Plan? {
+        guard connection.harness == .claudeCode, let path = connection.homePath else { return nil }
+        return ClaudeAccountHome.plan(home: URL(filePath: path), primary: claudeDefaultHome)
+    }
+
+    /// Makes the links the person approved in a sharing plan.
+    func share(_ connection: ProviderConnection, plan: ClaudeAccountHome.Plan) throws {
+        guard connection.harness == .claudeCode, let path = connection.homePath else { return }
+        try ClaudeAccountHome.apply(plan, home: URL(filePath: path), primary: claudeDefaultHome)
+    }
+
+    /// Looks again for folders with a login or history that are not saved accounts.
+    func findUnsavedAccountHomes() async {
+        #if DEBUG
+        guard !usesFixtureSnapshots else { return }
+        #endif
+        let saved = connections
+        let defaults: [HarnessKind: URL] = [.claudeCode: claudeDefaultHome, .codex: codexDefaultHome]
+        let environment = defaultLoginEnvironment
+        let home = homeURL
+        let found = await Task.detached(priority: .utility) {
+            AccountHomeDiscovery.find(saved: saved, defaults: defaults, environment: environment, homeURL: home)
+        }.value
+        // An account saved meanwhile is no longer one to add.
+        let savedPaths = Set(connections.compactMap { $0.homePath.map { Self.folder(URL(filePath: $0)) } })
+        discoveredHomes = found.filter { !savedPaths.contains($0.path) }
+    }
+
+    /// The accounts a conversation can be imported under: those that can be chosen, then the found
+    /// folders of the harness, named as found (importing under one saves it, `saveIfFound`).
+    func importChoices(for harness: HarnessKind) -> [AccountChoice] {
+        choices(for: [harness]).filter(\.canSelect) + discoveredHomes.filter { $0.harness == harness }.map {
+            AccountChoice(harness: harness, connection: $0.connection, snapshot: nil,
+                          knownLabel: L10n.format("%@ (folder found)", $0.title))
+        }
+    }
+
+    /// Saves the found folder a conversation is being imported under, so the task's account is one
+    /// the account lists show. Any other connection is left as it is.
+    func saveIfFound(_ connection: ProviderConnection?) throws {
+        guard let connection, let found = discoveredHomes.first(where: { $0.connection.id == connection.id }) else { return }
+        try add(found)
+    }
+
+    /// Saves a found folder as an account, as it is.
+    @discardableResult
+    func add(_ found: DiscoveredAccountHome) throws -> ProviderConnection {
+        try save(found.connection)
+        return found.connection
+    }
+
     func add(name: String, harness: HarnessKind, home: URL, providerID: String? = nil) throws -> ProviderConnection {
         let connection = ProviderConnection(id: UUID().uuidString, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             harness: harness, providerID: providerID, homePath: home.standardizedFileURL.path, credentialSelector: nil)
@@ -401,6 +497,67 @@ final class ProviderConnectionStore {
         if let fileURL { try Self.write(updated, to: fileURL) }
         connections = updated
         errorMessage = nil
+        // A folder saved by any route is no longer one to add.
+        if let path = connection.homePath.map({ Self.folder(URL(filePath: $0)) }) {
+            discoveredHomes.removeAll { $0.harness == connection.harness && $0.path == path }
+        }
+    }
+
+    // MARK: - Removing
+
+    /// The command that signs a harness's own login out of an account folder without asking.
+    private static let signOutArguments: [HarnessKind: [String]] = [.claudeCode: ["auth", "logout"], .codex: ["logout"]]
+
+    /// Takes a saved account off Yardlet's list: its record, its remembered reading, the new-task
+    /// choice and its automatic-assignment answer. The login and its folder stay, and tasks keep
+    /// their own copy of the binding, so they go on in that folder under the same storage scope.
+    func remove(_ connection: ProviderConnection) throws {
+        guard !readFailed else { throw ProviderConnectionError.unreadableStore }
+        let remaining = connections.filter { $0.id != connection.id }
+        if let fileURL { try Self.write(remaining, to: fileURL) }
+        connections = remaining
+        supersede(connection.id)
+        snapshots[connection.id] = nil
+        readingStatus[connection.id] = nil
+        confirmedAt[connection.id] = nil
+        cache.forget(connection.id)
+        if selection[connection.harness] == connection.id { selection[connection.harness] = nil }
+        if automaticAssignment.removeValue(forKey: connection.id) != nil {
+            if automaticAssignment.isEmpty { assignmentDefaults?.removeObject(forKey: Self.automaticAssignmentKey) }
+            else { assignmentDefaults?.set(automaticAssignment, forKey: Self.automaticAssignmentKey) }
+        }
+    }
+
+    /// Whether deleting the account's folder leaves its conversations where they are: a Claude
+    /// folder whose `projects` is the default login's.
+    func keepsConversationsInDefaultFolder(_ connection: ProviderConnection) -> Bool {
+        connection.harness == .claudeCode
+            && ClaudeConversationStorage.isShared(connection, nil, environment: defaultLoginEnvironment)
+    }
+
+    /// Whether the account's folder is one Yardlet made for a sign-in and can sign out and delete:
+    /// `<accountsRoot>/<UUID>/<harness>` of a harness whose CLI signs out without asking.
+    func canSignOutAndDelete(_ connection: ProviderConnection) -> Bool {
+        guard Self.signOutArguments[connection.harness] != nil, isMadeByYardlet(connection),
+              let path = connection.homePath else { return false }
+        return Self.folder(URL(filePath: path).deletingLastPathComponent().deletingLastPathComponent())
+            == Self.folder(accountsRoot)
+    }
+
+    /// Signs a Yardlet-made account out with its own CLI, then takes it off the list, removes the
+    /// links in its folder (so nothing the folder shares can be reached) and moves the folder to
+    /// the Trash. When the CLI cannot sign out, nothing changes.
+    func signOutAndDelete(_ connection: ProviderConnection, executableURL: URL?) async throws {
+        guard canSignOutAndDelete(connection), let path = connection.homePath,
+              let arguments = Self.signOutArguments[connection.harness] else { throw ProviderConnectionError.invalidBinding }
+        guard let executableURL,
+              let result = try? await AccountCommandRunner.run(executableURL: executableURL, arguments: arguments,
+                  environment: connection.environment, timeout: .seconds(30)),
+              result.exitCode == 0 else { throw ProviderConnectionError.signOutFailed(connection.harness.displayName) }
+        try remove(connection)
+        let home = URL(filePath: path)
+        try ClaudeAccountHome.unlinkShared(home: home)
+        try moveToTrash(home.deletingLastPathComponent())
     }
 
     private static func write(_ connections: [ProviderConnection], to fileURL: URL) throws {
@@ -451,6 +608,11 @@ final class ProviderConnectionStore {
     /// them at a limit. Session Switch's Claude folders share `~/.claude/projects`; a Codex login in
     /// another `CODEX_HOME` keeps its own history, so it stays out until the person includes it.
     func isInAutomaticAssignmentByDefault(_ choice: AccountChoice) -> Bool {
+        sharesConversationsWithDefaultLogin(choice)
+    }
+
+    /// Whether an account keeps its conversations where the harness's default login does.
+    func sharesConversationsWithDefaultLogin(_ choice: AccountChoice) -> Bool {
         TaskAccountSwitch.sharesConversations(choice.connection, nil, harness: choice.harness,
                                               environment: defaultLoginEnvironment)
     }
@@ -620,6 +782,14 @@ final class ProviderConnectionStore {
 
     private func read(_ connection: ProviderConnection, executableURL: URL?) async -> HarnessAccountSnapshot {
         if let connectionLoader { return await connectionLoader(connection, executableURL) }
+        // A folder Yardlet made in the shared shape links what the default folder gained since, as
+        // Session Switch prepares its folders before each launch. Only missing links and empty
+        // folders change. A folder made before keeps its own history and changes only when the
+        // person shares it.
+        if connection.harness == .claudeCode, isMadeByYardlet(connection), let plan = sharingPlan(for: connection),
+           plan.hasChanges, plan.sharesConversations {
+            try? share(connection, plan: plan)
+        }
         return await ProviderConnectionService.snapshot(connection, executableURL: executableURL)
     }
 

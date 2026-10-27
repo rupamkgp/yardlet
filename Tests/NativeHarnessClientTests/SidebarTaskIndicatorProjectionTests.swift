@@ -112,9 +112,13 @@ final class SidebarTaskIndicatorProjectionTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            [SidebarTaskStatus.unread, .reconnecting, .running, .usageLimit(limit), .failed(message: nil), .needsInput,
-             .awaitingApproval].map(\.urgency),
-            [6, 5, 4, 3, 2, 1, 0])
+            [SidebarTaskStatus.unread, .reconnecting, .running, .usageLimit(limit), .failed(message: nil), .waitingInBrowser,
+             .needsInput, .awaitingApproval].map(\.urgency),
+            [7, 6, 5, 4, 3, 2, 1, 0])
+        // A tab of the task's browser waiting on the person (a passkey, a dialog) shows whatever the turn does.
+        XCTAssertEqual(SidebarTaskIndicatorProjection.status(
+            of: idle, detail: TaskAttentionDetail(browserWait: BrowserPersonWait(kind: .passkey, id: "window-1"))),
+                       .waitingInBrowser)
         XCTAssertEqual(summary([idle, unread, running, limited, failed, question, approval]), .awaitingApproval)
         XCTAssertEqual(summary([idle, unread, running, limited, failed, question]), .needsInput)
         XCTAssertEqual(summary([idle, unread, running, limited, failed]), .failed(message: nil))

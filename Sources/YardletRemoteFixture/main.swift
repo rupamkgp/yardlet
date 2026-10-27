@@ -47,9 +47,12 @@ let identity = try RemoteIdentity(noisePrivateKey: fixtureKey("yardlet-fixture-n
                                   relayPrivateKey: fixtureKey("yardlet-fixture-relay"))
 
 let bridge = RemoteFixtureBridge()
+var configuration = RemoteServer.Configuration(server: RemoteServerInfo(name: "Yardlet fixture", appVersion: "fixture"),
+                                               macKey: identity.noise.publicKey)
+// Files a phone sends stay in this run's own folder, apart from the app's (§15.20).
+configuration.uploadDirectory = folder.appending(path: "uploads", directoryHint: .isDirectory)
 let server = RemoteServer(
-    configuration: RemoteServer.Configuration(server: RemoteServerInfo(name: "Yardlet fixture", appVersion: "fixture"),
-                                              macKey: identity.noise.publicKey),
+    configuration: configuration,
     bridge: bridge,
     devices: RemoteDeviceStore(fileURL: nil, devices: [seeded]),
     audit: RemoteAuditLog(fileURL: folder.appending(path: "audit.log"))

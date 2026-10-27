@@ -35,10 +35,16 @@ final class BrowserHostIsolationQA {
         webauthn["touchid"] = ["metadata_secret": Self.passkeyKey]
         preferences["webauthn"] = webauthn
         try? JSONSerialization.data(withJSONObject: preferences).write(to: defaultPreferences)
-        // `--ui-fixture-isolation-cookies` runs only the check that copied cookies stay as Chromium stored them.
+        // `--ui-fixture-isolation-cookies` runs only the check that copied cookies stay as Chromium stored them, and
+        // `--ui-fixture-isolation-follow` only the checks of the sign-ins tasks follow.
         if CommandLine.arguments.contains("--ui-fixture-isolation-cookies") {
             record["storage"] = .string(profiles.storage.rawValue)
             await copiesCookiesAsStored()
+            return await finish()
+        }
+        if CommandLine.arguments.contains("--ui-fixture-isolation-follow") {
+            record["storage"] = .string(profiles.storage.rawValue)
+            await followsSignIns()
             return await finish()
         }
         // `--ui-fixture-isolation-shared` measures the same tabs in the one default profile, for comparison.
@@ -87,14 +93,15 @@ final class BrowserHostIsolationQA {
         let cookieC = await cookies(tabC)
         check("a child task starts with its parent task's cookies", cookieC.contains("who=A"), cookieC)
 
-        // The person signed in on task B's page: that site's cookies go to the default profile; a task started
-        // after that begins with them, and task A keeps its own.
-        client.copyCookies(fromSession: b, toDefaultFor: "localhost")
+        // The person signed in on task B's page: that site's cookies go to the default profile and the running tasks
+        // that follow it, in place of theirs; a task started after that begins with them
+        // (docs/BROWSER_SESSION_ISOLATION.md 11).
+        MacBrowserHost.shared.loginFollow.signedIn(session: b, site: "localhost")
         try? await Task.sleep(for: .seconds(2))
         guard let tabD = await taskTab(d, page) else { return await finish() }
-        let cookieD = await cookies(tabD), stillA = await cookies(tabA)
-        check("a person's sign-in reaches the default profile and the tasks started after it, not the running ones",
-              cookieD.contains("who=B") && stillA.contains("who=A") && !stillA.contains("who=B"), "D \(cookieD) / A \(stillA)")
+        let cookieD = await cookies(tabD), nowA = await cookies(tabA)
+        check("a person's sign-in reaches the default profile, the running tasks and the tasks started after it",
+              cookieD.contains("who=B") && nowA.contains("who=B") && !nowA.contains("who=A"), "D \(cookieD) / A \(nowA)")
 
         let taskPreferences = (try? Data(contentsOf: profiles.folder(for: profiles.key(for: a)).appending(path: "Preferences")))
             .flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
@@ -123,7 +130,7 @@ final class BrowserHostIsolationQA {
         if let againA = await taskTab(a, page) {
             let cookie = await cookies(againA), store = await value(againA, "localStorage.getItem('who')")
             check("a task's profile keeps its cookies and local storage across host restarts",
-                  cookie.contains("who=A") && cookie.contains("visit=A") && !cookie.contains("who=B") && store == .string("A"),
+                  cookie.contains("who=B") && cookie.contains("visit=A") && store == .string("A"),
                   "A \(cookie) \(String(describing: store))")
         }
 
@@ -138,6 +145,7 @@ final class BrowserHostIsolationQA {
         profiles.storage = .perTask
 
         await copiesCookiesAsStored()
+        await followsSignIns()
 
         // Archived and deleted tasks' profiles go once the host has let them go.
         for task in [a, shared] { client.closeTabs(forSession: task) }
@@ -194,7 +202,8 @@ final class BrowserHostIsolationQA {
             framed.close()
         }
         let e = UUID()
-        if let tabE = await taskTab(e, verify) {
+        let tabE = await taskTab(e, verify)
+        if let tabE {
             let copied = await value(tabE, "window.qa.cookieCheck")
             check("cookie check: a new task signs in across two sites with the cookies it started with",
                   copied?["status"]?.stringValue == "ok", Self.describe(copied))
@@ -273,17 +282,198 @@ final class BrowserHostIsolationQA {
         _ = try? await tabF.devTools.send("Network.setCookies", ["cookies": .array([
             cookie("qa_signin", "B"), cookie("__Host-qa_signin", "B")
         ])])
-        client.copyCookies(fromSession: f, toDefaultFor: "example.com")
+        MacBrowserHost.shared.loginFollow.signedIn(session: f, site: "example.com")
         try? await Task.sleep(for: .seconds(2))
         let g = UUID()
         let fromDefault = await sentCookies(home, accounts)
+        let fromE = await sentCookies(tabE ?? home, accounts)
         var fromG: [String: [String]] = [:]
         if let tabG = await taskTab(g, base + "isolation") { fromG = await sentCookies(tabG, accounts) }
-        check("cookies: a person's sign-in copied to the default profile replaces its sign-in cookies and the copied domain cookie beside them, in later tasks too",
-              signIn.allSatisfy { fromDefault[$0] == ["B"] && fromG[$0] == ["B"] },
-              "default \(fromDefault) / later task \(fromG)")
+        check("cookies: a person's sign-in copied to the default profile replaces its sign-in cookies and the copied domain cookie beside them, in running and later tasks too",
+              tabE != nil && signIn.allSatisfy { fromDefault[$0] == ["B"] && fromE[$0] == ["B"] && fromG[$0] == ["B"] },
+              "default \(fromDefault) / running task \(fromE) / later task \(fromG)")
         for task in [e, f, g] { client.closeTabs(forSession: task) }
         home.close()
+    }
+
+    // MARK: Sign-ins tasks follow
+
+    /// The person's sign-ins reach every task that follows the site, a task's own sign-in stays its own, and a task
+    /// that predates following keeps its cookies (docs/BROWSER_SESSION_ISOLATION.md 11). The QA server's
+    /// `/follow/signin` (localhost) has a password form and a "Sign in with QA" link through another site
+    /// (127.0.0.1, whose page waits for a click like an account chooser) back to `/follow/callback`; both set
+    /// `qa_follow`. The person clicks through the host's input as a panel does; the agent acts through DevTools and
+    /// reports its use, as its tools do.
+    private func followsSignIns() async {
+        let signIn = base + "follow/signin", home = base + "follow/home"
+        let site = "localhost"
+        let follow = MacBrowserHost.shared.loginFollow
+        guard let start = try? client.openTab(url: signIn, viewport: .offscreenDefault), await loaded(start, signIn) else {
+            return check("follow: the default profile's page loads", false, "no tab")
+        }
+        // An earlier run's sign-in in the default profile would be what new tasks start with.
+        for name in ["qa_follow", "qa_rotate", "qa_pre"] {
+            for domain in ["localhost", "127.0.0.1"] {
+                _ = try? await start.devTools.send("Network.deleteCookies", ["name": .string(name), "domain": .string(domain)])
+            }
+        }
+        // The QA home may hold an earlier run's sign-ins: this run counts its own.
+        let earlier = profiles.following.signIns[site] ?? 0
+        let signIns = { (self.profiles.following.signIns[site] ?? 0) - earlier }
+        let p = UUID(), f = UUID(), g = UUID()
+        guard let tabP = await taskTab(p, signIn), let tabF = await taskTab(f, signIn), let tabG = await taskTab(g, signIn) else {
+            return
+        }
+
+        // The agent signs in on task G with an account of its own: the site becomes G's.
+        client.noteAgentActivity(on: tabG)
+        _ = await value(tabG, "document.querySelector('#password').focus(); 1")
+        try? await Task.sleep(for: .seconds(1))
+        client.noteAgentActivity(on: tabG)
+        _ = await value(tabG, "document.querySelector('#user').value = 'AGENT'; document.querySelector('#password').value = 'x'; "
+                        + "document.querySelector('form').submit(); 1")
+        _ = await waitUntil(.seconds(10)) { tabG.currentURL == home && !tabG.isLoading }
+        let ownG = await waitUntil(.seconds(8)) { self.profiles.isOwn(site, in: self.profiles.key(for: g)) }
+        var sentG = await sentCookies(tabG, signIn), sentF = await sentCookies(tabF, signIn)
+        check("follow: the agent's password sign-in stays its task's own, not the person's",
+              ownG && signIns() == 0 && sentG["qa_follow"] == ["AGENT"] && sentF["qa_follow"] == nil,
+              "own \(ownG), sign-ins \(signIns()), G \(sentG), F \(sentF)")
+
+        // The person signs in with a password on task P's page: task F, open all along, and the default profile take it;
+        // G keeps its own.
+        await personClick(tabP, "#password")
+        try? await Task.sleep(for: .seconds(1))
+        _ = await value(tabP, "document.querySelector('#user').value = 'PERSON'; document.querySelector('#password').value = 'x'; 1")
+        await personClick(tabP, "#go")
+        _ = await waitUntil(.seconds(10)) { tabP.currentURL == home && !tabP.isLoading }
+        _ = await waitUntil(.seconds(8)) { signIns() == 1 }
+        try? await Task.sleep(for: .seconds(2))
+        sentF = await sentCookies(tabF, signIn)
+        sentG = await sentCookies(tabG, signIn)
+        let sentDefault = await sentCookies(start, signIn)
+        check("follow: the person's password sign-in reaches a running task and the default profile, not a task's own",
+              signIns() == 1 && sentF["qa_follow"] == ["PERSON"] && sentDefault["qa_follow"] == ["PERSON"] && sentG["qa_follow"] == ["AGENT"],
+              "sign-ins \(signIns()), F \(sentF), default \(sentDefault), G \(sentG)")
+
+        // A page that renews a cookie as the person uses it, with no sign-in under way, is not copied.
+        let q = UUID()
+        var rotated: [String]?
+        if let tabQ = await taskTab(q, signIn) {
+            await personClick(tabQ, "#rotate")
+            _ = await waitUntil(.seconds(10)) { tabQ.currentURL?.contains("rotate") == true && !tabQ.isLoading }
+            try? await Task.sleep(for: .seconds(3))
+            rotated = await sentCookies(tabQ, signIn)["qa_rotate"]
+        }
+        sentF = await sentCookies(tabF, signIn)
+        check("follow: a cookie the site renews while the person browses is not copied", rotated != nil && sentF["qa_rotate"] == nil
+              && signIns() == 1, "Q \(String(describing: rotated)), F \(sentF), sign-ins \(signIns())")
+
+        // A page nobody drives that goes through the sign-in site and back on its own signs nobody in.
+        let u = UUID()
+        var sentU: [String: [String]] = [:]
+        if let tabU = await taskTab(u, signIn) {
+            _ = await value(tabU, "location.href = document.querySelector('#sso').href; 1")
+            _ = await waitUntil(.seconds(10)) { tabU.currentURL?.contains("/follow/idp") == true && !tabU.isLoading }
+            try? await Task.sleep(for: .seconds(1))
+            _ = await value(tabU, "location.href = document.querySelector('#continue').href; 1")
+            _ = await waitUntil(.seconds(10)) { tabU.currentURL == home && !tabU.isLoading }
+            try? await Task.sleep(for: .seconds(3))
+            sentU = await sentCookies(tabU, signIn)
+        }
+        sentF = await sentCookies(tabF, signIn)
+        check("follow: a page nobody drives that signs in through another site on its own is no one's sign-in",
+              sentU["qa_follow"] == ["SSO"] && sentF["qa_follow"] == ["PERSON"] && signIns() == 1,
+              "U \(sentU), F \(sentF), sign-ins \(signIns())")
+
+        // The person signs in without a password, through another site and back (a single sign-on).
+        _ = await value(tabP, "location.href = '\(signIn)'; 1")
+        _ = await loaded(tabP, signIn)
+        await personClick(tabP, "#sso")
+        _ = await waitUntil(.seconds(10)) { tabP.currentURL?.contains("/follow/idp") == true && !tabP.isLoading }
+        try? await Task.sleep(for: .seconds(1))
+        await personClick(tabP, "#continue")
+        _ = await waitUntil(.seconds(10)) { tabP.currentURL == home && !tabP.isLoading }
+        _ = await waitUntil(.seconds(8)) { signIns() == 2 }
+        try? await Task.sleep(for: .seconds(2))
+        sentF = await sentCookies(tabF, signIn)
+        sentG = await sentCookies(tabG, signIn)
+        let h = UUID()
+        var sentH: [String: [String]] = [:]
+        if let tabH = await taskTab(h, signIn) { sentH = await sentCookies(tabH, signIn) }
+        check("follow: the person's sign-in without a password reaches running and later tasks, not a task's own",
+              signIns() == 2 && sentF["qa_follow"] == ["SSO"] && sentH["qa_follow"] == ["SSO"] && sentG["qa_follow"] == ["AGENT"],
+              "sign-ins \(signIns()), F \(sentF), later \(sentH), G \(sentG)")
+
+        // The agent hands its tab over and the person signs in there: the person's sign-in, which reaches the others too.
+        let k = UUID()
+        var sentK: [String: [String]] = [:], ownK = true
+        if let tabK = await taskTab(k, signIn) {
+            client.noteAgentActivity(on: tabK)
+            _ = tabK.handOff(reason: "Sign in")
+            await personClick(tabK, "#password")
+            try? await Task.sleep(for: .seconds(1))
+            _ = await value(tabK, "document.querySelector('#user').value = 'HANDED'; document.querySelector('#password').value = 'x'; 1")
+            await personClick(tabK, "#go")
+            _ = await waitUntil(.seconds(10)) { tabK.currentURL == home && !tabK.isLoading }
+            _ = await waitUntil(.seconds(8)) { signIns() == 3 }
+            try? await Task.sleep(for: .seconds(2))
+            tabK.endHandoff()
+            sentK = await sentCookies(tabK, signIn)
+            ownK = profiles.isOwn(site, in: profiles.key(for: k))
+        }
+        sentF = await sentCookies(tabF, signIn)
+        sentG = await sentCookies(tabG, signIn)
+        check("follow: the person's sign-in on a page the agent handed over reaches the others, not a task's own",
+              signIns() == 3 && !ownK && sentK["qa_follow"] == ["HANDED"] && sentF["qa_follow"] == ["HANDED"]
+                && sentG["qa_follow"] == ["AGENT"],
+              "sign-ins \(signIns()), K own \(ownK) \(sentK), F \(sentF), G \(sentG)")
+
+        // A task from before following keeps its cookies: when it opens again, it takes only the sites it has no cookie
+        // of from the default profile, and the person's sign-ins made since.
+        let old = UUID()
+        let fill = "https://fill.qa-follow.test/"
+        guard let tabOld = await taskTab(old, signIn) else { return }
+        _ = try? await tabOld.devTools.send("Network.setCookie", [
+            "name": .string("qa_pre"), "value": .string("OLD"), "url": .string(signIn.replacingOccurrences(of: "localhost", with: "127.0.0.1")),
+            "path": .string("/")
+        ])
+        _ = try? await start.devTools.send("Network.setCookies", ["cookies": .array([
+            .object(["name": .string("qa_pre"), "value": .string("DEFAULT"), "path": .string("/"),
+                     "url": .string(signIn.replacingOccurrences(of: "localhost", with: "127.0.0.1"))]),
+            .object(["name": .string("qa_fill"), "value": .string("DEFAULT"), "url": .string(fill), "path": .string("/"),
+                     "secure": .bool(true)])
+        ])])
+        let oldKey = profiles.key(for: old)
+        client.closeTabs(forSession: old)
+        profiles.following.followers.remove(oldKey)
+        profiles.following.received[oldKey] = nil
+        try? await Task.sleep(for: .seconds(1))
+        var sentOld: [String: [String]] = [:], filled: [String: [String]] = [:]
+        if let again = await taskTab(old, signIn) {
+            sentOld = await sentCookies(again, signIn.replacingOccurrences(of: "localhost", with: "127.0.0.1"))
+            filled = await sentCookies(again, fill)
+            sentOld["qa_follow"] = await sentCookies(again, signIn)["qa_follow"]
+        }
+        check("follow: a task from before following keeps its cookies and takes the sites it had none of",
+              sentOld["qa_pre"] == ["OLD"] && filled["qa_fill"] == ["DEFAULT"] && sentOld["qa_follow"] == ["HANDED"],
+              "127.0.0.1 and localhost \(sentOld), fill.qa-follow.test \(filled)")
+        record["follow"] = .object(["signIns": .integer(Int64(signIns())),
+                                    "own": .array((profiles.following.own[profiles.key(for: g)] ?? []).sorted().map(JSONValue.string))])
+        for task in [p, f, g, h, q, u, k, old] { client.closeTabs(forSession: task) }
+        start.close()
+    }
+
+    /// The person's click on an element of the page, through the host's input as the panel sends it.
+    private func personClick(_ tab: BrowserTab, _ selector: String) async {
+        let rect = await value(tab, "(() => { const r = document.querySelector('\(selector)').getBoundingClientRect(); "
+                               + "return [r.left + r.width / 2, r.top + r.height / 2]; })()")
+        guard let point = rect?.arrayValue, point.count == 2, let x = point[0].doubleValue, let y = point[1].doubleValue else {
+            return check("follow: the page shows \(selector)", false, "not found")
+        }
+        tab.send(.focus(tab: tab.id, isFocused: true))
+        tab.send(.mouse(tab: tab.id, input: BrowserMouseInput(kind: .down, x: x, y: y, button: .left)))
+        tab.send(.mouse(tab: tab.id, input: BrowserMouseInput(kind: .up, x: x, y: y, button: .left)))
+        try? await Task.sleep(for: .milliseconds(300))
     }
 
     /// The cookies this check plants, in a tab's profile as Chromium stores them: name, domain (a leading dot for a

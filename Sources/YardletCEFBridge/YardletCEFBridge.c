@@ -16,6 +16,7 @@
 #include "include/cef_api_hash.h"
 #include "include/capi/cef_accessibility_handler_capi.h"
 #include "include/capi/cef_app_capi.h"
+#include "include/capi/cef_audio_handler_capi.h"
 #include "include/capi/cef_browser_capi.h"
 #include "include/capi/cef_browser_process_handler_capi.h"
 #include "include/capi/cef_client_capi.h"
@@ -42,6 +43,7 @@
 #include "include/capi/cef_request_capi.h"
 #include "include/capi/cef_request_context_capi.h"
 #include "include/capi/cef_request_handler_capi.h"
+#include "include/capi/cef_task_manager_capi.h"
 #include "include/capi/cef_values_capi.h"
 
 #define YARDLET_CEF_FUNCTIONS(X)            \
@@ -68,7 +70,8 @@
     X(cef_process_message_create)           \
     X(cef_value_create)                     \
     X(cef_dictionary_value_create)          \
-    X(cef_write_json)
+    X(cef_write_json)                       \
+    X(cef_task_manager_get)
 
 #define YARDLET_DECLARE_POINTER(name) static __typeof__(&name) p_##name;
 YARDLET_CEF_FUNCTIONS(YARDLET_DECLARE_POINTER)
@@ -169,6 +172,12 @@ typedef struct {
     /// The page's leave-page question Yardlet was last asked (its dialog id): a close that cannot wait
     /// answers it Leave (yardlet_cef_close_browser).
     int leaveDialog;
+    /// The memory saver ended the tab's renderer (yardlet_cef_discard): its end is a discard, not a crash.
+    int discarding;
+    /// When the page last began to play sound in its current document (monotonic_seconds), 0 before.
+    double audibleAt;
+    /// The page uses the camera or the microphone (OnMediaAccessChange).
+    int capturing;
 } BrowserSlot;
 
 static BrowserSlot g_browsers[kMaximumBrowsers];
@@ -444,6 +453,24 @@ static void ask_focused_field(cef_frame_t *frame) {
     if (message) frame->send_process_message(frame, PID_RENDERER, message);
 }
 
+// The memory saver's question to a page's renderers (YardletCEFHelper's PageState.c names the same two).
+static const char kPageStateQuery[] = "YardletPageStateQuery";
+static const char kPageStateAnswer[] = "YardletPageState";
+
+static void page_state_answered(BrowserSlot *slot, cef_process_message_t *message) {
+    cef_list_value_t *arguments = message->get_argument_list(message);
+    int complete = arguments && arguments->get_size(arguments) > 1;
+    int query = complete ? arguments->get_int(arguments, 0) : 0;
+    int flags = complete ? arguments->get_int(arguments, 1) : YardletPageStateUnknown;
+    YARDLET_RELEASE(arguments);
+    char text[16];
+    snprintf(text, sizeof text, "%d", query);
+    cef_string_t detail = {0};
+    set_string(&detail, text);
+    emit(slot->tab, YardletCEFEventPageState, NULL, &detail, flags);
+    p_cef_string_utf16_clear(&detail);
+}
+
 static int CEF_CALLBACK client_on_process_message_received(cef_client_t *self, cef_browser_t *browser,
                                                            cef_frame_t *frame, cef_process_id_t source_process,
                                                            cef_process_message_t *message) {
@@ -462,6 +489,9 @@ static int CEF_CALLBACK client_on_process_message_received(cef_client_t *self, c
             YARDLET_RELEASE(arguments);
             set_password_focus(slot, focused, frame);
         }
+    } else if (source_process == PID_RENDERER && name_utf8 && strcmp(name_utf8, kPageStateAnswer) == 0) {
+        handled = 1;
+        if (slot) page_state_answered(slot, message);
     }
     free(name_utf8);
     YARDLET_RELEASE(message);
@@ -1059,6 +1089,14 @@ static int CEF_CALLBACK display_on_tooltip(cef_display_handler_t *self, cef_brow
     return 1;
 }
 
+static void CEF_CALLBACK display_on_media_access_change(cef_display_handler_t *self, cef_browser_t *browser,
+                                                        int has_video_access, int has_audio_access) {
+    (void)self;
+    BrowserSlot *slot = slot_for_browser(browser);
+    if (slot) slot->capturing = has_video_access || has_audio_access;
+    YARDLET_RELEASE(browser);
+}
+
 static cef_display_handler_t g_display_handler;
 
 // MARK: - Request handler: URL policy, same-tab links, crashed renderers
@@ -1112,6 +1150,13 @@ static void CEF_CALLBACK request_on_render_process_terminated(cef_request_handle
         // The ended renderer's field is gone; the page that loads next reports its own.
         set_password_focus(slot, 0, NULL);
         release_media_prompts(slot->tab);
+        slot->capturing = 0;
+    }
+    if (slot && slot->discarding) {
+        slot->discarding = 0;
+        emit(slot->tab, YardletCEFEventDiscarded, NULL, NULL, (int)status);
+        YARDLET_RELEASE(browser);
+        return;
     }
     // The process's exit code (a signal number, or Chromium's result code) travels as the detail.
     char code[16];
@@ -1710,6 +1755,8 @@ static void CEF_CALLBACK load_on_load_start(cef_load_handler_t *self, cef_browse
     // blocked pop-ups then.
     if (slot && frame && frame->is_main(frame)) {
         release_media_prompts(slot->tab);
+        slot->audibleAt = 0;
+        slot->discarding = 0;
         cef_string_userfree_t url = frame->get_url(frame);
         emit(slot->tab, YardletCEFEventDocumentStart, url, NULL, 0);
         if (url) p_cef_string_userfree_utf16_free(url);
@@ -1786,6 +1833,8 @@ static cef_find_handler_t *CEF_CALLBACK client_get_find_handler(cef_client_t *se
     (void)self;
     return &g_find_handler;
 }
+static cef_audio_handler_t *CEF_CALLBACK client_get_audio_handler(cef_client_t *self);
+
 static cef_permission_handler_t *CEF_CALLBACK client_get_permission_handler(cef_client_t *self) {
     (void)self;
     return &g_permission_handler;
@@ -1983,6 +2032,7 @@ static void prepare_handlers(void) {
     g_client.get_find_handler = client_get_find_handler;
     g_client.get_permission_handler = client_get_permission_handler;
     g_client.on_process_message_received = client_on_process_message_received;
+    g_client.get_audio_handler = client_get_audio_handler;
 
     memset(&g_request_handler, 0, sizeof(g_request_handler));
     init_base(&g_request_handler.base, sizeof(g_request_handler));
@@ -2052,6 +2102,7 @@ static void prepare_handlers(void) {
     g_display_handler.on_console_message = display_on_console_message;
     g_display_handler.on_cursor_change = display_on_cursor_change;
     g_display_handler.on_tooltip = display_on_tooltip;
+    g_display_handler.on_media_access_change = display_on_media_access_change;
 
     memset(&g_load_handler, 0, sizeof(g_load_handler));
     init_base(&g_load_handler.base, sizeof(g_load_handler));
@@ -2425,6 +2476,11 @@ int yardlet_cef_open_browser_count(void) {
 // source context: its cookies come from Yardlet, unpartitioned, and a first visitor deletes the target's
 // cookies of the chosen sites, so each site holds the other browser's cookies alone; they are then set
 // as a copy's are.
+// A person's sign-in goes to the tasks that follow it (docs/BROWSER_SESSION_ISOLATION.md 11) as a copy of its
+// sites that replaces the target's cookies of them the way an import does, so no site holds two sessions'
+// cookies. A task that predates following takes only the sites it has no cookie of (a fill). A digest
+// sums a hash of each of a site's cookies, so Yardlet can tell that a sign-in changed them without
+// seeing a value.
 
 typedef struct {
     cef_completion_callback_t callback;
@@ -2440,20 +2496,31 @@ typedef struct {
     int unpartitioned;
 } SourceCookie;
 
+/// What a copy does with the target's cookies: adds the source's beside them, replaces those of its sites, or
+/// adds only those of sites the target has no cookie of. A digest reads the source alone.
+enum { kCopyAdd, kCopyReplace, kCopyFill, kCopyDigest };
+
 typedef struct {
     int references;
     int request, sourceHandle, targetHandle;
-    char *domain;
-    /// An import's sites, whose cookies the target loses first.
+    int mode;
+    /// The sites (each a domain with its subdomains) a copy reads and a replace or an import deletes first;
+    /// none for every site.
     char **sites;
     int siteCount;
     cef_cookie_manager_t *source, *target;
     SourceCookie *cookies;
     int count, capacity;
+    /// A fill's sites the target already has a cookie of (`cookie_site_key`).
+    char **present;
+    int presentCount, presentCapacity;
+    /// A digest's sum.
+    uint64_t digest;
 } CookieCopy;
 
-/// What a visitor does: reads every source cookie, finds those an address gets, or deletes an import's sites'.
-enum { kVisitSource, kVisitAddress, kVisitImportSites };
+/// What a visitor does: reads every source cookie, finds those an address gets, deletes the target's cookies of
+/// the copy's sites, lists the sites the target has cookies of, or adds a site's cookies to a digest.
+enum { kVisitSource, kVisitAddress, kVisitDeleteSites, kVisitTargetSites, kVisitDigest };
 
 typedef struct {
     cef_cookie_visitor_t visitor;
@@ -2503,6 +2570,36 @@ static int cookie_domain_matches(const char *raw, const char *domain) {
         || (length > wanted && host[length - wanted - 1] == '.' && strcasecmp(host + length - wanted, domain) == 0);
 }
 
+/// Whether the copy reads or deletes this cookie: one of its sites', or any when it names none.
+static int copy_covers(const CookieCopy *copy, const char *domain) {
+    if (domain[0] == '\0') return 0;
+    if (copy->siteCount == 0) return 1;
+    for (int index = 0; index < copy->siteCount; index++) {
+        if (cookie_domain_matches(domain, copy->sites[index])) return 1;
+    }
+    return 0;
+}
+
+/// A cookie's site for a fill, never finer than its registrable domain (the bridge has no public suffix list): an
+/// IP address whole, else the host's last two labels, so `a.example.co.uk` and `b.other.co.uk` count as one site.
+/// A coarser site only leaves more of a fill out.
+static char *cookie_site_key(const char *domain) {
+    const char *host = domain[0] == '.' ? domain + 1 : domain;
+    if (strspn(host, "0123456789.") == strlen(host)) return strdup(host);
+    const char *last = strrchr(host, '.');
+    if (last == NULL) return strdup(host);
+    const char *start = last;
+    while (start > host && start[-1] != '.') start--;
+    return strdup(start);
+}
+
+static int target_has_site(const CookieCopy *copy, const char *key) {
+    for (int index = 0; index < copy->presentCount; index++) {
+        if (strcasecmp(copy->present[index], key) == 0) return 1;
+    }
+    return 0;
+}
+
 /// Whether the source also has the host-only cookie of this domain cookie's host, name and path: a copied domain
 /// cookie the copy before 2026-10-25 made beside the site's own cookie, which the copy leaves out.
 static int has_host_only_twin(const CookieCopy *copy, const SourceCookie *item) {
@@ -2546,6 +2643,12 @@ static void set_copied_cookies(CookieCopy *copy) {
     for (int index = 0; index < copy->count; index++) {
         SourceCookie *item = &copy->cookies[index];
         if (!item->unpartitioned || has_host_only_twin(copy, item)) continue;
+        if (copy->mode == kCopyFill) {
+            char *key = cookie_site_key(item->domain);
+            int present = key == NULL || target_has_site(copy, key);
+            free(key);
+            if (present) continue;
+        }
         cef_cookie_t cookie = item->cookie;
         memset(&cookie.name, 0, sizeof(cookie.name));
         memset(&cookie.value, 0, sizeof(cookie.value));
@@ -2588,7 +2691,16 @@ static void set_copied_cookies(CookieCopy *copy) {
 /// Drops one of the copy's references; the last sets the cookies and frees the copy.
 static void cookie_copy_release_reference(CookieCopy *copy) {
     if (__atomic_sub_fetch(&copy->references, 1, __ATOMIC_ACQ_REL) != 0) return;
-    set_copied_cookies(copy);
+    if (copy->mode == kCopyDigest) {
+        release_context(copy->sourceHandle);
+        char digest[24];
+        snprintf(digest, sizeof(digest), "%016llx", (unsigned long long)copy->digest);
+        if (g_callbacks.event) g_callbacks.event(-1, (int)YardletCEFEventCookiesCopied, NULL, digest, copy->request);
+    } else {
+        set_copied_cookies(copy);
+    }
+    for (int index = 0; index < copy->presentCount; index++) free(copy->present[index]);
+    free(copy->present);
     for (int index = 0; index < copy->count; index++) {
         SourceCookie *item = &copy->cookies[index];
         free(item->name);
@@ -2602,7 +2714,6 @@ static void cookie_copy_release_reference(CookieCopy *copy) {
     free(copy->sites);
     YARDLET_RELEASE(copy->source);
     YARDLET_RELEASE(copy->target);
-    free(copy->domain);
     free(copy);
 }
 
@@ -2627,12 +2738,39 @@ static int CEF_CALLBACK cookie_copy_visit(cef_cookie_visitor_t *self, const cef_
     char *name = copy_string(&cookie->name);
     char *domain = copy_string(&cookie->domain);
     char *path = copy_string(&cookie->path);
-    if (visitor->mode == kVisitImportSites) {
-        for (int index = 0; index < copy->siteCount && domain[0] != '\0'; index++) {
-            if (cookie_domain_matches(domain, copy->sites[index])) {
-                *delete_cookie = 1;
-                break;
+    if (visitor->mode == kVisitDeleteSites) {
+        if (copy->siteCount > 0 && copy_covers(copy, domain)) *delete_cookie = 1;
+    } else if (visitor->mode == kVisitTargetSites) {
+        char *key = domain[0] ? cookie_site_key(domain) : NULL;
+        if (key && !target_has_site(copy, key)) {
+            if (copy->presentCount == copy->presentCapacity) {
+                int capacity = copy->presentCapacity ? copy->presentCapacity * 2 : 64;
+                char **grown = realloc(copy->present, sizeof(*grown) * (size_t)capacity);
+                if (grown) {
+                    copy->present = grown;
+                    copy->presentCapacity = capacity;
+                }
             }
+            if (copy->presentCount < copy->presentCapacity) {
+                copy->present[copy->presentCount++] = key;
+                key = NULL;
+            }
+        }
+        free(key);
+    } else if (visitor->mode == kVisitDigest) {
+        if (copy_covers(copy, domain)) {
+            // FNV-1a over the cookie's name, domain, path and value; the sum leaves out the order CEF visits them in.
+            uint64_t hash = 14695981039346656037ULL;
+            char *value = copy_string(&cookie->value);
+            const char *parts[] = {name, domain, path, value ? value : ""};
+            for (int part = 0; part < 4; part++) {
+                for (const unsigned char *byte = (const unsigned char *)parts[part]; *byte; byte++) {
+                    hash = (hash ^ *byte) * 1099511628211ULL;
+                }
+                hash = (hash ^ 0xff) * 1099511628211ULL;
+            }
+            free(value);
+            copy->digest += hash;
         }
     } else if (visitor->mode == kVisitAddress) {
         // This address gets the cookie, so it is not partitioned.
@@ -2642,7 +2780,7 @@ static int CEF_CALLBACK cookie_copy_visit(cef_cookie_visitor_t *self, const cef_
                 item->unpartitioned = 1;
             }
         }
-    } else if (cookie_domain_matches(domain, copy->domain) && domain[0] != '\0') {
+    } else if (copy_covers(copy, domain)) {
         if (copy->count == copy->capacity) {
             int capacity = copy->capacity ? copy->capacity * 2 : 64;
             SourceCookie *grown = realloc(copy->cookies, sizeof(*grown) * (size_t)capacity);
@@ -2697,8 +2835,8 @@ static int CEF_CALLBACK cookie_copy_has_at_least_one_ref(cef_base_ref_counted_t 
 }
 
 /// Hands CEF a visitor with its one reference, which holds one of the copy's: every source cookie, the
-/// unpartitioned ones `url` gets (`kVisitAddress`), or every cookie of an import's target, whose sites' it
-/// deletes (`kVisitImportSites`). CEF's last release of the visitor ends its part.
+/// unpartitioned ones `url` gets (`kVisitAddress`), or every cookie of the target, whose sites' it deletes
+/// (`kVisitDeleteSites`) or lists (`kVisitTargetSites`). CEF's last release of the visitor ends its part.
 static void start_cookie_visitor(CookieCopy *copy, int mode, const char *url) {
     CookieCopyVisitor *visitor = calloc(1, sizeof(*visitor));
     if (visitor == NULL) return;
@@ -2711,6 +2849,10 @@ static void start_cookie_visitor(CookieCopy *copy, int mode, const char *url) {
     base->has_one_ref = cookie_copy_has_one_ref;
     base->has_at_least_one_ref = cookie_copy_has_at_least_one_ref;
     visitor->visitor.visit = cookie_copy_visit;
+    if (mode == kVisitDeleteSites || mode == kVisitTargetSites) {
+        copy->target->visit_all_cookies(copy->target, &visitor->visitor);
+        return;
+    }
     if (mode != kVisitAddress) {
         copy->source->visit_all_cookies(copy->source, &visitor->visitor);
         return;
@@ -2721,8 +2863,9 @@ static void start_cookie_visitor(CookieCopy *copy, int mode, const char *url) {
     p_cef_string_utf16_clear(&address);
 }
 
-int yardlet_cef_copy_cookies(int request, const char *from_path, const char *to_path, const char *domain) {
-    if (g_library == NULL) return 0;
+int yardlet_cef_copy_cookies(int request, const char *from_path, const char *to_path, const char *const *sites,
+                             int site_count, int mode) {
+    if (g_library == NULL || site_count < 0 || mode < kCopyAdd || mode > kCopyFill) return 0;
     int source = acquire_context(from_path);
     if (source < 0) return 0;
     int target = acquire_context(to_path);
@@ -2744,10 +2887,41 @@ int yardlet_cef_copy_cookies(int request, const char *from_path, const char *to_
         release_context(target);
         return 0;
     }
-    // This function's own reference, dropped once the first visitor is with CEF.
+    // This function's own reference, dropped once the first visitors are with CEF.
     *copy = (CookieCopy){.references = 1, .request = request, .sourceHandle = source, .targetHandle = target,
-                         .domain = domain && domain[0] ? strdup(domain) : NULL, .source = reader, .target = writer};
+                         .mode = mode, .source = reader, .target = writer,
+                         .sites = site_count ? calloc((size_t)site_count, sizeof(char *)) : NULL};
+    for (int index = 0; copy->sites && index < site_count; index++) {
+        if (sites[index] && sites[index][0]) copy->sites[copy->siteCount++] = strdup(sites[index]);
+    }
     start_cookie_visitor(copy, kVisitSource, NULL);
+    // The target's cookies go (a replace) or are listed (a fill) while the source is read; CEF's cookie manager
+    // takes the deletions before the cookies set once every visitor is done.
+    if (mode == kCopyReplace && copy->siteCount > 0) start_cookie_visitor(copy, kVisitDeleteSites, NULL);
+    if (mode == kCopyFill) start_cookie_visitor(copy, kVisitTargetSites, NULL);
+    cookie_copy_release_reference(copy);
+    return 1;
+}
+
+int yardlet_cef_cookie_digest(int request, const char *path, const char *site) {
+    if (g_library == NULL || site == NULL || site[0] == '\0') return 0;
+    int handle = acquire_context(path);
+    if (handle < 0) return 0;
+    cef_request_context_t *context = context_reference(handle);
+    cef_cookie_manager_t *manager = context ? context->get_cookie_manager(context, NULL) : NULL;
+    YARDLET_RELEASE_CONTEXT(context);
+    CookieCopy *copy = manager ? calloc(1, sizeof(*copy)) : NULL;
+    char **sites = copy ? calloc(1, sizeof(char *)) : NULL;
+    if (sites == NULL) {
+        free(copy);
+        YARDLET_RELEASE(manager);
+        release_context(handle);
+        return 0;
+    }
+    sites[0] = strdup(site);
+    *copy = (CookieCopy){.references = 1, .request = request, .sourceHandle = handle, .mode = kCopyDigest,
+                         .sites = sites, .siteCount = 1, .source = manager};
+    start_cookie_visitor(copy, kVisitDigest, NULL);
     cookie_copy_release_reference(copy);
     return 1;
 }
@@ -2793,7 +2967,7 @@ int yardlet_cef_import_cookies(int request, const char *to_path, const char *con
             .path = strdup(path), .url = cookie_address(given->domain, path, given->secure), .unpartitioned = 1};
         copy->capacity = copy->count;
     }
-    start_cookie_visitor(copy, kVisitImportSites, NULL);
+    start_cookie_visitor(copy, kVisitDeleteSites, NULL);
     cookie_copy_release_reference(copy);
     return 1;
 }
@@ -3058,4 +3232,151 @@ int yardlet_cef_send_devtools_message(int tab, const char *message, size_t lengt
     int sent = host->send_dev_tools_message(host, message, length);
     YARDLET_RELEASE(host);
     return sent;
+}
+
+// MARK: - Memory saver
+// Chrome's Memory Saver discards a tab nobody has looked at for a while: its page goes, while the tab keeps its
+// address, title, icon and history, and the page loads again when the tab is shown (docs/BROWSER_HOST.md §3
+// "Memory saver"). CEF 154 has no discard of its own, so the host ends the tab's main-frame renderer as Chrome's
+// task manager ends a process; the browser and its navigation entries stay, and a reload starts another renderer.
+// Before that the host reads what Chrome would not discard (yardlet_cef_page_signals) and asks the page's
+// renderers (yardlet_cef_ask_page_state).
+//
+// Sound: CEF says nothing of a page playing sound, except that it asks an audio handler for capture parameters
+// each time a page begins to (AlloyBrowserHostImpl::OnAudioStateChanged). The handler notes when and declines, so
+// nothing is captured: capturing would mute the tab (CefAudioLoopbackStreamCreator passes mute_source).
+
+static int CEF_CALLBACK audio_get_audio_parameters(cef_audio_handler_t *self, cef_browser_t *browser,
+                                                   cef_audio_parameters_t *params) {
+    (void)self; (void)params;
+    BrowserSlot *slot = slot_for_browser(browser);
+    if (slot) slot->audibleAt = monotonic_seconds();
+    YARDLET_RELEASE(browser);
+    return 0;
+}
+
+static cef_audio_handler_t g_audio_handler;
+
+static cef_audio_handler_t *CEF_CALLBACK client_get_audio_handler(cef_client_t *self) {
+    (void)self;
+    if (g_audio_handler.base.size == 0) {
+        init_base(&g_audio_handler.base, sizeof(g_audio_handler));
+        g_audio_handler.get_audio_parameters = audio_get_audio_parameters;
+    }
+    return &g_audio_handler;
+}
+
+static int is_pdf_viewer_url(const cef_string_t *url) {
+    static const char prefix[] = "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
+    char *utf8 = copy_string(url);
+    int matches = strncmp(utf8, prefix, sizeof(prefix) - 1) == 0;
+    free(utf8);
+    return matches;
+}
+
+/// Calls `visit` with each of the browser's frames (borrowed); stops when it returns 0.
+static void each_frame(cef_browser_t *browser, int (*visit)(cef_frame_t *frame, void *context), void *context) {
+    cef_string_list_t identifiers = p_cef_string_list_alloc();
+    if (identifiers == NULL) return;
+    browser->get_frame_identifiers(browser, identifiers);
+    size_t count = p_cef_string_list_size(identifiers);
+    int going = 1;
+    for (size_t index = 0; going && index < count; index++) {
+        cef_string_t identifier = {0};
+        if (!p_cef_string_list_value(identifiers, index, &identifier)) continue;
+        cef_frame_t *frame = browser->get_frame_by_identifier(browser, &identifier);
+        p_cef_string_utf16_clear(&identifier);
+        if (frame == NULL) continue;
+        if (frame->is_valid(frame)) going = visit(frame, context);
+        YARDLET_RELEASE(frame);
+    }
+    p_cef_string_list_free(identifiers);
+}
+
+static int note_pdf_frame(cef_frame_t *frame, void *context) {
+    cef_string_userfree_t url = frame->get_url(frame);
+    int pdf = url != NULL && is_pdf_viewer_url(url);
+    if (url) p_cef_string_userfree_utf16_free(url);
+    if (pdf) *(int *)context = 1;
+    return !pdf;
+}
+
+int yardlet_cef_page_signals(int tab, YardletCEFPageSignals *signals) {
+    BrowserSlot *slot = slot_for_tab(tab);
+    if (slot == NULL || slot->browser == NULL || signals == NULL) return 0;
+    cef_browser_t *browser = slot->browser;
+    memset(signals, 0, sizeof(*signals));
+    signals->audibleAgo = slot->audibleAt > 0 ? monotonic_seconds() - slot->audibleAt : -1;
+    signals->capturing = slot->capturing;
+    signals->loading = browser->is_loading(browser);
+    cef_browser_host_t *host = browser->get_host(browser);
+    cef_navigation_entry_t *entry = host ? host->get_visible_navigation_entry(host) : NULL;
+    if (entry) signals->postData = entry->has_post_data(entry);
+    YARDLET_RELEASE(entry);
+    YARDLET_RELEASE(host);
+    cef_frame_t *main = browser->get_main_frame(browser);
+    cef_string_userfree_t url = main ? main->get_url(main) : NULL;
+    cef_request_context_t *context = request_context_of(browser);
+    if (url && context) {
+        signals->notifications = context->get_content_setting(context, url, url, CEF_CONTENT_SETTING_TYPE_NOTIFICATIONS)
+            == CEF_CONTENT_SETTING_VALUE_ALLOW;
+    }
+    YARDLET_RELEASE_CONTEXT(context);
+    if (url) p_cef_string_userfree_utf16_free(url);
+    YARDLET_RELEASE(main);
+    each_frame(browser, note_pdf_frame, &signals->pdf);
+    return 1;
+}
+
+typedef struct {
+    int query;
+    int asked;
+} PageStateQuery;
+
+static int ask_frame(cef_frame_t *frame, void *context) {
+    PageStateQuery *query = context;
+    cef_string_t name = {0};
+    set_string(&name, kPageStateQuery);
+    cef_process_message_t *message = p_cef_process_message_create(&name);
+    p_cef_string_utf16_clear(&name);
+    if (message == NULL) return 1;
+    cef_list_value_t *arguments = message->get_argument_list(message);
+    if (arguments) arguments->set_int(arguments, 0, query->query);
+    YARDLET_RELEASE(arguments);
+    // Passing the message gives the frame our reference.
+    frame->send_process_message(frame, PID_RENDERER, message);
+    query->asked++;
+    return 1;
+}
+
+int yardlet_cef_ask_page_state(int tab, int query) {
+    BrowserSlot *slot = slot_for_tab(tab);
+    if (slot == NULL || slot->browser == NULL) return -1;
+    PageStateQuery state = {query, 0};
+    each_frame(slot->browser, ask_frame, &state);
+    return state.asked;
+}
+
+int yardlet_cef_ask_main_frame(int tab, int query) {
+    BrowserSlot *slot = slot_for_tab(tab);
+    cef_frame_t *main = slot && slot->browser ? slot->browser->get_main_frame(slot->browser) : NULL;
+    if (main == NULL) return 0;
+    PageStateQuery state = {query, 0};
+    if (main->is_valid(main)) ask_frame(main, &state);
+    YARDLET_RELEASE(main);
+    return state.asked;
+}
+
+int yardlet_cef_discard(int tab) {
+    BrowserSlot *slot = slot_for_tab(tab);
+    if (slot == NULL || slot->browser == NULL || p_cef_task_manager_get == NULL) return 0;
+    // Each task manager object samples every process every two seconds while it lives: one for this end only.
+    cef_task_manager_t *manager = p_cef_task_manager_get();
+    if (manager == NULL) return 0;
+    int64_t task = manager->get_task_id_for_browser_id(manager, slot->browser->get_identifier(slot->browser));
+    slot->discarding = 1;
+    int ended = task >= 0 && manager->kill_task(manager, task);
+    if (!ended) slot->discarding = 0;
+    YARDLET_RELEASE(manager);
+    return ended;
 }

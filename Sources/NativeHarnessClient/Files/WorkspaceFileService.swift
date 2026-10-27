@@ -1,11 +1,50 @@
 import Foundation
+import UniformTypeIdentifiers
 
 struct WorkspaceFileLocation: Equatable, Sendable {
+    /// Relative to the task's folder; for a file elsewhere that the person opened (`opening`), its
+    /// absolute path.
     let relativePath: String
     var line: Int?
     var column: Int?
 
+    /// A file outside the task's folder, which the panel shows read-only.
+    var isOutsideWorkspace: Bool { relativePath.hasPrefix("/") }
+
+    static func url(for path: String, in workspace: URL) -> URL {
+        path.hasPrefix("/") ? URL(filePath: path) : workspace.appending(path: path)
+    }
+
+    /// A file inside the task's folder; anything else throws.
     static func resolve(_ url: URL, in workspace: URL) throws -> Self {
+        let (path, line, column) = try target(of: url, in: workspace)
+        let root = workspace.standardizedFileURL.resolvingSymlinksInPath().path
+        let file = URL(filePath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        guard file.hasPrefix(prefix), file.count > prefix.count else { throw WorkspaceFileError.outsideWorkspace }
+        return Self(relativePath: String(file.dropFirst(prefix.count)), line: line, column: column)
+    }
+
+    /// A file the person opens from a link, as the Codex and Claude apps open any file on the Mac:
+    /// inside the task's folder as `resolve` reads it, and elsewhere by its absolute path. Only the
+    /// person sees it; nothing reaches the agent, and the panel saves only files inside the folder.
+    static func opening(_ url: URL, in workspace: URL) throws -> Self {
+        if let inside = try? resolve(url, in: workspace) { return inside }
+        let (path, line, column) = try target(of: url, in: workspace)
+        return Self(relativePath: URL(filePath: path).standardizedFileURL.path(percentEncoded: false),
+                    line: line, column: column)
+    }
+
+    /// The folder a link names, when one is there.
+    static func folder(_ url: URL, in workspace: URL) -> URL? {
+        guard let path = try? target(of: url, in: workspace).path else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        return URL(filePath: path, directoryHint: .isDirectory).standardizedFileURL
+    }
+
+    /// The absolute path a local file link names, and the line and column it points at.
+    private static func target(of url: URL, in workspace: URL) throws -> (path: String, line: Int?, column: Int?) {
         let directory = URL(filePath: workspace.path(percentEncoded: false), directoryHint: .isDirectory)
         guard let target = url.scheme == nil ? URL(string: url.relativeString, relativeTo: directory)?.absoluteURL : url else {
             throw WorkspaceFileError.outsideWorkspace
@@ -28,12 +67,23 @@ struct WorkspaceFileLocation: Equatable, Sendable {
             column = column ?? match.2.flatMap { Int($0) }
             path.removeSubrange(match.range)
         }
-        let root = workspace.standardizedFileURL.resolvingSymlinksInPath().path
-        let file = URL(filePath: path).standardizedFileURL.resolvingSymlinksInPath().path
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        guard file.hasPrefix(prefix), file.count > prefix.count else { throw WorkspaceFileError.outsideWorkspace }
-        return Self(relativePath: String(file.dropFirst(prefix.count)),
-                    line: line.map { max(1, $0) }, column: column.map { max(1, $0) })
+        return (path, line.map { max(1, $0) }, column.map { max(1, $0) })
+    }
+}
+
+/// A file that is not text which the panel shows as the Codex and Claude apps show one: an image
+/// or a PDF.
+struct WorkspaceFileMedia: Equatable, Sendable {
+    enum Kind: Sendable { case image, pdf }
+    let url: URL
+    let kind: Kind
+
+    init?(_ url: URL) {
+        guard let type = UTType(filenameExtension: url.pathExtension) else { return nil }
+        if type.conforms(to: .pdf) { kind = .pdf }
+        else if type.conforms(to: .image) { kind = .image }
+        else { return nil }
+        self.url = url
     }
 }
 
@@ -78,13 +128,15 @@ struct WorkspaceFileDocument: Sendable {
     /// Only the file's first `WorkspaceFileService.partialBytes` are shown: it is over
     /// `wholeTextBytes`.
     let isPartial: Bool
+    /// Text that is not UTF-8, shown with U+FFFD for what does not decode and never saved.
+    let isLossy: Bool
     /// Whether the panel edits and saves it: a whole file within `editableBytes`, or a draft.
     let isEditable: Bool
 
     /// - Parameter text: kept as given. Hand in a string over an immutable `NSString` when it is
     ///   large, so the reader shows it without copying it on the main thread.
     init(id: UUID = UUID(), path: String, text: String, sourceDigest: String? = nil, encoding: WorkspaceFileEncoding = .utf8,
-         isPartial: Bool = false, isEditable: Bool = true, highlight: Highlight = .now) {
+         isPartial: Bool = false, isLossy: Bool = false, isEditable: Bool = true, highlight: Highlight = .now) {
         self.id = id
         revision = UUID()
         self.path = path
@@ -92,7 +144,8 @@ struct WorkspaceFileDocument: Sendable {
         self.sourceDigest = sourceDigest
         self.encoding = encoding
         self.isPartial = isPartial
-        self.isEditable = isEditable && !isPartial
+        self.isLossy = isLossy
+        self.isEditable = isEditable && !isPartial && !isLossy
         (utf16Length, lineStarts) = Self.lines(in: text)
         switch highlight {
         case .now:
@@ -216,10 +269,16 @@ enum WorkspaceFileService {
     }
 
     static func read(_ location: WorkspaceFileLocation, in workspace: URL) throws -> WorkspaceFileDocument {
-        let root = workspace.standardizedFileURL.resolvingSymlinksInPath()
-        let url = root.appending(path: location.relativePath)
-        let verified = try WorkspaceFileLocation.resolve(url, in: root)
-        guard verified.relativePath == location.relativePath else { throw WorkspaceFileError.outsideWorkspace }
+        let url: URL
+        if location.isOutsideWorkspace {
+            // Through a link such as `~/.codex/AGENTS.md`, whose own values say no regular file.
+            url = URL(filePath: location.relativePath).resolvingSymlinksInPath()
+        } else {
+            let root = workspace.standardizedFileURL.resolvingSymlinksInPath()
+            url = root.appending(path: location.relativePath)
+            let verified = try WorkspaceFileLocation.resolve(url, in: root)
+            guard verified.relativePath == location.relativePath else { throw WorkspaceFileError.outsideWorkspace }
+        }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true else { throw WorkspaceFileError.notAFile }
         let handle = try FileHandle(forReadingFrom: url)
@@ -230,19 +289,30 @@ enum WorkspaceFileService {
         let isPartial = (values.fileSize ?? 0) > wholeTextBytes || data.count > wholeTextBytes
         let encoding: WorkspaceFileEncoding = data.starts(with: [0xff, 0xfe]) ? .utf16LittleEndian
             : data.starts(with: [0xfe, 0xff]) ? .utf16BigEndian : .utf8
+        // A NUL byte in what was read makes a file binary, before a large one is cut to its beginning.
+        let isBinary = encoding == .utf8 && data.withUnsafeBytes { memchr($0.baseAddress, 0, $0.count) != nil }
         if isPartial { data = beginning(of: data.prefix(partialBytes), encoding: encoding) }
         let decoded: String?
+        var isLossy = false
         if encoding != .utf8 {
             decoded = String(data: data, encoding: .utf16)
+        } else if isBinary {
+            decoded = nil
+        } else if let text = String(data: data, encoding: .utf8) {
+            decoded = text
         } else {
-            decoded = data.withUnsafeBytes { memchr($0.baseAddress, 0, $0.count) != nil } ? nil : String(data: data, encoding: .utf8)
+            // Text in another encoding, such as zsh's history with its own bytes for Korean: shown as the
+            // Codex and Claude apps decode it, with U+FFFD where it does not decode.
+            decoded = String(decoding: data, as: UTF8.self)
+            isLossy = true
         }
         guard let decoded else { throw WorkspaceFileError.unsupported }
         try Task.checkCancellation()
         // An immutable NSString the reader hands to its text storage as it is.
         let text = decoded.utf8.count > 65_536 ? NSString(string: decoded) as String : decoded
         return WorkspaceFileDocument(path: location.relativePath, text: text, sourceDigest: isPartial ? nil : digest(data),
-                                     encoding: encoding, isPartial: isPartial, isEditable: data.count <= editableBytes)
+                                     encoding: encoding, isPartial: isPartial, isLossy: isLossy,
+                                     isEditable: !location.isOutsideWorkspace && data.count <= editableBytes)
     }
 
     /// `data` up to its last line break, or its last whole character when it has none.

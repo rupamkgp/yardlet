@@ -612,11 +612,12 @@ struct SessionJobRailRow: View {
 /// A small live view of where the agent works out of sight: the browser tab it drives, or the
 /// screen a computer-use call returned (`SessionRailPreview`). Clicking the browser view opens the
 /// browser panel, where the Preview card then goes away, as the Codex app's picture in picture focuses
-/// the Browser Use tab.
+/// the Browser Use tab; clicking the screen opens it over the window, as a conversation image opens.
 struct SessionRailPreviewCard: View {
     let preview: SessionRailPreview
     var openBrowser: (() -> Void)? = nil
     @Environment(\.yardletInterfaceScale) private var interfaceScale
+    @Environment(\.openImageViewer) private var openImageViewer
 
     /// The Claude app's computer-use preview keeps to 288 pt high (`max-h-72`); a page fits 16:10.
     private static let height: CGFloat = 156
@@ -661,12 +662,21 @@ struct SessionRailPreviewCard: View {
             }
         case let .computer(frame):
             if let image = NSImage(data: frame.data) {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(ParityTheme.canvas)
+                Button {
+                    openImageViewer(ImageViewerRequest(
+                        items: [ImageViewerItem(name: preview.title, source: .data(frame.data))], index: 0))
+                } label: {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.medium)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(ParityTheme.canvas)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .parityPointer()
+                .help(L10n.string("View the image"))
             } else {
                 Color.clear
             }

@@ -109,6 +109,8 @@ struct MainWindow: View {
     @Environment(\.yardletUpdateWait) private var updateWait
     /// Sparkle in a public build: the account menu's Check for Updates….
     @Environment(\.yardletSparkle) private var sparkle
+    /// A staged build ready to install: the sidebar's "Restart to update".
+    @Environment(\.yardletStagedUpdate) private var stagedUpdate
     /// The person on this Mac, read once for the account button.
     @State private var accountIdentity = SidebarAccountIdentity.current()
 
@@ -920,6 +922,9 @@ struct MainWindow: View {
             updateIsWaiting: { [updateWait] in updateWait?.isWaiting ?? false },
             checksForUpdates: sparkle != nil,
             refreshing: { [model] in model.isFollowingSessionLists },
+            update: { [stagedUpdate, updateWait] in
+                MenuBarMenu.UpdateLine(ready: stagedUpdate?.ready, isWaiting: updateWait?.isWaiting ?? false)
+            },
             onSelect: openAccountMenuDestination
         )
     }
@@ -1178,6 +1183,16 @@ struct MainWindow: View {
             // Any other anchor names a place in the message, not a file.
             if url.scheme == nil, url.path(percentEncoded: false).isEmpty { return .discarded }
             guard url.isFileURL || url.scheme == nil else { return .systemAction }
+            // A folder opens in Finder, as the Codex app opens a folder link; an app or another package
+            // is shown there rather than run.
+            if let folder = WorkspaceFileLocation.folder(url, in: session.workspaceURL) {
+                if NSWorkspace.shared.isFilePackage(atPath: folder.path(percentEncoded: false)) {
+                    NSWorkspace.shared.activateFileViewerSelecting([folder])
+                } else {
+                    NSWorkspace.shared.open(folder)
+                }
+                return .handled
+            }
             let owner = model.taskWorkspaces.state(for: panelOwnerID(for: session, filePanelOwnerID: filePanelOwnerID))
             owner.files.open(url, in: session.workspaceURL)
             var panels = owner.panels
@@ -2051,6 +2066,9 @@ struct MainWindow: View {
                         chosenForNewTask: newTaskDraft.harness),
                     codexEnvironmentManager: model.codexEnvironmentManager,
                     localSessionUsage: selectedLocalSessionUsage,
+                    tasksUsingAccount: { connection in
+                        model.store.sessions.filter { $0.connection?.id == connection.id }.count
+                    },
                     fixtureSnapshots: accountFixtureSnapshots, fixtureLogin: accountFixtureLogin),
                 remote: model.remoteControl,
                 cliUpdates: model.cliUpdates,

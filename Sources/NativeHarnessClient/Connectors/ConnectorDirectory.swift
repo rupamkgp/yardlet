@@ -167,6 +167,16 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         signIn: .oauth, symbol: "bubble.left.and.bubble.right"),
         ConnectorPreset(id: "zapier", name: "Zapier", serverURL: URL(string: "https://mcp.zapier.com/api/mcp/mcp")!,
                         signIn: .oauth, symbol: "bolt"),
+        // Services that reach many apps through one sign-in, like Zapier: each runs its own server,
+        // answers an unauthenticated GET with 401 and OAuth metadata with a registration endpoint
+        // (checked 2026-10-27, docs/CONNECTORS.md, "Directory"). Pipedream keeps its resource
+        // metadata only at the root; Make takes `client_secret_post` alone.
+        ConnectorPreset(id: "pipedream", name: "Pipedream", serverURL: URL(string: "https://mcp.pipedream.net/v2")!,
+                        signIn: .oauth, symbol: "point.3.connected.trianglepath.dotted"),
+        ConnectorPreset(id: "composio", name: "Composio", serverURL: URL(string: "https://connect.composio.dev/mcp")!,
+                        signIn: .oauth, symbol: "square.grid.3x3"),
+        ConnectorPreset(id: "make", name: "Make", serverURL: URL(string: "https://mcp.make.com/v2")!,
+                        signIn: .oauth, symbol: "arrow.triangle.2.circlepath"),
         ConnectorPreset(id: "granola", name: "Granola", serverURL: URL(string: "https://mcp.granola.ai/mcp")!,
                         signIn: .oauth, symbol: "note.text"),
         ConnectorPreset(id: "fireflies", name: "Fireflies", serverURL: URL(string: "https://api.fireflies.ai/mcp")!,
@@ -258,6 +268,9 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
         case preset(ConnectorPreset)
         /// A remote server the directory does not know, by the name and address it was found under.
         case custom(name: String, url: URL)
+        /// A program another app or harness starts (stdio), by its name there and where it was
+        /// found first; what it runs is read from that file only when the person asks to see it.
+        case program(name: String, server: NativeMCPServer, home: NativeMCPHome)
     }
 
     var target: Target
@@ -268,6 +281,7 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
         switch target {
         case .preset(let preset): "preset|\(preset.id)"
         case .custom(_, let url): "custom|\(MCPServerAddress.canonical(url))"
+        case .program(let name, let server, _): "program|" + (server.programKey ?? "\(server.command ?? "")|\(name)")
         }
     }
 
@@ -275,21 +289,26 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
         switch target {
         case .preset(let preset): preset.name
         case .custom(let name, _): name
+        case .program(let name, _, _): name
         }
     }
 
-    var serverURL: URL {
+    /// The server's address; nil for a program.
+    var serverURL: URL? {
         switch target {
         case .preset(let preset): preset.serverURL
         case .custom(_, let url): url
+        case .program: nil
         }
     }
 
-    /// Everything a sign-in needs comes from the server: one click adds and connects.
+    /// Everything a sign-in needs comes from the server: one click adds and connects. A program
+    /// is never one click: the person sees what runs first.
     var connectsInOneClick: Bool {
         switch target {
         case .preset(let preset): [.oauth, .none, .macPermission, .localApp].contains(preset.signIn)
         case .custom: true
+        case .program: false
         }
     }
     /// What each harness and account has that Yardlet could carry instead, less what is already
@@ -297,11 +316,13 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
     /// connectors (Claude Docs, Claude Code Remote), which exist only in claude.ai.
     static func suggestions(from inventory: [NativeMCPInventoryEntry], connected: [ConnectorRecord]) -> [ConnectorImportSuggestion] {
         let added = Set(connected.map { MCPServerAddress.canonical($0.serverURL) })
+        let addedPrograms = Set(connected.compactMap { $0.program?.key })
         var order: [String] = []
         var byID: [String: ConnectorImportSuggestion] = [:]
         func found(_ target: Target, _ place: String) {
             let suggestion = ConnectorImportSuggestion(target: target, foundIn: [place])
-            guard !added.contains(MCPServerAddress.canonical(suggestion.serverURL)) else { return }
+            if let url = suggestion.serverURL, added.contains(MCPServerAddress.canonical(url)) { return }
+            if case .program(_, let server, _) = target, let key = server.programKey, addedPrograms.contains(key) { return }
             if var existing = byID[suggestion.id] {
                 if !existing.foundIn.contains(place) { existing.foundIn.append(place) }
                 byID[suggestion.id] = existing
@@ -322,6 +343,8 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
                 } else if let package = server.package,
                           let preset = ConnectorPreset.all.first(where: { $0.packages.contains { package.hasPrefix($0) } }) {
                     found(.preset(preset), place)
+                } else if server.command != nil, server.isEnabled, !server.isAppHelper {
+                    found(.program(name: server.name, server: server, home: entry.home), place)
                 }
             }
             for name in entry.accountConnectors {
@@ -335,7 +358,7 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
                     if let preset = ConnectorPreset.all.first(where: { $0.codexPlugins.contains(base) }) {
                         found(.preset(preset), L10n.string("Codex plugin"))
                     }
-                case .antigravity:
+                case .antigravity, .app:
                     break
                 }
             }
@@ -366,6 +389,7 @@ struct ConnectorImportSuggestion: Identifiable, Equatable, Sendable {
         case .claude: "Claude Code · " + account(home)
         case .codex: home.account.map { "Codex · \($0)" } ?? "Codex"
         case .antigravity: "Antigravity"
+        case .app(let app, _): app.name
         }
     }
 }
@@ -394,6 +418,9 @@ struct ConnectorTaskScope: Equatable, Sendable {
     /// this task: the harness is told to leave its copy out of this process, so the model gets
     /// one, Yardlet's (`ConnectorCenter.withYardletStandIns`).
     var yardletServedURLs: Set<String> = []
+    /// The programs the harness starts itself (`NativeMCPServer.programKey`): a program connector
+    /// that starts the same package stays out of the task, so the model gets the harness's copy.
+    var nativePrograms: Set<String> = []
 
     /// Antigravity's per-task route is going away, so its tasks get no connectors.
     var carriesConnectors: Bool { harness != .antigravityCLI }

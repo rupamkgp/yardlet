@@ -235,6 +235,44 @@ final class BrowserAgentTabToolsTests: XCTestCase {
     /// panel opened and closed, and the next tool call reaches the same tab without opening another.
     /// Before 2026-10-22 an unwatched tab closed five minutes and a minute after the agent's last use
     /// and the next call opened a new about:blank tab (the Meta sign-in page that "went blank").
+    /// The tab the person uses is theirs (docs/AGENT_BROWSER_TOOLS.md, section 2, "The tab the person uses"): while they use it in the
+    /// panel, the agent's new tab in front and its choice of another tab stay behind it, the tools without a tabId go to
+    /// the agent's own tab, and a tool on the person's tab says that they use it. Once they stop, the panel follows the
+    /// agent again.
+    func testThePanelStaysOnTheTabThePersonIsUsing() async throws {
+        let connection = connection
+        connection.answersDevTools = true
+        let client = BrowserHostClient(personUseWindow: .seconds(2)) { connection }
+        let tools = BrowserAgentTools(usesMacEditingCommands: true, tabs: BrowserAgentTabs { client })
+        let task = task
+        func run(_ tool: String, _ arguments: [String: JSONValue] = [:]) async -> String {
+            text(await tools.run(tool: tool, arguments: .object(arguments), sessionID: task))
+        }
+        let person = try client.openTab(forSession: task, url: "https://example.com", viewport: .offscreenDefault)
+        client.attachPanel(to: person)
+        person.send(.mouse(tab: person.id, input: BrowserMouseInput(kind: .down, x: 10, y: 10, button: .left)))
+
+        let opened = await run(AgentToolCatalog.tabNew, ["foreground": .bool(true)])
+        let own = try XCTUnwrap(client.tabs(forSession: task).last)
+        XCTAssertTrue(client.tab(forSession: task) === person, "the panel keeps the person's tab")
+        XCTAssertTrue(client.agentTab(forSession: task) === own)
+        XCTAssertTrue(opened.contains("stays on tab \(person.id), which the person is using"), opened)
+        connection.sent = []
+        let read = await run(AgentToolCatalog.consoleMessages)
+        let calls = connection.sent.compactMap { if case .devTools(let tab, _) = $0 { tab } else { nil } }
+        XCTAssertFalse(calls.isEmpty)
+        XCTAssertTrue(calls.allSatisfy { $0 == own.id }, "a tool without a tabId acts on the agent's own tab")
+        XCTAssertFalse(read.contains("The person is using this tab"), read)
+        let onTheirs = await run(AgentToolCatalog.consoleMessages, ["tabId": .string(String(person.id))])
+        XCTAssertTrue(onTheirs.contains("The person is using this tab") && onTheirs.contains("browser_handoff"), onTheirs)
+        let selected = await run(AgentToolCatalog.tabSelect, ["tabId": .string(String(own.id))])
+        XCTAssertTrue(client.tab(forSession: task) === person && selected.contains("your active tab"), selected)
+
+        try await Task.sleep(for: .milliseconds(2300))
+        _ = await run(AgentToolCatalog.tabSelect, ["tabId": .string(String(own.id))])
+        XCTAssertTrue(client.tab(forSession: task) === own, "once the person stops, the panel follows the agent")
+    }
+
     func testThePageTheAgentLoadedIsThereAtItsNextTurn() async throws {
         let connection = connection
         let client = BrowserHostClient(idleGrace: .milliseconds(30), agentVisibleWindow: .milliseconds(20)) { connection }

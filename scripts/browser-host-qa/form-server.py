@@ -428,6 +428,26 @@ document.getElementById('form').addEventListener('submit', e => { e.preventDefau
 
 ISOLATION = '''<!doctype html><meta charset="utf-8"><title>Isolation</title><h1>Isolation</h1>'''
 
+# The sign-ins tasks follow (BrowserHostIsolationQA, docs/BROWSER_SESSION_ISOLATION.md 11). /follow/signin has a
+# password form, whose post sets qa_follow to the username, and a "Sign in with QA" link to the other site's
+# /follow/idp (localhost and 127.0.0.1 are two sites), which waits for a click as an account chooser does and goes
+# back to /follow/callback, which sets qa_follow=SSO. Both end on /follow/home. /follow/home?rotate renews qa_rotate
+# from the page, as a site renews a cookie while it is used.
+FOLLOW_SIGN_IN = """<!doctype html><meta charset="utf-8"><title>Follow sign-in</title>
+<form method="post" action="/follow/signin"><input id="user" name="user" autocomplete="username">
+<input id="password" name="password" type="password" autocomplete="current-password">
+<button id="go" type="submit">Sign in</button></form>
+<p><a id="sso" href="#">Sign in with QA</a> <a id="rotate" href="/follow/home?rotate">Browse</a></p>
+<script>
+const other = location.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
+document.querySelector('#sso').href = location.protocol + '//' + other + ':' + location.port + '/follow/idp?return='
+  + encodeURIComponent(location.origin + '/follow/callback');
+</script>"""
+FOLLOW_HOME = """<!doctype html><meta charset="utf-8"><title>Follow home</title><h1>Home</h1>
+<script>if (location.search.includes('rotate')) document.cookie = 'qa_rotate=' + Date.now() + '; path=/; max-age=3600';</script>"""
+FOLLOW_IDP = """<!doctype html><meta charset="utf-8"><title>QA sign-in</title><h1>Choose an account</h1>
+<a id="continue" href="RETURN?code=qa">Continue</a>"""
+
 # A sign-in's cookie check across two sites, the way accounts.google.com checks its cookies before a Google
 # Cloud console page opens and answers what it does not expect with /CookieMismatch. /cookie-check/start on
 # this server (the console) redirects to the issuer origin (the accounts site, localhost, another site), whose
@@ -475,6 +495,11 @@ const requests = {
   getPlatformOnly: () => ({ publicKey: { challenge: bytes(32), rpId: 'localhost',
     allowCredentials: [{ type: 'public-key', id: bytes(16), transports: ['internal'] }],
     userVerification: 'required', hints: ['client-device'], timeout: 120000 } }),
+  // A sign-in for an account the site knows, as Google's passkey step after the email: the
+  // account's passkeys, listed in window.qa.allow ({id: base64, transports}).
+  getAllowed: () => ({ publicKey: { challenge: bytes(32), rpId: 'localhost', userVerification: 'required', timeout: 120000,
+    allowCredentials: window.qa.allow.map(c => ({ type: 'public-key', transports: c.transports,
+      id: Uint8Array.from(atob(c.id), ch => ch.charCodeAt(0)) })) } }),
   // "Create a passkey" as most sites ask for it: no attachment named.
   createAny: () => ({ publicKey: { challenge: bytes(32), rp, user: user(), pubKeyCredParams: params,
     authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' }, timeout: 60000 } }),
@@ -483,7 +508,7 @@ const requests = {
     hints: ['client-device'], timeout: 120000,
     authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'required', userVerification: 'required' } } }),
 };
-window.qa = { passkey: 'idle', controller: null };
+window.qa = { passkey: 'idle', controller: null, allow: [] };
 window.qa.abort = () => { window.qa.controller && window.qa.controller.abort(); return 'ok'; };
 window.passkey = kind => {
   window.qa.controller = new AbortController();
@@ -868,6 +893,33 @@ def icon_png(color):
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) + chunk(b'IDAT', zlib.compress(b''.join(rows))) + chunk(b'IEND', b'')
 
 
+# The memory saver's pages (BROWSER_HOST section 3, "Memory saver"): a page that holds memory in its renderer, with a
+# frame from another site that holds some in its own; a page that plays sound once started; a form; a page whose
+# policy allows no script of its own; and the next page of a history.
+SAVER_PAGE = """<!doctype html><meta charset="utf-8"><title>Saver NUMBER</title><link rel="icon" href="/icon-green.png">
+<h1>Saver page NUMBER</h1><iframe title="Other site" src="ISSUER/saver/frame" style="width:300px;height:80px"></iframe>
+<script>window.held = Array.from({length: 40}, (_, i) => new Float64Array(250000).fill(i));</script>"""
+SAVER_FRAME = """<!doctype html><meta charset="utf-8"><title>Saver frame</title><p>Another site's frame
+<script>window.held = Array.from({length: 16}, (_, i) => new Float64Array(250000).fill(i));</script>"""
+SAVER_MEDIA = """<!doctype html><meta charset="utf-8"><title>Saver media</title><h1>Sound</h1><audio id="tone" loop></audio>
+<script>
+function start() {
+  const rate = 8000, samples = rate, data = new DataView(new ArrayBuffer(44 + samples * 2));
+  const text = (offset, value) => [...value].forEach((c, i) => data.setUint8(offset + i, c.charCodeAt(0)));
+  text(0, 'RIFF'); data.setUint32(4, 36 + samples * 2, true); text(8, 'WAVEfmt '); data.setUint32(16, 16, true);
+  data.setUint16(20, 1, true); data.setUint16(22, 1, true); data.setUint32(24, rate, true); data.setUint32(28, rate * 2, true);
+  data.setUint16(32, 2, true); data.setUint16(34, 16, true); text(36, 'data'); data.setUint32(40, samples * 2, true);
+  for (let i = 0; i < samples; i++) data.setInt16(44 + i * 2, Math.sin(i / rate * 2 * Math.PI * 440) * 800, true);
+  const tone = document.getElementById('tone');
+  tone.src = URL.createObjectURL(new Blob([data.buffer], {type: 'audio/wav'}));
+  return tone.play().then(() => 'playing', error => String(error));
+}
+</script>"""
+SAVER_FORM = """<!doctype html><meta charset="utf-8"><title>Saver form</title><h1>Form</h1>
+<label>Name <input id="name" value=""></label>"""
+SAVER_CSP = """<!doctype html><meta charset="utf-8"><title>Saver CSP</title><h1>No script of its own</h1>"""
+SAVER_NEXT = """<!doctype html><meta charset="utf-8"><title>Saver next</title><h1>Next page</h1>"""
+
 ICONS = {'/icon-blue.png': icon_png((37, 99, 235)), '/icon-green.png': icon_png((22, 163, 74))}
 
 
@@ -884,6 +936,8 @@ class Handler(BaseHTTPRequestHandler):
         headers = {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'}
         if self.path.startswith('/cookie-check/'):
             return self.cookie_check()
+        if self.path.startswith('/follow/'):
+            return self.follow()
         if self.path.startswith('/slow-redirect'):
             time.sleep(1.5)
             self.send_response(302)
@@ -1004,6 +1058,20 @@ class Handler(BaseHTTPRequestHandler):
             payload = CHECKOUT.encode()
         elif self.path.startswith('/acs/popup'):
             payload = sites(ISSUER_POPUP).encode()
+        elif self.path.startswith('/saver/frame'):
+            payload = SAVER_FRAME.encode()
+        elif self.path.startswith('/saver/page'):
+            query = dict(part.partition('=')[::2] for part in self.path.partition('?')[2].split('&') if part)
+            payload = sites(SAVER_PAGE).replace('NUMBER', html.escape(query.get('n', '0'))).encode()
+        elif self.path.startswith('/saver/media'):
+            payload = SAVER_MEDIA.encode()
+        elif self.path.startswith('/saver/form'):
+            payload = SAVER_FORM.encode()
+        elif self.path.startswith('/saver/csp'):
+            payload = SAVER_CSP.encode()
+            headers = dict(headers, **{'Content-Security-Policy': "default-src 'none'; script-src 'none'"})
+        elif self.path.startswith('/saver/next'):
+            payload = SAVER_NEXT.encode()
         else:
             payload = PAGE.encode()
         self.send(payload, headers)
@@ -1015,6 +1083,9 @@ class Handler(BaseHTTPRequestHandler):
         fields = {name: values[0] for name, values in parse_qs(self.rfile.read(length).decode()).items()}
         with (args.output_dir / 'requests.jsonl').open('a') as log:
             log.write(json.dumps({'path': self.path, 'method': 'POST', 'fields': sorted(fields)}) + '\n')
+        if self.path.startswith('/follow/signin'):
+            return self.redirect('/follow/home', ['qa_follow=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600' % (
+                ''.join(c for c in fields.get('user', '') if c.isalnum()) or 'none')])
         if self.path.startswith('/checkout/done'):
             payload = PAID
         elif self.path.startswith('/checkout/shipped'):
@@ -1039,6 +1110,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send(payload.encode(), {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'})
+
+    def follow(self):
+        """The sign-ins tasks follow (FOLLOW_SIGN_IN above)."""
+        route, _, query = self.path.partition('?')
+        page = {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'}
+        if route == '/follow/signin':
+            return self.send(FOLLOW_SIGN_IN.encode(), page)
+        if route == '/follow/home':
+            return self.send(FOLLOW_HOME.encode(), page)
+        if route == '/follow/idp':
+            back = parse_qs(query).get('return', [''])[0]
+            return self.send(FOLLOW_IDP.replace('RETURN', html.escape(back)).encode(), page)
+        if route == '/follow/callback':
+            return self.redirect('/follow/home', ['qa_follow=SSO; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600'])
+        self.send_response(404)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def cookie_check(self):
         """The sign-in's cookie check across two sites (COOKIE_SIGN_IN above)."""

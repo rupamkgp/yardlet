@@ -559,6 +559,93 @@ final class RestartResumeTests: XCTestCase {
         await after.shutdown()
     }
 
+    /// The memory saver: with the setting off nothing ends. On, memory pressure ends the longest idle
+    /// CLIs until two fewer than the Claude app's cap run, at most once a minute, and three hours off screen end every
+    /// idle one; a task in a turn or on screen keeps its CLI. An ended task stays ready, and its next message resumes the
+    /// same conversation in a new CLI, with only that message sent.
+    func testTheMemorySaverEndsIdleCLIsAndTheNextMessageResumesTheConversation() async throws {
+        let fixture = try ClaudeFixture()
+        let now = Date()
+        let tasks = (0..<6).map { index in
+            fixture.session(title: "Task \(index)", status: .ready, updatedAt: now.addingTimeInterval(-600 + 60 * Double(index)))
+        }
+        let store = SessionStore(sessions: tasks, repository: InMemorySessionRepository(sessions: tasks))
+        store.selectedSessionID = tasks[5].id
+        let model = fixture.model(store: store)
+        for task in tasks { await model.resume(task) }
+        XCTAssertEqual(tasks.filter { model.isAttached($0.id) }.count, 6)
+        try await store.updateSession(id: tasks[0].id, status: .running)
+        // The Claude app's cap on a 16 GB Mac is 6, so pressure leaves 4 running.
+        let memory: UInt64 = 16 << 30
+        func attached() -> [Bool] { tasks.map { model.isAttached($0.id) } }
+
+        fixture.defaults.set(false, forKey: MemorySaverPreference.key)
+        await model.checkHarnessMemory(now: now.addingTimeInterval(4 * 3_600), pressure: .critical, physicalMemory: memory)
+        XCTAssertEqual(attached(), Array(repeating: true, count: 6), "Off, nothing ends")
+        fixture.defaults.set(true, forKey: MemorySaverPreference.key)
+
+        await model.checkHarnessMemory(now: now.addingTimeInterval(120), pressure: .warning, physicalMemory: memory)
+        XCTAssertEqual(attached(), [true, false, false, true, true, true],
+                       "The longest idle end until four run; the one in a turn and the one on screen stay")
+        await model.checkHarnessMemory(now: now.addingTimeInterval(150), pressure: .warning, physicalMemory: memory)
+        XCTAssertEqual(attached(), [true, false, false, true, true, true], "One pressure sweep a minute")
+        await model.checkHarnessMemory(now: now.addingTimeInterval(3 * 3_600 + 60), pressure: .normal, physicalMemory: memory)
+        XCTAssertEqual(attached(), [true, false, false, false, false, true], "Three hours off screen end every idle one")
+
+        let ended = try await fixture.transport(for: tasks[1].providerSessionID!)
+        let stops = await ended.stopCount
+        XCTAssertEqual(stops, 1)
+        let idle = try XCTUnwrap(model.store.sessions.first { $0.id == tasks[1].id })
+        XCTAssertEqual(idle.status, .ready, "Ended to save memory, not failed")
+        await model.send(HarnessUserInput(text: "Next step"), to: idle)
+        var processes: [FakeClaudeTransport] = []
+        for transport in fixture.transports.all where await transport.configuration?.providerSessionID == idle.providerSessionID {
+            processes.append(transport)
+        }
+        XCTAssertEqual(processes.count, 2)
+        let resumed = try XCTUnwrap(processes.last)
+        let configuration = await resumed.configuration
+        XCTAssertEqual(configuration?.resumesExistingSession, true, "The same conversation resumes")
+        let sent = await resumed.sentValues
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertTrue(model.isAttached(idle.id))
+        await model.shutdown()
+    }
+
+    /// What keeps a task's CLI through the memory saver, also past three hours under critical pressure: an approval it
+    /// waits on, a message waiting to go, a background shell, a session job, a child task still working. An idle task
+    /// beside them ends.
+    func testTheMemorySaverKeepsTheCLIOfATaskThatStillHasWork() async throws {
+        let fixture = try ClaudeFixture()
+        let now = Date()
+        let tasks = (0..<6).map { fixture.session(title: "Task \($0)", status: .ready, updatedAt: now) }
+        try fixture.save(savedRecords(sessionJob(at: now.addingTimeInterval(-60)), conversation: tasks[3].providerSessionID!),
+                         for: tasks[3])
+        var child = fixture.session(title: "Child", status: .running, updatedAt: now)
+        child.parentTaskID = tasks[4].id
+        let sessions = tasks + [child]
+        let store = SessionStore(sessions: sessions, repository: InMemorySessionRepository(sessions: sessions))
+        store.selectedSessionID = child.id
+        let model = fixture.model(store: store)
+        for task in tasks { await model.resume(task) }
+        try await store.updateSession(id: tasks[0].id, status: .waitingForApproval)
+        model.followUps.append(QueuedFollowUp(draft: CodexComposerDraft(inputs: [.text("Then this")])), to: tasks[1].id)
+        let shell = try await fixture.transport(for: tasks[2].providerSessionID!)
+        func frame(_ text: String) throws -> JSONValue { try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) }
+        await shell.emit(try frame(#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_dev","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}"#))
+        await shell.emit(try frame(#"{"type":"system","subtype":"task_started","task_id":"bdev","tool_use_id":"toolu_dev","description":"npm run dev","task_type":"local_bash","is_backgrounded":true}"#))
+        await shell.emit(try frame(#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_dev","content":"Running in the background"}]}}"#))
+        await shell.emit(try frame(#"{"type":"result","subtype":"success","is_error":false,"result":"Started.","session_id":"s"}"#))
+        func keeps() -> [String?] {
+            tasks.map { task in model.store.sessions.first { $0.id == task.id }.flatMap(model.memorySaverKeeps) }
+        }
+        try await waitUntil { keeps() == ["turn", "queued", "background", "schedule", "children", nil] }
+
+        await model.checkHarnessMemory(now: now.addingTimeInterval(4 * 3_600), pressure: .critical, physicalMemory: 16 << 30)
+        XCTAssertEqual(tasks.map { model.isAttached($0.id) }, [true, true, true, true, true, false])
+        await model.shutdown()
+    }
+
     /// Claude Code's frames for a turn that calls one tool, then ends.
     private func finishTurn(on transport: FakeClaudeTransport, calling tool: String, input: [String: Any]) async throws {
         let call: [String: Any] = ["type": "tool_use", "id": "toolu_\(tool)", "name": tool, "input": input]
@@ -1250,6 +1337,7 @@ final class RestartResumeTests: XCTestCase {
         let switches = host.accessibilityElements().filter { $0.role == NSAccessibility.Role.checkBox.rawValue }
         XCTAssertTrue(switches.contains { $0.label == L10n.string("Continue running work after a restart") },
             switches.description)
+        XCTAssertTrue(switches.contains { $0.label == L10n.string("Memory saver") }, switches.description)
 
         // A question the quit cut off, asked again where its call was, in place of the row the CLI's
         // refusal written as it quit would draw.

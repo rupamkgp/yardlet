@@ -77,7 +77,7 @@ final class TranscriptImageThumbnails: @unchecked Sendable {
         return preview
     }
 
-    /// The original bytes, for the full-size sheet.
+    /// The original bytes, for the image viewer.
     func originalData(for url: URL) async -> Data? {
         await Task.detached(priority: .userInitiated) { Self.readOriginal(url) }.value
     }
@@ -120,39 +120,5 @@ final class TranscriptImageThumbnails: @unchecked Sendable {
             return nil
         }
         return Data(base64Encoded: String(text[text.index(after: comma)...]))
-    }
-}
-
-/// A conversation image at its own size, in the sheet the timeline uses for tool result images.
-struct TranscriptImageSheet: View {
-    let title: String
-    var detail: String?
-    let image: NSImage
-    let onDone: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(title).font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                if let detail {
-                    Text(detail)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                Button(L10n.string("Done"), action: onDone)
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(14)
-            Divider()
-            ScrollView([.horizontal, .vertical]) {
-                Image(nsImage: image)
-                    .frame(width: image.size.width, height: image.size.height)
-                    .padding(14)
-            }
-        }
-        .frame(minWidth: 420, idealWidth: 720, minHeight: 300, idealHeight: 540)
     }
 }

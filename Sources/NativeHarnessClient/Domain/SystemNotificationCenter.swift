@@ -35,14 +35,18 @@ enum SystemNotificationAuthorization: String, CaseIterable, Sendable {
 struct SystemNotificationTarget: Equatable, Sendable {
     static let sessionKey = "yardletSessionID"
     static let requestKey = "yardletRequestID"
+    static let browserTabKey = "yardletBrowserTab"
 
     let sessionID: UUID
     /// The request an approval notification asks about; nil for every other notification.
     var requestID: String?
+    /// The browser tab a notification is about (the task's side-panel tab key): a click shows it in the task's panel.
+    var browserTab: UUID?
 
-    init(sessionID: UUID, requestID: String? = nil) {
+    init(sessionID: UUID, requestID: String? = nil, browserTab: UUID? = nil) {
         self.sessionID = sessionID
         self.requestID = requestID
+        self.browserTab = browserTab
     }
 
     /// Reads a target back from a delivered notification; nil for one Yardlet did not post.
@@ -50,11 +54,13 @@ struct SystemNotificationTarget: Equatable, Sendable {
         guard let text = userInfo[Self.sessionKey] as? String, let id = UUID(uuidString: text) else { return nil }
         sessionID = id
         requestID = (userInfo[Self.requestKey] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        browserTab = (userInfo[Self.browserTabKey] as? String).flatMap(UUID.init(uuidString:))
     }
 
     var userInfo: [String: String] {
         var info = [Self.sessionKey: sessionID.uuidString]
         if let requestID { info[Self.requestKey] = requestID }
+        if let browserTab { info[Self.browserTabKey] = browserTab.uuidString }
         return info
     }
 }

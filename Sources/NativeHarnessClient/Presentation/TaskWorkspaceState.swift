@@ -267,6 +267,11 @@ final class TaskWorkspaceState {
         return session
     }
 
+    /// The terminal panel's shell runs (the memory saver keeps the task's runtime while it does).
+    var hasRunningTerminal: Bool {
+        terminalSession.map { !$0.hasEnded && $0.isRunning } ?? false
+    }
+
     /// "Restart in …": the shell ends and the panel opens the next one in the task's folder.
     func restartTerminal() {
         terminalSession?.end()
@@ -479,6 +484,16 @@ final class TaskWorkspaceStore {
         sizes = TaskWorkspaceSizeStore(saved ?? .init())
         sizesKnown = saved != nil
         sizes.onChange = { [weak self] in self?.sizesChanged() }
+    }
+
+    /// Whether the task's terminal shell runs, without loading a workspace not yet shown.
+    func hasRunningTerminal(_ id: UUID) -> Bool {
+        states[id]?.hasRunningTerminal ?? false
+    }
+
+    /// The task's workspace if it is loaded, without loading it (which would set its panels before the window does).
+    func loadedState(for id: UUID) -> TaskWorkspaceState? {
+        states[id]
     }
 
     func state(for id: UUID, initialSurface: String? = nil) -> TaskWorkspaceState {

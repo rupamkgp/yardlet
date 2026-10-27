@@ -31,6 +31,9 @@ struct TaskAttentionDetail: Equatable, Sendable {
     /// A lost connection cut the latest turn off, and the task continues once the network is back
     /// (`ConnectionResumePolicy`): it waits on nothing the person does.
     var isReconnecting = false
+    /// A tab of the task's browser waits on the person (a passkey, a site's sign-in, a dialog, a file chooser, a
+    /// permission, the agent's handoff), whatever its turn does: the live browser says so, not the transcript.
+    var browserWait: BrowserPersonWait?
 
     static let none = TaskAttentionDetail()
 
@@ -150,7 +153,8 @@ struct TaskAttentionDetail: Equatable, Sendable {
             turnStartedAt: turnStartedAt ?? other.turnStartedAt,
             suggestions: suggestions.isEmpty ? other.suggestions : suggestions,
             idleRequest: idleRequest ?? other.idleRequest,
-            isReconnecting: isReconnecting || other.isReconnecting
+            isReconnecting: isReconnecting || other.isReconnecting,
+            browserWait: browserWait ?? other.browserWait
         )
     }
 }
@@ -208,7 +212,7 @@ enum TaskAttentionProjection {
         detail: TaskAttentionDetail? = nil,
         isShellBusy: Bool = false
     ) -> TaskAttentionState {
-        if waitingRequest(of: session, detail: detail) != nil { return .waiting }
+        if waitingRequest(of: session, detail: detail) != nil || detail?.browserWait != nil { return .waiting }
         // A turn a lost connection cut off continues on its own: the task is still working.
         if session.status == .running || detail?.isReconnecting == true { return .active }
         if session.hasUnreadUpdate { return .unread }

@@ -24,6 +24,9 @@ Status: designed and implemented on 2026-10-24 (Mac, relay and Android). The pro
   phone gets them through "Background notifications" (a foreground service), as it does today.
 - **New on the phone:** answering question cards, plan review (approve or keep planning) and creating a new task (with
   the Mac's new-task defaults). Settings, accounts, files, diffs and the terminal are still handled on the Mac.
+  Since 2026-10-27 (section 5.2) the phone also continues a task a plan limit stopped under another account, allows for
+  the session or denies with what to do instead, picks a new task's harness, model and worktree, sends photos, steers
+  or queues follow-ups, answers a browser tab handed to the person, and can lock itself.
 - **The platform stays native Android (Kotlin, Compose).** iOS comes later in SwiftUI and uses the Mac's `YardletRemote`
   package (protocol types, Noise) as is. The two reference apps are also native apps on each platform.
 - **Accounts are optional (requested 2026-10-24).** Without a QR code, the person signs in with an account and picks
@@ -262,8 +265,8 @@ account shows that person's Macs and lets them add a new phone. End-to-end encry
 | Action | v1 | v2 | Basis |
 |---|---|---|---|
 | Task list and status, reading conversations, messages, stop, mark read | Yes | Yes | Both apps |
-| Approval: allow once or deny | Yes | Yes | Answers that create a permanent rule still stay on the Mac |
-| Answering question cards | On the Mac | **Yes** | Both apps answer on the phone. Sent through the same path as the Mac card (`ConversationRequestFormInput`). Questions with secret answers and MCP forms stay on the Mac |
+| Approval: allow once or deny | Yes | Yes | Since 2026-10-27 every answer the Mac's card gives (section 5.3) |
+| Answering question cards | On the Mac | **Yes** | Both apps answer on the phone. Sent through the same path as the Mac card (`ConversationRequestFormInput`). Secret answers and MCP forms too since 2026-10-27 (section 5.3) |
 | Plan review | On the Mac | **Yes**: Approve plan, Keep planning (with an optional reason) | The same two answers the Mac card gives. No answer that changes the permission mode |
 | New task | No | **Yes**: project (or chat) and first message | Both apps open new local tasks from the phone. Harness, model, account and worktree are the current values in the Mac home composer |
 | Command output, file changes (diff) | No | **Yes**: loaded when the tool line is tapped (`itemDetail`) | Codex on the phone shows diffs. Fetched only on tap instead of always riding the stream, to keep things fast |
@@ -271,9 +274,15 @@ account shows that person's Macs and lets them add a new phone. End-to-end encry
 | Child tasks | Parent link | Shown collapsed under the parent and opened directly | Users run several child tasks at once |
 | Pin and archive | No | **Yes** | Keeping the list tidy |
 | Several Macs, accounts | No | **Yes** | Sections 3 and 3.1 |
-| Image attachments | No | Next | Both apps have it. It needs photo picking, resizing and the Mac's attachment path together, so it is done separately |
-| Choosing the harness and model for a new task, choosing Steer or Queue | No | Next | Each harness has a different model list, so the Mac's lists have to be carried over |
-| Taking over a browser tab | No | Next (section 6.3) | The Mac-side "waiting for the person" signal belongs to the browser isolation and vault work |
+| Image attachments | No | **Yes** (2026-10-27): up to four photos, in messages and new tasks | Both apps (section 5.2) |
+| Choosing a new task's harness, model, effort, permission mode and worktree | No | **Yes** (2026-10-27) | The same menus as the Mac's new-task screen (section 5.2) |
+| Choosing Steer or Queue; Send now, Stop and send and Delete on a queued message | No | **Yes** (2026-10-27) | The Codex app, the Mac's queue chips (section 5.2) |
+| Approval: allow for this session; deny and say what to do instead | No | **Yes** (2026-10-27) | Both apps (section 5.2). Answers that write a rule to a settings file or a policy stay on the Mac |
+| A task stopped by a plan limit: continue under another account (with each account's limits), continue once the limit resets | No | **Yes** (2026-10-27) | The Mac's limit card (section 5.2) |
+| A browser tab handed to the person: the reason and site, I'm done and Decline | No | **Yes** (2026-10-27) | The Mac's handoff bar (section 5.2). Taking over the tab's screen comes next (section 6.3) |
+| App lock (biometrics or the screen lock PIN) | No | **Yes** (2026-10-27, off by default) | Section 5.2 |
+| Every answer the Mac's card gives, MCP forms, secret answers | No | **Yes** (2026-10-27) | Section 5.3. Answers that leave a standing rule ask once more |
+| Files (20 per message, 500 MiB each) and photos from the camera | No | **Yes** (2026-10-27) | Section 5.3 |
 | Settings, connectors, browsing files, terminal | No | Not done | On the Mac |
 
 ### 5.1 Speed
@@ -295,6 +304,129 @@ Wi-Fi, Yardlet connects straight to the Mac, and the phone keeps the last state.
   and diffs are fetched only on tap.
 - **Measuring:** the Mac tests record the time to the handshake and to the first list over loopback, and the phone app
   records the time to connect, to the first list and to the first conversation page.
+
+### 5.2 More from the phone (2026-10-27)
+
+The goal (2026-10-27): let the phone app do more. We compared both apps' phone features in their public documents again
+and chose what the Yardlet phone lacked that the two apps do on the phone, and what only the Yardlet Mac does that matters
+most while the person is away. An API being available was not a reason.
+
+**Comparison (2026-10-27, public documents):**
+
+| On the phone | Claude app (Remote Control) | ChatGPT app (Codex) | Yardlet phone (before) |
+|---|---|---|---|
+| Photo and file attachments | Yes: photos in the message, files as `@` references | Yes: files, photos, camera | No |
+| Model and effort | Yes: the device's model and effort controls, `/model`, `/effort` | Host, workspace, branch and model when a chat starts | No (the Mac's defaults) |
+| Permission mode | Manual, Accept edits, Plan, Auto (not Bypass permissions) | `/plan` | No |
+| A new task's worktree | Server mode's `--spawn worktree` | Create a new worktree | No |
+| Approval scope | Answers the permission prompt | Once, for the current chat, more broadly; "Tell Codex what to do" and Deny | Allow once, deny |
+| Follow-ups | Sent | Queue (default) or Steer, default changeable in settings | Sent, as the Mac's setting says |
+| Reviewing changes | The device's diff pane (the branch's whole change) | Changed files and diffs of finished turns, line comments sent to Codex, `/review` | Output and diff per tool line |
+| Usage | `/usage` | Limit information in `/status` | No |
+| Re-authentication | Trusted Devices (every 18 hours, refreshed by biometrics) | Account MFA, SSO, passkeys | The phone's screen lock only |
+| Notifications | When a decision is needed and when work finishes; two settings | When work finishes or needs attention | The same (sealed pushes) |
+
+Sources: [Claude Remote Control](https://code.claude.com/docs/en/remote-control) ("What connected devices see", "Mobile push
+notifications", "Trusted Devices", "Limitations"), [Claude Code on mobile](https://code.claude.com/docs/en/mobile) ("Permission
+modes"), [Codex on mobile](https://learn.chatgpt.com/docs/mobile), [Codex remote connections](https://learn.chatgpt.com/docs/remote-connections),
+[the Codex Remote post](https://developers.openai.com/blog/mastering-codex-remote-for-engineering) ("Queue waits until the current
+response finishes", "once, for the current chat, or more broadly", "files, photos, or a fresh camera capture").
+
+**What we added, in order of effect (protocol sections 15.13-15.18):**
+
+1. **Continuing a task a plan limit stopped (Yardlet's own).** The Mac limit card's "Continue with another account" (with each
+   account's remaining limits) and "Auto-continue when limits reset". For people who work across several accounts, a task that
+   hits a limit while they are away stops until they are back. Choosing on the phone starts it again on the spot. Each
+   account's usage is seen in this list, which is why the home screen's usage warning line was not carried over separately.
+2. **Wider approval answers (both apps).** "Allow for this session" and "Deny and say what to do instead". Codex on the phone
+   offers once, for the current chat and more broadly, and "Tell Codex what to do"; Claude takes what to do instead when
+   denying. The Yardlet phone had to tap "Allow once" each time similar commands followed, and send what to do separately after
+   a denial. Answers that write a rule to a settings file or a policy ("Always allow") still stay on the Mac, so a lost phone
+   cannot leave a rule that outlives the task; "for this session" ends with the task.
+3. **Choosing a new task's harness, model, effort, permission mode and worktree (both apps).** The Mac's new-task screen menus
+   are sent as they are (`NewTaskModelProjection`). People pick a model per job (one for implementation, another for
+   review); before this, a task started from the phone ran on whatever the Mac's home composer last held. Values the Mac asks
+   to confirm, such as Bypass permissions and full access, are left out (the Claude app cannot pick Bypass from the phone
+   either). The choice applies to that task only and leaves the Mac home composer's choice alone.
+4. **Photo attachments (both apps).** Up to four photos in a message or a new task. The phone shrinks them to JPEG with a
+   2,048 px long side, and the Mac writes them where a pasted image goes and sends them as the same attachment. A screenshot
+   with "fix this" is the most common phone attachment, so photos come before files. A new task still needs its first words,
+   as on the Mac.
+5. **Follow-ups: choosing Steer or Queue, and the queue's actions (the Codex app, the Mac's queue chips).** When sending to a
+   running task, choose "Deliver now" or "After the turn", and on a queued message "Send now", "Stop and send" (Claude Code)
+   or "Delete". Before, a message went only as the Mac's setting said, and an urgent one put in the queue could not be taken
+   out.
+6. **Answering a browser tab handed to the person (Yardlet's own).** A task waiting on the person through `browser_handoff`
+   shows as waiting in the phone's list and notifications, with the reason, the site, "I'm done" and "Decline". The tab's
+   screen is not sent yet (section 6.3). Even so, the person can tap "I'm done" after approving a sign-in in another app, or
+   "Decline" when they cannot do it now so the agent does not wait ten minutes. The Mac's sidebar still shows the task running
+   (the panel's bar and a Mac notification tell of the handoff); only the phone's list and notifications read it as waiting.
+   Whether the sidebar should also mark it is a Mac UI decision left to the user.
+7. **App lock (Claude's Trusted Devices).** A setting in the phone app, off by default. When on, the app asks for biometrics or
+   the screen lock PIN when it opens and when the person comes back after more than five minutes away. Items 1-3 widen what a
+   phone can do, so this lowers the risk of losing an unlocked phone (section 10). It uses the Android platform's
+   `BiometricPrompt`, with no new dependency.
+8. **One line on what stays on the Mac (the "Next" column of section 6.6).** Instead of "Other choices are on the Mac", a
+   request that only the Mac can answer says what is there (`macNote`: the card's own name for that answer, a secret answer,
+   an MCP form).
+
+**Deferred:** the scheduled task list and run now (neither app has it on the phone, and it is rarely needed while away); the
+home screen's memory, disk and heat warnings (nothing to do about them from a phone); taking over a browser tab's screen
+(section 6.3, which needs screen streaming and input together); vault confirmation with phone biometrics (section 6.4);
+changing a running task's model or permission mode (the Claude app has it; each harness changes it differently, so it is its
+own step); slash commands from the phone; a whole task's diff pane and diff line comments. Taking a photo with the camera
+and attaching files came later the same day (5.3).
+
+
+### 5.3 Every answer from the phone, files and the camera (2026-10-27, later)
+
+Two more goals the same day: send files as well as photos from the phone, and stop making the person go to the Mac
+for approvals the phone could not answer. Protocol sections 15.19 and 15.20.
+
+**What the phone could not answer, and what it answers now.** The rule is the Mac's card: every answer it shows, the
+phone shows with the same words (`choices`). Both apps answer approvals on the phone with the provider's own
+choices (Codex: once, for the chat, more broadly; Claude: the permission prompt's answers), so Yardlet does too.
+
+| Request | The Mac card's answers | Phone before | Phone now |
+|---|---|---|---|
+| Claude Code permission with a suggestion saved to a settings file | Allow, Always allow in this project (saved to ...), Deny | Allow once, Deny, "more on the Mac" | All three; Always allow asks once more |
+| Claude Code permission kept for the session (may switch the mode) | Allow, Allow for session, Deny | All three (5.2) | All three |
+| Another harness's permission with standing options (ACP `allow_always`, `reject_always`) | The provider's options | Allow once and Deny only where the options were one-time | All options; standing ones ask once more |
+| Codex command approval | Deny, Allow for session, Allow, and where Codex offers them exec and network policy amendments | Allow once, Allow for session, Deny | All; amendments ask once more |
+| Codex request for more permissions (sandbox, network) | Deny, Allow for session, Allow | On the Mac | All three |
+| Codex MCP tool approval (for example a Gmail send through Codex) | Deny, Always allow, Allow this conversation, Allow once | On the Mac | All; Always allow asks once more |
+| Codex MCP form | The form's fields with its answers | On the Mac | Fields and answers on the phone (`formFields`) |
+| A question with a secret answer (Codex `isSecret`) | A masked field | On the Mac | On the phone, masked, never stored |
+| A mode switch request (ACP `switch_mode`) | Allow, Deny | On the Mac | Both |
+| Yardlet's own approvals (a message or a child task into another project, a subagent in another folder) | Allow, Deny | Allow once, Deny | The same, through `choices` |
+| Connector writes Claude Code asks about (Gmail send, Calendar, Drive, App Store Connect, the Mac's apps) | Allow, Deny, with the account, recipients and a body preview | Allow once, Deny, with the same preview (up to 1,000 characters) | The same |
+| A request Yardlet answers nothing for (`unanswerableReason`) | None, with the reason | The reason | The reason |
+| Touch ID, a passkey or sign-in window, a macOS permission prompt, a keychain prompt | Not requests | On the Mac | On the Mac |
+
+**Asking once more.** Only answers that leave a rule beyond the task ask again on the phone (`standing`): "Always
+allow" saved to a settings file, a Codex exec or network policy amendment, an MCP tool allowed for good. They approve
+later calls nobody has seen yet and outlast the task, a tap on a phone is easier to make by mistake than a click on
+the Mac, and a lost phone should not be able to leave them silently. Answers that send something out (a Gmail send,
+a calendar invite) do not ask again: the card already is the confirmation for that one call, with its recipients and
+preview, as on the Mac. "Allow for session" does not either: it ends with the task.
+
+**Secret answers.** Typed on the phone they reach only the person's own Mac, inside the encrypted channel, which
+sends them to the provider as its card would. The phone masks the field, uses a password keyboard (no learning or
+suggestions), blocks screenshots while it shows, and keeps the value only until it is sent: no cache, no draft. Making
+the person walk to the Mac for them would leave the task waiting, which is what this change is for.
+
+**Files.** Up to 20 files per message, each up to 500 MiB: Claude's chat limits ("500MB per file", "Up to 20 files per
+chat", [Uploading files](https://support.claude.com/en/articles/8241126-uploading-files-to-claude), 2026-10-27);
+OpenAI's file upload help could not be read (HTTP 403), so the stricter known figure is used. A file goes up in
+4 MiB parts that resume from what the Mac holds after a dropped connection (the relay carries ordinary encrypted
+chunks). The Mac writes it in its temporary folder, never in the task's folder, readable only by the person and not
+executable, and sends it as a dropped file: an image as an image, anything else as a reference to its path (Claude
+Code's `@`, a Codex mention). Nothing on the Mac opens or runs it. A part-finished upload is dropped after 30
+minutes, and the Mac refuses one that would leave less than 2 GB of disk free. The phone picks files with the system
+document picker (Storage Access Framework), so it needs no storage permission.
+
+**Camera.** A photo taken from the composer through the system camera app, shrunk and sent as the photos of 5.2 are.
+It is written only to the app's own cache until it is sent.
 
 
 ## 6. Handling steps that need the person from the phone while they are away
@@ -343,7 +475,7 @@ nearby-device authentication remotely.
 
 | Step | First | If stuck, from the phone | Only at the Mac |
 |---|---|---|---|
-| Harness approvals, questions and plans | — | Answer directly (section 5) | Answers that create a permanent rule, questions with secret answers, MCP forms |
+| Harness approvals, questions and plans | — | Answer directly (sections 5 and 5.3), every answer the Mac's card gives | A request Yardlet answers nothing for |
 | Browser sign-in and two-step verification | The vault fills passwords, TOTP and Yardlet passkeys without exposing the values ([BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)) | If the vault does not have it or the site blocks it, take over the tab (section 6.3) | — |
 | CAPTCHA, identity checks, payment confirmation, QR sign-in | — | Take over the tab | Sign-in that needs the phone's camera to scan a QR on the Mac's screen |
 | Fingerprint and passkeys | Yardlet passkeys without the person | Vault items set to "Every time" can also be confirmed with phone biometrics (section 6.4) | Touch ID-only confirmation, iCloud Keychain and nearby-device passkeys, the macOS administrator password, keychain access prompts: the phone says "This must be handled on the Mac" |
@@ -423,11 +555,12 @@ this replaces the first recommendation ("leave it out").
 
 | This time (v2) | Next |
 |---|---|
-| Answering approvals, questions and plans; new tasks; messages (including to the coordinating task); pinned tasks at the top; command output and diffs | Taking over a browser tab (section 6.3, together with the "waiting for the person" signal from the browser isolation and vault work) |
+| Answering approvals, questions and plans; new tasks; messages (including to the coordinating task); pinned tasks at the top; command output and diffs | Taking over a browser tab's screen (section 6.3) |
+| A browser tab handed to the person: its reason and site, "I'm done" and "Decline" (item 6 of section 5.2, 2026-10-27) | Seeing the tab's screen and typing into it (section 6.3) |
 | Preventing sleep and screen lock while a task works (section 6.5) | Lid closed (left out) |
-| Only the public version of notifications on the lock screen | Vault confirmation with phone biometrics (section 6.4), re-authentication before takeover |
-| Requests that only work on the Mac say so (`moreOnMac`) | A one-line message on what to do on the Mac (Touch ID, iCloud passkey, system prompt) |
-| Device removal and disconnecting from the phone side | App lock (biometrics when opening the app) |
+| Only the public version of notifications on the lock screen; app lock (item 7 of section 5.2, off by default) | Vault confirmation with phone biometrics (section 6.4), re-authentication before takeover |
+| Requests answer with every choice the Mac's card gives (section 5.3); one Yardlet answers nothing for says why (`macNote`) | One line for steps that are not requests, such as Touch ID, an iCloud passkey or a system prompt (the Mac does not signal them yet) |
+| Device removal and disconnecting from the phone side | — |
 
 ## 7. Platforms
 
@@ -496,7 +629,7 @@ sidebar, and no boxed cards with badges or "01/02" number labels.
 | Someone learns the room ID | Making the first handshake message needs the Mac's public key, which is only in the QR | They can pester the room with connection attempts (limit of 8 per room) |
 | Room hijacking by impersonation at the relay server | The room ID comes from the Mac's signing key, and the signature is verified | A server operator who changes the code can block the Mac (but cannot read anything) |
 | Someone else scans the QR | 5 minutes, one use, and the Mac shows the paired phone's name | Whoever scans first within the 5 minutes gets in (visible in the Mac's list and removable) |
-| Lost phone | Removing it on the Mac cuts it off at once, Android screen lock, only the public version of notifications on the lock screen | Someone with a lost, unlocked phone can operate it until it is removed. App lock (biometrics) is a candidate for next |
+| Lost phone | Removing it on the Mac cuts it off at once, Android screen lock, only the public version of notifications on the lock screen | Someone with a lost, unlocked phone can operate it until it is removed, unless app lock (section 5.2, off by default) is on |
 | The Mac's keys leak | Keys are in the keychain (open only to the app's signature) | Malware running with the same user's rights is a risk, as it is for other Yardlet data |
 | Notification content | Encrypted with the notification key, which travels only over the secure channel after pairing | Google and the relay know that a notification came and when |
 | Credentials, account tokens, environment values | Not sent (same as v1) | — |

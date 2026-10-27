@@ -47,6 +47,8 @@ protocol VaultRepository {
     func saveItems(_ items: [VaultItem])
     func appendUse(_ use: VaultUse)
     func uses(of itemID: UUID, limit: Int) -> [VaultUse]
+    /// Every use the log keeps, oldest first.
+    func allUses() -> [VaultUse]
     func removeAll()
 }
 
@@ -115,6 +117,8 @@ struct FileVaultRepository: VaultRepository {
         Array(readUses().filter { $0.itemID == itemID }.suffix(limit).reversed())
     }
 
+    func allUses() -> [VaultUse] { readUses() }
+
     func removeAll() {
         try? FileManager.default.removeItem(at: itemsURL)
         try? FileManager.default.removeItem(at: usesURL)
@@ -133,6 +137,7 @@ final class InMemoryVaultRepository: VaultRepository {
     func saveItems(_ items: [VaultItem]) { self.items = items }
     func appendUse(_ use: VaultUse) { uses.append(use) }
     func uses(of itemID: UUID, limit: Int) -> [VaultUse] { Array(uses.filter { $0.itemID == itemID }.suffix(limit).reversed()) }
+    func allUses() -> [VaultUse] { uses }
     func removeAll() {
         items = []
         uses = []
@@ -399,6 +404,16 @@ final class VaultCenter: ObservableObject {
 
     func uses(of itemID: UUID, limit: Int = 20) -> [VaultUse] {
         environment.repository.uses(of: itemID, limit: limit)
+    }
+
+    /// The agents' fills the log keeps (90 days): each task and the site of the page filled. A task signed in
+    /// to that site itself (docs/BROWSER_SESSION_ISOLATION.md 11).
+    func agentFills() -> [(task: UUID, site: String)] {
+        environment.repository.allUses().compactMap { use in
+            guard use.outcome == .filled, use.confirmedBy != .person, let task = use.taskID,
+                  let site = BrowserLoginFollow.site(of: use.origin) else { return nil }
+            return (task, site)
+        }
     }
 
     /// Adds or replaces an item and its secret.

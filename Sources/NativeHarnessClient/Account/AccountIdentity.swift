@@ -85,8 +85,17 @@ enum AccountIdentityProjection {
     static func sharedOrganization(_ organization: String?, of email: String?) -> String? {
         guard let organization = organization?.trimmingCharacters(in: .whitespacesAndNewlines), !organization.isEmpty
         else { return nil }
-        if let email, organization == "\(email)'s Organization" { return nil }
+        if let email, organization.caseInsensitiveCompare("\(email)'s Organization") == .orderedSame { return nil }
         return organization
+    }
+
+    /// How an account row names the organization beside the address, so one address's personal
+    /// and team accounts read apart: a team's name, or "Personal" for the address's own
+    /// organization. Nil when the account reported no organization.
+    static func organizationTitle(_ organization: String?, of email: String?) -> String? {
+        guard let organization = organization?.trimmingCharacters(in: .whitespacesAndNewlines), !organization.isEmpty
+        else { return nil }
+        return sharedOrganization(organization, of: email) ?? L10n.string("Personal")
     }
 
     static func identity(

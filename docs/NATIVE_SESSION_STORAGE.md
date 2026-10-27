@@ -30,6 +30,19 @@ with a separate `CODEX_HOME` has its own history, so it is not assigned until th
 history files are copied and no account folder changes. The reason for each assignment is kept in the Yardlet file
 `~/.yardlet/account-assignments.json` (task ID → account ID, window and time).
 
+Account folder shape, finding sign-ins and removing accounts, 2026-10-27 (see
+[PROVIDER_CONNECTIONS.md](PROVIDER_CONNECTIONS.md), "Account folder shape, finding sign-ins and removing accounts"): a
+Claude account folder Yardlet makes for a new sign-in links `projects` and the other shared entries to the default
+folder, so that account's tasks write to the default sign-in's history from the start and the 2026-10-06 account switch
+works for them. Existing tasks' history, scope and account do not move. Sharing a folder that kept its own history ("Share
+With the Default Folder") only adds links; when its `projects` already holds conversations, that folder stays as it is,
+and its tasks keep reading their own history there. "Remove from List" neither clears nor changes a task's
+`connection_binding`: the task goes on in the same folder with its stored binding and scope. "Sign Out and Delete" is
+offered only for a folder Yardlet made, and only when no task uses it. Importing a conversation from a found folder
+(another `CLAUDE_CONFIG_DIR` or `CODEX_HOME`) saves that folder as an account first; the new task points at the native
+session ID with that binding and the `.native` scope, and the history stays in its folder. Codex account folders keep
+their own history as before.
+
 ## Why it changed and how it works
 
 Codex mode per task, 2026-10-23: the chosen Plan/Default preset is stored as `codex.collaborationMode` JSON in the

@@ -81,4 +81,49 @@ final class BrowserTaskProfilesTests: XCTestCase {
         profiles.storage = .shared
         XCTAssertNil(profiles.profile(for: parent), "shared storage opens every tab in the default profile")
     }
+
+    /// Which of the person's sign-ins a task's tab takes when it opens (docs/BROWSER_SESSION_ISOLATION.md 11): one it
+    /// has not yet, unless the site is the task's own; a task from before following keeps what it has and only fills
+    /// the sites it has none of. Taking a sign-in twice, or one over a task's own account, signs the task out or in
+    /// as someone else without a sign.
+    func testATaskTakesThePersonsSignInsItHasNotYetExceptOnItsOwnSites() throws {
+        let profiles = BrowserTaskProfiles(root: folder, defaults: defaults)
+        let person = UUID(), running = UUID(), agent = UUID(), closed = UUID(), earlier = UUID(), later = UUID(), child = UUID()
+        profiles.parentOf = { $0 == child ? agent : nil }
+        let key = { (task: UUID) in profiles.key(for: task) }
+        // A task from before following: its folder is there and it never opened since.
+        try makeFolder(profiles.folder(for: key(earlier)))
+        for task in [person, running, agent, closed] {
+            XCTAssertNil(profiles.opening(for: task)?.follow, "a new task starts with the default profile, which holds every sign-in")
+            try makeFolder(profiles.folder(for: key(task)))
+        }
+        profiles.signedInItself(to: "example.com", in: key(agent))
+
+        // The person signs in on one task's page: the default profile and the open tasks that follow the site take it.
+        let targets = profiles.personSignedIn(to: "example.com", in: key(person),
+                                              open: [key(person), key(running), key(agent)])
+        XCTAssertEqual(targets, [nil, key(running)], "not the task the sign-in came from, nor one with its own")
+        XCTAssertNil(profiles.opening(for: running)?.follow, "a running task took it already")
+        XCTAssertEqual(profiles.opening(for: closed)?.follow, ["example.com"], "a closed task takes it when its tab opens")
+        XCTAssertNil(profiles.opening(for: closed)?.follow, "once")
+        XCTAssertNil(profiles.opening(for: agent)?.follow, "the task's own sign-in stays")
+        XCTAssertEqual(profiles.personSignedIn(to: "example.com", in: key(agent), open: []), [],
+                       "a sign-in on a task's own site stays the task's")
+
+        let first = profiles.opening(for: earlier)
+        XCTAssertEqual(first?.fill, true, "a task from before following fills the sites it has none of")
+        XCTAssertEqual(first?.follow, ["example.com"], "and takes the sign-ins made since")
+        XCTAssertNil(profiles.opening(for: earlier)?.fill, "once")
+        XCTAssertNil(profiles.opening(for: later)?.follow, "a task made after a sign-in starts with it")
+        let fromParent = profiles.opening(for: child)
+        XCTAssertEqual(fromParent?.seedFrom, key(agent))
+        XCTAssertNil(fromParent?.follow, "a child task keeps its parent's own sign-in")
+
+        let reread = BrowserTaskProfiles(root: folder, defaults: defaults)
+        XCTAssertEqual(reread.following, profiles.following, "following outlives the app")
+        reread.adoptEarlierAgentFills { [(closed, "example.org")] }
+        reread.adoptEarlierAgentFills { [(closed, "example.net")] }
+        XCTAssertTrue(reread.isOwn("example.org", in: key(closed)), "an agent's earlier fill is its task's own sign-in")
+        XCTAssertFalse(reread.isOwn("example.net", in: key(closed)), "the earlier fills are read once")
+    }
 }

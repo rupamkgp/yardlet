@@ -9,6 +9,8 @@ enum SidebarTaskStatus: Equatable, Sendable {
     case awaitingApproval
     /// The task asked a question: the Claude app's "Awaiting answer".
     case needsInput
+    /// A tab of the task's browser waits on the person (`TaskAttentionDetail.browserWait`).
+    case waitingInBrowser
     /// The latest turn failed: the Claude app's warning mark, with the Codex app's words, since the
     /// Claude app names each kind of error on its own.
     case failed(message: String?)
@@ -27,11 +29,12 @@ enum SidebarTaskStatus: Equatable, Sendable {
         switch self {
         case .awaitingApproval: 0
         case .needsInput: 1
-        case .failed: 2
-        case .usageLimit: 3
-        case .running: 4
-        case .reconnecting: 5
-        case .unread: 6
+        case .waitingInBrowser: 2
+        case .failed: 3
+        case .usageLimit: 4
+        case .running: 5
+        case .reconnecting: 6
+        case .unread: 7
         }
     }
 
@@ -41,6 +44,7 @@ enum SidebarTaskStatus: Equatable, Sendable {
         switch self {
         case .awaitingApproval: L10n.string("Awaiting input")
         case .needsInput: L10n.string("Awaiting answer")
+        case .waitingInBrowser: L10n.string("Waiting in the browser")
         case .failed: L10n.string("Task encountered a system error")
         case let .usageLimit(limit): ProviderNoticeText.limitHeadline(limit)
         case .running: L10n.string("Running")
@@ -87,6 +91,7 @@ enum SidebarTaskIndicatorProjection {
         if let request = TaskAttentionProjection.waitingRequest(of: session, detail: detail) {
             return request == .input ? .needsInput : .awaitingApproval
         }
+        if detail?.browserWait != nil { return .waitingInBrowser }
         if session.status == .running || isShellBusy { return .running }
         if detail?.isReconnecting == true { return .reconnecting }
         if let limit = detail?.usageLimit { return .usageLimit(limit) }

@@ -769,6 +769,7 @@ extension AppModel: SessionToolHandling {
             return request == .input ? "it waits for the person's answer." : "it waits for the person's approval."
         }
         if sessionToolWaitsForPerson(in: session.id) { return "it waits for the person's approval." }
+        if taskAttentionDetails[session.id]?.browserWait != nil { return "a tab of its browser waits for the person." }
         if sessionTools.isQueued(session.id) { return "it is queued and has not started." }
         if Self.isWorking(session) || !followUps.queue(for: session.id).isEmpty { return "it is running." }
         if shellBusySessionIDs.contains(session.id) { return "a command it started is still running." }

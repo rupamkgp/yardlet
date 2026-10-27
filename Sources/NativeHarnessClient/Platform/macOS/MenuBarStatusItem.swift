@@ -8,7 +8,8 @@ import SwiftUI
 /// Running, Unread, Pinned and Recent each list three tasks (the sidebar's state mark, the title,
 /// then the project or "Chats" under it) and the rest under More; Usage lists one plain line per
 /// account with its harness's mark. Then New task, Open Yardlet and Quit Yardlet, as the Codex menu
-/// ends with New Chat, Open and Quit.
+/// ends with New Chat, Open and Quit; a staged build ready to install adds "Restart to update" before
+/// Quit (`MenuBarMenu.UpdateLine`).
 @MainActor
 final class MenuBarMenuController: NSObject, NSMenuDelegate {
     struct Actions {
@@ -16,6 +17,8 @@ final class MenuBarMenuController: NSObject, NSMenuDelegate {
         var newTask: @MainActor () -> Void = {}
         var openApp: @MainActor () -> Void = {}
         var quit: @MainActor () -> Void = {}
+        /// "Restart to update": Yardlet › Install Update….
+        var installUpdate: @MainActor () -> Void = {}
 
         /// What the items do in the app: a task opens as a notification click opens it.
         static func routing(to model: AppModel) -> Actions {
@@ -94,6 +97,11 @@ final class MenuBarMenuController: NSObject, NSMenuDelegate {
         items.append(.separator())
         items.append(actionItem(L10n.format("Open %@", YardletProduct.name), #selector(chooseOpenApp(_:))))
         items.append(.separator())
+        if let update = contents.update {
+            let item = update == .waiting ? plainItem(update.title) : actionItem(update.title, #selector(chooseInstallUpdate(_:)))
+            item.toolTip = update.help
+            items.append(item)
+        }
         items.append(actionItem(L10n.format("Quit %@", YardletProduct.name), #selector(chooseQuit(_:))))
         return items
     }
@@ -143,6 +151,7 @@ final class MenuBarMenuController: NSObject, NSMenuDelegate {
     @objc func chooseNewTask(_ sender: NSMenuItem) { actions.newTask() }
     @objc func chooseOpenApp(_ sender: NSMenuItem) { actions.openApp() }
     @objc func chooseQuit(_ sender: NSMenuItem) { actions.quit() }
+    @objc func chooseInstallUpdate(_ sender: NSMenuItem) { actions.installUpdate() }
     @objc func chooseLetScreenLock(_ sender: NSMenuItem) { UserDefaults.yardlet.set(false, forKey: KeepScreenAwakePreference.key) }
 }
 
@@ -173,10 +182,18 @@ final class MenuBarStatusItem {
         update()
     }
 
-    static func live(model: AppModel) -> MenuBarStatusItem {
-        MenuBarStatusItem(controller: MenuBarMenuController(
-            content: { [weak model] in model?.menuBarMenu() ?? .empty },
-            actions: .routing(to: model),
+    /// `update` is the staged build's line, read as the menu opens, and `installUpdate` what it does.
+    static func live(model: AppModel, update: @escaping @MainActor () -> MenuBarMenu.UpdateLine? = { nil },
+                     installUpdate: @escaping @MainActor () -> Void = {}) -> MenuBarStatusItem {
+        var actions = MenuBarMenuController.Actions.routing(to: model)
+        actions.installUpdate = installUpdate
+        return MenuBarStatusItem(controller: MenuBarMenuController(
+            content: { [weak model] in
+                var menu = model?.menuBarMenu() ?? .empty
+                menu.update = update()
+                return menu
+            },
+            actions: actions,
             checkUsage: { [weak model] in await model?.checkUsageAccounts() }
         ))
     }
@@ -227,7 +244,8 @@ enum MenuBarItemMarks {
     static let size = NSSize(width: 14, height: 14)
 
     /// The sidebar's mark for a task's state (`SidebarTaskStatusView`): a 6 pt dot, green for an
-    /// approval, orange for a question, gray while working, the accent for an unread result; the red
+    /// approval, orange for a question, gray while working, the accent for an unread result; an orange
+    /// globe while a browser tab waits on the person; the red
     /// warning for a failed turn and the orange gauge for a plan limit. Nothing for no state. The
     /// state's name is the image's accessibility description.
     static func status(_ status: SidebarTaskStatus?) -> NSImage {
@@ -235,6 +253,7 @@ enum MenuBarItemMarks {
             switch status {
             case .awaitingApproval?: dot(.systemGreen, in: rect)
             case .needsInput?: dot(.systemOrange, in: rect)
+            case .waitingInBrowser?: symbol("globe", .systemOrange, weight: .semibold, in: rect)
             case .running?: dot(.secondaryLabelColor, in: rect)
             case .reconnecting?: symbol("network.slash", .secondaryLabelColor, weight: .medium, in: rect)
             case .unread?: dot(NSColor(ParityTheme.accent), in: rect)

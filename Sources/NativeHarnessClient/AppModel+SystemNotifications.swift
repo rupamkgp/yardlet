@@ -53,6 +53,8 @@ extension AppModel {
             // As choosing the task in the sidebar or with ⌥⌘A: a task in a split view opens the
             // split with its pane focused.
             splits.activate(.session(target.sessionID))
+            // A browser tab's notification opens the task's panel on that tab.
+            if let tab = target.browserTab { showBrowserTab(tab, under: target.sessionID) }
             return .opened
         }
         if store.archivedSessions == nil { try? await store.loadArchivedSessions() }

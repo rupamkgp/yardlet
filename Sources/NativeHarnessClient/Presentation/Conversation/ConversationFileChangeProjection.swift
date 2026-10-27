@@ -77,7 +77,7 @@ enum ConversationFileChangeProjection {
             state: CodexFileChangeCardProjection.state(for: status, isTurnFinished: isTurnFinished),
             lineCounts: counts,
             preview: availability,
-            fileURL: workspaceURL.flatMap { CodexFileChangeCardProjection.fileURL(for: diff.path, workspaceURL: $0) },
+            fileURL: workspaceURL.flatMap { CodexFileChangeCardProjection.openableURL(for: diff.path, workspaceURL: $0) },
             precomputedPreview: lines.map { lines in
                 CodexFileChangeCardProjection.Preview(
                     lines: lines.lines, hiddenLineCount: lines.hiddenLineCount, firstChangedLine: nil
@@ -249,7 +249,7 @@ extension CodexFileChangeCardProjection.Row {
         return Self(
             id: id, change: change, displayPath: displayPath, fileName: URL(filePath: displayPath).lastPathComponent,
             kind: kind, state: state, lineCounts: lineCounts, preview: preview,
-            fileURL: workspaceURL.flatMap { CodexFileChangeCardProjection.fileURL(for: target, workspaceURL: $0) },
+            fileURL: workspaceURL.flatMap { CodexFileChangeCardProjection.openableURL(for: target, workspaceURL: $0) },
             precomputedPreview: precomputedPreview
         )
     }

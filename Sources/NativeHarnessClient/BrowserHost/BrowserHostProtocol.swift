@@ -377,12 +377,16 @@ enum BrowserUnresponsiveAction: String, Codable, Equatable, Sendable {
     case wait, terminate
 }
 
-/// A task's own browser profile (docs/BROWSER_SESSION_ISOLATION.md): its folder key under the host's
-/// `Tasks` folder, and the profile a new folder copies its cookies from (another key; nil for the default
-/// profile).
+/// A task's own browser profile (docs/BROWSER_SESSION_ISOLATION.md): its folder key (`Task-<key>` beside the
+/// default profile), and the profile a new folder copies its cookies from (another key; nil for the default
+/// profile). Before the tab's page the profile also takes, from the default profile, the person's sign-ins it
+/// follows and has not yet (`follow`, sites whose cookies it replaces) and, for a task that predates following,
+/// the sites it has no cookie of (`fill`) (section 11).
 struct BrowserTabProfile: Codable, Equatable, Sendable {
     var key: String
     var seedFrom: String?
+    var follow: [String]? = nil
+    var fill: Bool? = nil
 }
 
 /// A cookie another browser keeps (`BrowserLoginImport`), as Chromium stores it: `domain` with a leading dot for a
@@ -405,8 +409,12 @@ enum BrowserHostCommand: Codable, Equatable, Sendable {
     /// Opens a tab; with a profile it shares that task profile's cookies and storage, else the default's.
     case open(tab: BrowserTabID, url: String, viewport: BrowserViewport, profile: BrowserTabProfile? = nil)
     /// Copies the cookies of `domain` and its subdomains from one profile to another (a key; nil for the
-    /// default profile): a person's sign-in in a task's tab goes to the default profile too.
-    case copyCookies(from: String?, to: String?, domain: String)
+    /// default profile), with `replace` in place of the target's cookies of `domain`: a person's sign-in in a
+    /// task's tab goes to the default profile and the tasks that follow it.
+    case copyCookies(from: String?, to: String?, domain: String, replace: Bool)
+    /// Sums a hash of each cookie of `site` and its subdomains in a profile (a key; nil for the default profile),
+    /// answered with `cookieDigest`: whether a sign-in changed them, without their values leaving the host.
+    case cookieDigest(request: Int, profile: String?, site: String)
     /// Replaces the cookies of `sites` (each a domain with its subdomains) in one profile (a key; nil for the default
     /// profile) with another browser's, which the person chose to bring over; answered with `cookiesImported`. A task
     /// profile that has no folder yet is left as it is: it starts from the default profile's cookies.
@@ -444,6 +452,11 @@ enum BrowserHostCommand: Codable, Equatable, Sendable {
     /// Answers Chromium's hang monitor for a tab it found unresponsive (`responsiveness`): wait another
     /// 15 seconds, or end the renderer (the page then reports `pageCrashed`).
     case unresponsive(tab: BrowserTabID, action: BrowserUnresponsiveAction)
+    /// The memory saver: discards a hidden tab as Chrome's Memory Saver does, unless its page is one Chrome keeps
+    /// (docs/BROWSER_HOST.md §3 "Memory saver"). The page's renderer ends and the tab keeps its address, title and
+    /// history; `discarded` follows, or `discardRefused`. A reload (`navigation`) loads the page again. `urgent`: the
+    /// Mac is short of memory, when Chrome does not keep a page for its notification permission.
+    case discard(tab: BrowserTabID, urgent: Bool)
     case close(tab: BrowserTabID)
     /// Closes a tab as a person closes it: a page that asks before it is left (beforeunload) asks first, as a
     /// `javaScriptDialog`, and Stay keeps the tab open. Otherwise `closed` follows, as for `close`.
@@ -467,6 +480,8 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
     case ready(processID: Int, engine: String, acceleratedPaint: Bool)
     /// An `importCookies` is done: the cookies it set (0 for a task profile it left as it is), or -1 when it could not run.
     case cookiesImported(request: Int, count: Int)
+    /// A `cookieDigest`'s sum, 16 hexadecimal digits; empty when it could not run.
+    case cookieDigest(request: Int, digest: String)
     /// Chromium opened (true) or closed its last window of its own in the host, such as the passkey
     /// dialog, or the windows shown changed. While one is shown the host may be activated, so the window takes
     /// the keyboard. `kinds` (one per title): passkey, signIn (HTTP authentication), print, other; nil from a
@@ -517,6 +532,9 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
     /// The page went away while a dialog was open; any sheet for it should close.
     case javaScriptDialogReset(tab: BrowserTabID)
     case fileDialog(tab: BrowserTabID, dialog: BrowserFileDialog)
+    /// Produced by the client, never sent by a host: the page's JavaScript dialog or file chooser `dialog` no longer
+    /// waits (the panel or the agent answered it, or it went with its page).
+    case dialogClosed(tab: BrowserTabID, dialog: Int)
     /// The page asks for permissions; answer with `permissionResult`.
     case permissionPrompt(tab: BrowserTabID, prompt: BrowserPermissionPrompt)
     /// The prompt went away: answered, or the page moved on or closed first.
@@ -535,6 +553,11 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
     /// Chromium's hang monitor: the tab's renderer has not handled input for 15 seconds (false), or
     /// answers again (true).
     case responsiveness(tab: BrowserTabID, isResponsive: Bool)
+    /// The tab was discarded (`discard`): its page is gone until a reload.
+    case discarded(tab: BrowserTabID)
+    /// The host kept the tab `discard` named: its page is one Chrome would keep (`reason`: loading, capturing,
+    /// audible, post, pdf, notifications, media, form, shared, unread, unanswered, shown, gone …).
+    case discardRefused(tab: BrowserTabID, reason: String)
     /// Part of the page's accessibility tree changed (the whole tree first, after `accessibility`
     /// turned it on or a new document loaded).
     case accessibilityTree(tab: BrowserTabID, change: BrowserAccessibilityTreeChange)
@@ -559,16 +582,17 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
     /// The tab an event belongs to; nil for host-wide events.
     var tab: BrowserTabID? {
         switch self {
-        case .ready, .chromiumWindow, .cookiesImported, .failed, .terminated: nil
+        case .ready, .chromiumWindow, .cookiesImported, .cookieDigest, .failed, .terminated: nil
         case .opened(let tab), .frame(let tab, _), .popup(let tab, _), .cursor(let tab, _),
              .contextMenu(let tab, _), .compositionBounds(let tab, _), .address(let tab, _),
              .title(let tab, _), .favicon(let tab, _, _), .loading(let tab, _, _, _), .loadEnd(let tab, _, _),
              .loadError(let tab, _, _, _), .console(let tab, _, _, _, _), .newWindow(let tab, _, _, _), .popupOpened(let tab, _, _, _),
              .openedTab(let tab, _, _), .externalApp(let tab, _), .externalAppHandled(let tab, _, _, _), .newDocument(let tab, _),
              .navigationBlocked(let tab, _), .tooltip(let tab, _), .javaScriptDialog(let tab, _),
-             .javaScriptDialogReset(let tab), .fileDialog(let tab, _), .permissionPrompt(let tab, _),
+             .javaScriptDialogReset(let tab), .fileDialog(let tab, _), .dialogClosed(let tab, _), .permissionPrompt(let tab, _),
              .permissionPromptDismissed(let tab, _), .download(let tab, _),
              .findResult(let tab, _), .dragOperation(let tab, _), .passwordField(let tab, _), .pageCrashed(let tab, _, _, _), .responsiveness(let tab, _),
+             .discarded(let tab), .discardRefused(let tab, _),
              .accessibilityTree(let tab, _), .accessibilityLocations(let tab, _), .scrollOffset(let tab, _, _),
              .devTools(let tab, _), .hidden(let tab), .closed(let tab):
             tab

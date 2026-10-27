@@ -26,6 +26,9 @@ final class BrowserHostClient {
     let idleGrace: Duration
     let agentVisibleWindow: Duration
     let shutdownTimeout: Duration
+    /// How long after the person's last click, key, scroll or drag in a tab shown on screen they are taken as still
+    /// using it (`personUse(of:)`): long enough for a pause while reading between scrolls. QA shortens it.
+    var personUseWindow: Duration
     private let launcher: Launcher
     private var connection: (any BrowserHostConnection)?
     /// Yardlet asked the running host to end (`shutdown`); it closes every tab on its way out.
@@ -37,13 +40,21 @@ final class BrowserHostClient {
     /// Each session's tabs in strip order, and its fronted tab.
     private var sessionOrder: [UUID: [BrowserTabID]] = [:]
     private var frontedTabs: [UUID: BrowserTabID] = [:]
+    /// The tab each session's agent works in where it is not the tab in front: the agent chose it while the person
+    /// was using the panel's tab, or the person showed another tab while the agent worked in the one in front. Tools
+    /// that name no tab use it (`agentTab(forSession:)`). The turn's end, the tab closing, or the panel coming to show
+    /// it lets it go.
+    private var agentFronts: [UUID: BrowserTabID] = [:]
+    /// The tab the session's agent used last in its turn, until the turn ends or the tab closes.
+    private var agentUsedTabs: [UUID: BrowserTabID] = [:]
     /// Each session's tabs as they were when the host ended, to open again.
     private var remembered: [UUID: BrowserRememberedTabs] = [:]
     /// Addresses of each session's recently closed tabs, newest last.
     private var closedAddresses: [UUID: [String]] = [:]
     private var sessionObservers: [UUID: [UUID: () -> Void]] = [:]
-    /// Cookie imports waiting for the host's `cookiesImported`.
+    /// Cookie imports waiting for the host's `cookiesImported`, and digests for its `cookieDigest`.
     private var cookieImports: [Int: CheckedContinuation<Int, Never>] = [:]
+    private var cookieDigests: [Int: CheckedContinuation<String?, Never>] = [:]
     private var nextCookieImport = 1
 
     /// The most tabs one task keeps, as the Claude app's Browser pane (⌘1…⌘9 reach all of them).
@@ -58,9 +69,6 @@ final class BrowserHostClient {
     /// the tab it is over when the host knows it; empty when none is open.
     private(set) var chromiumWindows: [BrowserChromiumWindow] = []
     var chromiumWindowTitles: [String] { chromiumWindows.map(\.title) }
-    /// Called when one of Chromium's windows comes over a tab of a task whose panel is not on screen (the agent's
-    /// background tab, a task the person is not in): the person sees the window only where a panel shows its tab.
-    var onChromiumWindowOverHiddenTab: ((BrowserTab) -> Void)?
     /// Called after the windows or their tabs changed, for placing them over their tabs.
     var onChromiumWindowsChange: (() -> Void)?
     /// What opens other apps' addresses a page asks for (LaunchServices on macOS).
@@ -71,32 +79,62 @@ final class BrowserHostClient {
     var onAgentActivity: ((_ session: UUID, _ tab: BrowserTabID) -> Void)?
     /// Called when a tab goes away: closed, or lost with the host.
     var onTabClosed: ((BrowserTabID) -> Void)?
+    /// Called whenever what a tab waits on from the person changes (`personWait(of:)`), for the task's marks and
+    /// notification.
+    var onPersonWaitsChange: (() -> Void)?
+    /// Called with every event a tab receives, after the tab and its panel have it.
+    var onTabEvent: ((BrowserTab, BrowserHostEvent) -> Void)?
 
     init(
         idleGrace: Duration = .seconds(60),
         agentVisibleWindow: Duration = .seconds(60),
         shutdownTimeout: Duration = .seconds(5),
+        personUseWindow: Duration = .seconds(30),
         launcher: @escaping Launcher
     ) {
         self.idleGrace = idleGrace
         self.agentVisibleWindow = agentVisibleWindow
         self.shutdownTimeout = shutdownTimeout
+        self.personUseWindow = personUseWindow
         self.launcher = launcher
     }
 
     var isHostRunning: Bool { connection != nil }
     /// The profile a session's tabs open in (`BrowserTaskProfiles`); nil, or no provider, is the default profile.
     var profileForSession: (@MainActor (UUID) -> BrowserTabProfile?)?
+    /// The profile a session's tab opens with, with the cookies it takes first (`BrowserTaskProfiles.opening`);
+    /// `profileForSession` when nil.
+    var openingProfileForSession: (@MainActor (UUID) -> BrowserTabProfile?)?
     /// Tabs moved to another session with their pages; the profile they are in goes with them.
     var onTabsMoved: (@MainActor (_ source: UUID, _ target: UUID) -> Void)?
     /// The host ended (idle, quit or crashed): the moment no profile folder is open.
     var onHostEnded: (@MainActor () -> Void)?
 
-    /// A person signed in on a task's page: that site's cookies also go to the default profile, where new
-    /// tasks start from. Nothing to do when the task's tabs use the default profile.
-    func copyCookies(fromSession session: UUID, toDefaultFor domain: String) {
-        guard let profile = profileForSession?(session), let connection else { return }
-        connection.send(.copyCookies(from: profile.key, to: nil, domain: domain))
+    /// The sessions with tabs in the host, whose profiles are open there.
+    var sessionsWithTabs: [UUID] {
+        sessionOrder.filter { !$0.value.isEmpty }.map(\.key)
+    }
+
+    /// A person's sign-in on `site` goes from one profile to another (a key; nil for the default profile), in place
+    /// of that profile's cookies of the site (`BrowserLoginFollow`). Nothing when the host is not running.
+    func copyCookies(from source: String?, to target: String?, site: String) {
+        connection?.send(.copyCookies(from: source, to: target, domain: site, replace: true))
+    }
+
+    /// A sum of the hashes of a profile's cookies of `site` (a key; nil for the default profile), to tell that they
+    /// changed; nil when the host is not running or did not answer within `timeout`.
+    func cookieDigest(profile: String?, site: String, timeout: Duration = .seconds(5)) async -> String? {
+        guard let connection else { return nil }
+        let request = nextCookieImport
+        nextCookieImport += 1
+        return await withCheckedContinuation { continuation in
+            cookieDigests[request] = continuation
+            connection.send(.cookieDigest(request: request, profile: profile, site: site))
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.cookieDigests.removeValue(forKey: request)?.resume(returning: nil)
+            }
+        }
     }
 
     /// Brings the person's sign-ins for `sites` over from another browser (`BrowserLoginImport`): each profile (a key;
@@ -172,7 +210,10 @@ final class BrowserHostClient {
         guard tab(key: key, forSession: session) == nil else { throw BrowserTabKeyInUseError() }
         let tab = try open(url: url, viewport: viewport, session: session, key: key,
                            after: after.flatMap { $0.session == session ? $0.id : nil })
-        if select || frontedTabs[session].flatMap({ tabs[$0] }) == nil { frontedTabs[session] = tab.id }
+        if select || frontedTabs[session].flatMap({ tabs[$0] }) == nil {
+            keepAgentTab(inSession: session, as: tab.id)
+            frontedTabs[session] = tab.id
+        }
         reschedule()
         notifySession(session)
         return tab
@@ -188,6 +229,126 @@ final class BrowserHostClient {
         guard let session = tab.session, tabs[tab.id] === tab, frontedTabs[session] != tab.id else { return }
         frontedTabs[session] = tab.id
         notifySession(session)
+    }
+
+    // MARK: The person's tab and the agent's
+
+    /// The panel shows `tab` (the person chose it, or the panel follows the engine): it comes in front. An agent that
+    /// worked in the tab in front during its turn keeps working there rather than following the person to the tab
+    /// they show; once the panel shows the agent's own tab, the two are one again.
+    func show(_ tab: BrowserTab) {
+        guard let session = tab.session, tabs[tab.id] === tab else { return }
+        if agentFronts[session] == tab.id {
+            agentFronts[session] = nil
+        } else {
+            keepAgentTab(inSession: session, as: tab.id)
+        }
+        select(tab)
+    }
+
+    /// Another tab is about to come in front: an agent that worked in the one in front this turn keeps it as its own.
+    private func keepAgentTab(inSession session: UUID, as newFront: BrowserTabID) {
+        guard agentFronts[session] == nil, let front = frontedTabs[session], front != newFront,
+              agentUsedTabs[session] == front else { return }
+        agentFronts[session] = front
+    }
+
+    /// The agent fronts a tab (`browser_tab_select`, a new tab in front). The panel shows it, as before, unless the
+    /// person is using another of the task's tabs there: then the panel stays, and the tab is the agent's own
+    /// (`agentTab(forSession:)`). Returns the tab the person is using when the panel stayed.
+    @discardableResult
+    func selectForAgent(_ tab: BrowserTab) -> BrowserTab? {
+        guard let session = tab.session, tabs[tab.id] === tab else { return nil }
+        if let used = personUsedTab(forSession: session), used !== tab {
+            if agentFronts[session] != tab.id {
+                agentFronts[session] = tab.id
+                notifySession(session)
+            }
+            return used
+        }
+        agentFronts[session] = nil
+        select(tab)
+        return nil
+    }
+
+    /// The tab the session's agent acts on when a tool names none: its own where it has one apart from the tab in
+    /// front, else the tab in front.
+    func agentTab(forSession session: UUID) -> BrowserTab? {
+        if let id = agentFronts[session], let tab = tabs[id], tab.session == session { return tab }
+        return tab(forSession: session)
+    }
+
+    /// The tab the session's agent used last in its turn (the panel's tab strip marks it).
+    func agentUsedTab(forSession session: UUID) -> BrowserTab? {
+        agentUsedTabs[session].flatMap { tabs[$0] }
+    }
+
+    /// The person is using `tab`: a panel shows it on screen, and its page has their keyboard (the panel's view is
+    /// the first responder of the key window) or their last click, key, scroll or drag in it came within
+    /// `personUseWindow`. Nil otherwise.
+    func personUse(of tab: BrowserTab, now: ContinuousClock.Instant = .now) -> BrowserPersonUse? {
+        guard tabs[tab.id] === tab, tab.visiblePanelCount > 0 else { return nil }
+        let recent = tab.lastPersonUse.map { now - $0 < personUseWindow } ?? false
+        guard tab.hasPanelKeyboard || recent else { return nil }
+        return BrowserPersonUse(hasKeyboard: tab.hasPanelKeyboard,
+                                secondsSinceInput: tab.lastPersonUse.map { Int(max(0, (now - $0).components.seconds)) })
+    }
+
+    /// The session's tab the person is using in its panel, if any.
+    func personUsedTab(forSession session: UUID) -> BrowserTab? {
+        tabs(forSession: session).first { personUse(of: $0) != nil }
+    }
+
+    /// The panel's view has the keyboard on the tab's page, in the key window, or no longer has it.
+    func setPanelKeyboard(_ hasKeyboard: Bool, on tab: BrowserTab) {
+        guard tabs[tab.id] === tab else { return }
+        tab.hasPanelKeyboard = hasKeyboard
+    }
+
+    /// The session's agent turn ended: its own tab and the mark on the tab it used go.
+    func endAgentTurn(forSession session: UUID) {
+        guard agentFronts[session] != nil || agentUsedTabs[session] != nil else { return }
+        agentFronts[session] = nil
+        agentUsedTabs[session] = nil
+        notifySession(session)
+    }
+
+    /// Where a page's new tab goes: in front, as before, unless the person is using another of the task's tabs than
+    /// the one that opened it; then behind, and the agent's when its tab opened it.
+    private func opensBehind(from opener: BrowserTab, session: UUID) -> Bool {
+        guard let used = personUsedTab(forSession: session), used !== opener else { return false }
+        return true
+    }
+
+    // MARK: What a tab waits on from the person
+
+    /// What `tab` waits on from the person, the most pressing first: the agent's handoff, one of Chromium's windows
+    /// over it (a passkey, a site's sign-in), a permission, another app to open, a JavaScript dialog, a file chooser.
+    func personWait(of tab: BrowserTab) -> BrowserPersonWait? {
+        guard tabs[tab.id] === tab else { return nil }
+        if let handoff = tab.handoff, handoff.answer == nil {
+            return BrowserPersonWait(kind: .handoff, id: handoff.id.uuidString)
+        }
+        if let window = chromiumWindows.first(where: { $0.tab == tab.id && $0.kind != .print }) {
+            return BrowserPersonWait(kind: window.kind == .signIn ? .signIn : .passkey, id: "window-\(window.id)")
+        }
+        if let prompt = tab.permissionPrompt { return BrowserPersonWait(kind: .permission, id: "permission-\(prompt.id)") }
+        if let question = tab.externalAppQuestion {
+            return BrowserPersonWait(kind: .externalApp, id: "app-\(question.url)")
+        }
+        if let dialog = tab.javaScriptDialog {
+            return BrowserPersonWait(kind: .javaScriptDialog, id: "dialog-\(dialog.id)", agentLed: tab.dialogByAgent)
+        }
+        if let chooser = tab.fileDialog {
+            return BrowserPersonWait(kind: .fileChooser, id: "file-\(chooser.id)", agentLed: tab.fileDialogByAgent)
+        }
+        return nil
+    }
+
+    /// What a tab waits on from the person changed: its task's panel tab and the task's marks follow.
+    fileprivate func personWaitChanged(_ tab: BrowserTab) {
+        if let session = tab.session { notifySession(session) }
+        onPersonWaitsChange?()
     }
 
     /// Tabs to open again for a session with none (saved with the task before Yardlet restarted).
@@ -235,6 +396,8 @@ final class BrowserHostClient {
         let replacement = try open(url: url, viewport: tab.viewport ?? .offscreenDefault, session: session, key: tab.key,
                                    after: nil, at: min(index, order.count))
         if wasFront || frontedTabs[session].flatMap({ tabs[$0] }) == nil { frontedTabs[session] = replacement.id }
+        if agentFronts[session] == tab.id { agentFronts[session] = replacement.id }
+        if agentUsedTabs[session] == tab.id { agentUsedTabs[session] = replacement.id }
         reschedule()
         notifySession(session)
         return replacement
@@ -292,6 +455,8 @@ final class BrowserHostClient {
             }
         }
         sessionOrder[source] = order.isEmpty ? nil : order
+        if agentFronts[source] == tab.id { agentFronts[source] = nil }
+        if agentUsedTabs[source] == tab.id { agentUsedTabs[source] = nil }
         tab.session = target
         onTabsMoved?(source, target)
         remembered[target] = nil
@@ -323,6 +488,8 @@ final class BrowserHostClient {
         remembered[session] = nil
         closedAddresses[session] = nil
         frontedTabs[session] = nil
+        agentFronts[session] = nil
+        agentUsedTabs[session] = nil
         sessionOrder[session] = nil
         notifySession(session)
     }
@@ -348,6 +515,7 @@ final class BrowserHostClient {
         tab.wasPanelAttached = true
         tab.isShown = true
         connection?.send(.visibility(tab: tab.id, isHidden: false))
+        wake(tab)
         reschedule()
     }
 
@@ -381,10 +549,17 @@ final class BrowserHostClient {
     func noteAgentActivity(on tab: BrowserTab) {
         guard tabs[tab.id] === tab else { return }
         tab.lastAgentActivity = .now
+        tab.isInAgentTurn = true
         // Shown before the agent's next command, which follows on the same connection.
         updateVisibility(of: tab, now: .now)
         tab.onAgentActivity?()
-        if let session = tab.session { onAgentActivity?(session, tab.id) }
+        if let session = tab.session {
+            onAgentActivity?(session, tab.id)
+            if agentUsedTabs[session] != tab.id {
+                agentUsedTabs[session] = tab.id
+                notifySession(session)
+            }
+        }
         reschedule()
     }
 
@@ -409,10 +584,14 @@ final class BrowserHostClient {
         guard tabs[tab.id] === tab, !tab.isClosing else { return }
         guard let connection else { return close(tab) }
         tab.isClosing = true
+        tab.closeRequests += 1
+        let request = tab.closeRequests
         connection.send(.requestClose(tab: tab.id))
         Task { @MainActor [weak self, weak tab] in
             try? await Task.sleep(for: Self.closeAnswerWait)
-            guard let self, let tab, self.tabs[tab.id] === tab, tab.isClosing, tab.closeQuestion == nil else { return }
+            // Only this close's wait: after the person stayed and closed again, the next close has its own.
+            guard let self, let tab, self.tabs[tab.id] === tab, tab.isClosing, tab.closeRequests == request,
+                  tab.closeQuestion == nil else { return }
             self.close(tab)
         }
     }
@@ -493,6 +672,69 @@ final class BrowserHostClient {
         return true
     }
 
+    // MARK: Memory saver (docs/BROWSER_HOST.md §3 "Memory saver")
+
+    /// Whether hidden tabs are discarded as Chrome's Memory Saver discards them (`BrowserMemorySaver`, Settings ›
+    /// General "Memory saver"). Turning it off loads the discarded tabs' pages again: the tabs are as they were before.
+    var isMemorySaverOn = false {
+        didSet {
+            guard isMemorySaverOn != oldValue else { return }
+            memorySaverTask?.cancel()
+            memorySaverTask = nil
+            if isMemorySaverOn { runMemorySaver() } else { tabs.values.forEach(wake) }
+        }
+    }
+    /// Whether this Mac's memory is critical now (macOS's memory pressure), when Chrome discards a tab every few
+    /// seconds; the platform layer reads it.
+    var isMemoryCritical: () -> Bool = { false }
+    /// Chrome's times; QA runs shorten them.
+    var memorySaverTiming = BrowserMemorySaver.Timing()
+    private var memorySaverTask: Task<Void, Never>?
+
+    /// macOS said memory is critical: the saver looks now instead of at its next sweep.
+    func memoryBecameCritical() {
+        guard isMemorySaverOn else { return }
+        memorySaverTask?.cancel()
+        runMemorySaver()
+    }
+
+    private func runMemorySaver() {
+        memorySaverTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let pause = self?.sweepForMemory() else { return }
+                try? await Task.sleep(for: pause)
+            }
+        }
+    }
+
+    /// Asks the host to discard the tabs `BrowserMemorySaver` picks (the host checks the pages first), and says when to
+    /// look again: sooner while memory is critical.
+    private func sweepForMemory() -> Duration {
+        let urgent = isMemoryCritical()
+        let pause = urgent ? memorySaverTiming.urgentInterval : memorySaverTiming.sweepInterval
+        guard isMemorySaverOn, let connection else { return pause }
+        let now = SuspendingClock.now
+        let windowed = Set(chromiumWindows.compactMap(\.tab))
+        let candidates = tabs.values.compactMap {
+            $0.memorySaverCandidate(now: now, hasChromiumWindow: windowed.contains($0.id), retryAfter: memorySaverTiming.retryAfter)
+        }
+        for id in BrowserMemorySaver.picks(candidates, urgent: urgent, timing: memorySaverTiming) {
+            guard let tab = tabs[id] else { continue }
+            tab.isDiscardAsked = true
+            connection.send(.discard(tab: id, urgent: urgent))
+        }
+        return pause
+    }
+
+    /// Loads a discarded tab's page again, as Chrome reloads a discarded tab it shows: a panel shows it, the agent uses
+    /// it, or the saver was turned off. The tab keeps its history; the page's state is what a reload keeps.
+    private func wake(_ tab: BrowserTab) {
+        guard tab.isDiscarded, let connection else { return }
+        tab.beginRestore()
+        connection.send(.navigation(tab: tab.id, action: .reload))
+        if let session = tab.session { notifySession(session) }
+    }
+
     // MARK: Internals
 
     private func open(url: String, viewport: BrowserViewport, session: UUID?, key: UUID, after: BrowserTabID?,
@@ -513,13 +755,18 @@ final class BrowserHostClient {
             else { order.append(tab.id) }
             sessionOrder[session] = order
         }
-        connection.send(.open(tab: tab.id, url: url, viewport: viewport, profile: session.flatMap { profileForSession?($0) }))
+        let profile = session.flatMap { (openingProfileForSession ?? profileForSession)?($0) }
+        connection.send(.open(tab: tab.id, url: url, viewport: viewport, profile: profile))
         return tab
     }
 
     private func close(_ tab: BrowserTab) {
+        let waited = personWait(of: tab) != nil
         guard tabs.removeValue(forKey: tab.id) != nil else { return }
+        defer { if waited { onPersonWaitsChange?() } }
         tab.isClosing = false
+        // The host holds a waiting dialog's callback until it is answered, also once its tab is gone.
+        if let chooser = tab.fileDialog { connection?.send(.fileDialogResult(tab: tab.id, dialog: chooser.id, paths: nil)) }
         connection?.send(.close(tab: tab.id))
         tab.markClosed()
         if let session = tab.session { removeFromSession(tab, session: session) }
@@ -540,6 +787,8 @@ final class BrowserHostClient {
         if frontedTabs[session] == tab.id {
             frontedTabs[session] = order.isEmpty ? nil : order[min(index, order.count - 1)]
         }
+        if agentFronts[session] == tab.id { agentFronts[session] = nil }
+        if agentUsedTabs[session] == tab.id { agentUsedTabs[session] = nil }
         if let address = tab.lastPageURL {
             var closed = closedAddresses[session] ?? []
             closed.append(address)
@@ -554,10 +803,15 @@ final class BrowserHostClient {
     /// no room for another tab, loads the address itself, as before 2026-10-22.
     private func openWindow(_ url: String, from opener: BrowserTab, background: Bool, userGesture: Bool) {
         guard userGesture else { return }
-        if let session = opener.session,
-           let tab = try? newTab(forSession: session, url: url, viewport: opener.viewport ?? .offscreenDefault, select: !background) {
-            opener.receive(.openedTab(tab: opener.id, newTab: tab.id, url: url))
-            return
+        if let session = opener.session {
+            let behind = opensBehind(from: opener, session: session)
+            let agentsOpener = agentTab(forSession: session) === opener
+            if let tab = try? newTab(forSession: session, url: url, viewport: opener.viewport ?? .offscreenDefault,
+                                     select: !background && !behind) {
+                if !background { placeOpened(tab, behind: behind, agentsOpener: agentsOpener, session: session) }
+                opener.receive(.openedTab(tab: opener.id, newTab: tab.id, url: url))
+                return
+            }
         }
         connection?.send(.navigate(tab: opener.id, url: url))
         opener.receive(.openedTab(tab: opener.id, newTab: nil, url: url))
@@ -576,14 +830,27 @@ final class BrowserHostClient {
             opener.receive(.openedTab(tab: opener.id, newTab: nil, url: url))
             return
         }
+        let behind = opensBehind(from: opener, session: session)
+        let agentsOpener = agentTab(forSession: session) === opener
         let tab = BrowserTab(id: id, client: self, session: session, key: UUID())
         tab.viewport = opener.viewport
         tabs[id] = tab
         sessionOrder[session, default: []].append(id)
-        if !background || frontedTabs[session].flatMap({ tabs[$0] }) == nil { frontedTabs[session] = id }
+        if (!background && !behind) || frontedTabs[session].flatMap({ tabs[$0] }) == nil {
+            keepAgentTab(inSession: session, as: id)
+            frontedTabs[session] = id
+        }
+        if !background { placeOpened(tab, behind: behind, agentsOpener: agentsOpener, session: session) }
         opener.receive(.openedTab(tab: opener.id, newTab: id, url: url))
         reschedule()
         notifySession(session)
+    }
+
+    /// A page's new tab that asked to come in front, from the agent's tab: the agent follows it, as the tab in front
+    /// or, where it opened behind the person's tab, as its own.
+    private func placeOpened(_ tab: BrowserTab, behind: Bool, agentsOpener: Bool, session: UUID) {
+        guard agentsOpener else { return }
+        agentFronts[session] = behind ? tab.id : nil
     }
 
     /// A page's request to open another app's address, by Chrome's rules (`BrowserExternalAppPolicy`): after one
@@ -609,6 +876,7 @@ final class BrowserHostClient {
             url: request.url, origin: request.origin, app: app,
             offersAlwaysAllow: BrowserExternalAppPolicy.mayRemember(origin: request.origin), byAgent: byAgent)
         report(.asked, app: app)
+        personWaitChanged(tab)
     }
 
     /// The person's answer in the panel: Open opens the app, and with "Always allow" checked the tab's profile
@@ -676,6 +944,7 @@ final class BrowserHostClient {
         guard shown != tab.isShown else { return }
         tab.isShown = shown
         connection?.send(.visibility(tab: tab.id, isHidden: !shown))
+        if shown { wake(tab) }
     }
 
     /// Brings each tab's visibility up to date and wakes again when the next agent window ends.
@@ -712,18 +981,21 @@ final class BrowserHostClient {
                 return BrowserChromiumWindow(title: titles[index], kind: value(kinds).flatMap(BrowserChromiumWindow.Kind.init) ?? .passkey,
                                              id: value(ids) ?? 0, tab: value(owners).flatMap { $0 >= 0 ? $0 : nil })
             }
-            // A window newly over a tab of a task no panel shows on screen: the task's panel is to show the tab.
-            for window in chromiumWindows where !before.contains(window) {
-                guard let tab = window.tab.flatMap({ tabs[$0] }), let session = tab.session,
-                      !tabs(forSession: session).contains(where: { $0.visiblePanelCount > 0 }) else { continue }
-                onChromiumWindowOverHiddenTab?(tab)
-            }
             onChromiumWindowsChange?()
+            if before != chromiumWindows {
+                let sessions = Set((before + chromiumWindows).compactMap { $0.tab.flatMap { tabs[$0]?.session } })
+                sessions.forEach(notifySession)
+                onPersonWaitsChange?()
+            }
         case .cookiesImported(let request, let count):
             cookieImports.removeValue(forKey: request)?.resume(returning: count)
+        case .cookieDigest(let request, let digest):
+            cookieDigests.removeValue(forKey: request)?.resume(returning: digest.isEmpty ? nil : digest)
         case .terminated(let reason):
             for waiting in cookieImports.values { waiting.resume(returning: -1) }
             cookieImports.removeAll()
+            for waiting in cookieDigests.values { waiting.resume(returning: nil) }
+            cookieDigests.removeAll()
             chromiumWindows = []
             onChromiumWindowsChange?()
             connection = nil
@@ -741,9 +1013,12 @@ final class BrowserHostClient {
             tabs.removeAll()
             sessionOrder.removeAll()
             frontedTabs.removeAll()
+            agentFronts.removeAll()
+            agentUsedTabs.removeAll()
             orphaned.forEach { $0.receive(event) }
             orphaned.forEach { onTabClosed?($0.id) }
             sessions.forEach(notifySession)
+            onPersonWaitsChange?()
             onHostStateChange?(false)
         case .failed(_, let id?, _):
             // One tab's failure is that tab's; it never reaches the page another tab shows.
@@ -755,6 +1030,12 @@ final class BrowserHostClient {
         case .address(let id, _), .title(let id, _), .favicon(let id, _, _):
             guard let tab = tabs[id] else { return }
             tab.receive(event)
+            if let session = tab.session { notifySession(session) }
+        case .discarded(let id):
+            guard let tab = tabs[id] else { return }
+            tab.receive(event)
+            // Shown, or used by the agent, while the host was ending its renderer; or the saver was turned off.
+            if tab.isShown || tab.isPanelAttached || !isMemorySaverOn { wake(tab) }
             if let session = tab.session { notifySession(session) }
         case .responsiveness(let id, _), .pageCrashed(let id, _, _, _):
             guard let tab = tabs[id] else { return }
@@ -874,6 +1155,21 @@ final class BrowserTab {
     /// The person's last input to the page: a click or key press in its panel, or an address, Back, Forward or
     /// Reload there (`notePersonInput`).
     fileprivate(set) var lastPersonInput: ContinuousClock.Instant?
+    /// The person's last use of the page in its panel: that input, or a scroll, a drag or typed text
+    /// (`BrowserHostClient.personUse(of:)`).
+    fileprivate(set) var lastPersonUse: ContinuousClock.Instant?
+    /// The panel's view has the keyboard on this page, in the key window (`BrowserHostClient.setPanelKeyboard`).
+    fileprivate(set) var hasPanelKeyboard = false
+    /// The page's JavaScript dialog (alert, confirm, prompt, "Leave site?") waiting for an answer, until the panel or
+    /// the agent answers it or the page goes: the panel that shows the tab shows it over the page, whenever it does.
+    private(set) var javaScriptDialog: BrowserJavaScriptDialog?
+    /// The agent's input led to `javaScriptDialog` (`isDrivenByAgent` when it opened).
+    private(set) var dialogByAgent = false
+    /// The page's file chooser waiting for files, until the panel or the agent answers it, the page moves to another
+    /// document or the tab closes: the panel that shows the tab offers it, whenever it does.
+    private(set) var fileDialog: BrowserFileDialog?
+    /// The agent's input led to `fileDialog`.
+    private(set) var fileDialogByAgent = false
     /// The page's last request to open another app (Chrome's flood guard waits for the next input).
     fileprivate var lastExternalAppRequest: ContinuousClock.Instant?
     /// The person closed the tab and its page is asked first (`BrowserHostClient.requestClose`); false once it
@@ -881,6 +1177,8 @@ final class BrowserTab {
     fileprivate(set) var isClosing = false
     /// The page's leave-page question during that close ("Leave site?"), for the panel that shows the tab.
     private(set) var closeQuestion: BrowserJavaScriptDialog?
+    /// The person's closes so far, so each close's wait for the page's answer is its own.
+    fileprivate var closeRequests = 0
     /// The page's focused field is a password field, as the host last reported (false once the renderer
     /// ends), for a panel that shows the tab later.
     private(set) var isPasswordFieldFocused = false
@@ -897,7 +1195,41 @@ final class BrowserTab {
     fileprivate(set) var lastAgentActivity: ContinuousClock.Instant?
     fileprivate let openedAt = ContinuousClock.now
     /// Whether the engine was last told the tab is shown (a new tab starts shown).
-    fileprivate(set) var isShown = true
+    fileprivate(set) var isShown = true {
+        didSet { if isShown != oldValue { hiddenSince = isShown ? nil : .now } }
+    }
+
+    // Memory saver (BrowserMemorySaver)
+    /// The page was discarded (`BrowserHostEvent.discarded`): the tab keeps its address, title, icon and history, and
+    /// its page loads again when it is shown or the agent uses it. False once that reload begins.
+    private(set) var isDiscarded = false
+    /// Yardlet asked the host to discard the tab and waits for the answer; one the host has not given within
+    /// `discardAnswerWait` (its frames get 3 seconds) is taken as no.
+    fileprivate var isDiscardAsked: Bool {
+        get { discardAskedAt.map { ContinuousClock.now - $0 < Self.discardAnswerWait } ?? false }
+        set { discardAskedAt = newValue ? .now : nil }
+    }
+    private var discardAskedAt: ContinuousClock.Instant?
+    nonisolated static let discardAnswerWait: Duration = .seconds(15)
+    /// When the host last kept the tab (`discardRefused`), and why (the page Chrome keeps: media, form, shared …).
+    private var discardRefusedAt: SuspendingClock.Instant?
+    private(set) var discardRefusal: String?
+    /// When the tab was last hidden from its engine, on a clock that stops while the Mac sleeps; nil while shown.
+    private(set) var hiddenSince: SuspendingClock.Instant?
+    private enum Restore { case none, waiting, loading }
+    /// The page loads again after a discard: waiting for its load to begin, then for it to end.
+    private var restore = Restore.none
+    /// When the page's current document began.
+    private var documentStartedAt = ContinuousClock.now
+    /// The person typed, pasted or deleted text in the page since its document began (Chrome's kUserEdits).
+    private var hadPersonEdits = false
+    /// The page's title or icon changed while it was hidden (Chrome's kBackgroundActivity).
+    private var workedInBackground = false
+    /// Downloads that have not ended.
+    private var activeDownloads: Set<Int> = []
+    /// The agent used the tab in its turn that is still going (`BrowserHostClient.noteAgentActivity`, until
+    /// `endAgentEmulation`).
+    fileprivate var isInAgentTurn = false
     /// The panel's primary handler.
     var eventHandler: ((BrowserHostEvent) -> Void)?
     /// Called whenever the agent reports using this tab.
@@ -953,30 +1285,57 @@ final class BrowserTab {
 
     func send(_ command: BrowserHostCommand) {
         guard !isClosed else { return }
+        var answered: Int?
         switch command {
         case .resize(_, let viewport):
             self.viewport = viewport
             if emulation == nil { ownViewport = viewport }
         case .mouse(_, let input) where input.kind == .down:
             lastPersonInput = .now
+            lastPersonUse = .now
         case .key(_, let input) where input.kind == .rawDown:
             lastPersonInput = .now
-        case .javaScriptDialogResult(_, let dialog, let accepted, _) where dialog == closeQuestion?.id:
-            closeQuestion = nil
-            if !accepted {
-                isClosing = false
-                client?.closeStayed(self)
+            lastPersonUse = .now
+        case .key(_, let input) where input.kind == .character:
+            hadPersonEdits = true
+        case .composition(_, .commit):
+            lastPersonUse = .now
+            hadPersonEdits = true
+        case .wheel, .drag, .composition:
+            lastPersonUse = .now
+        case .edit(_, .paste), .edit(_, .cut), .edit(_, .delete), .edit(_, .undo), .edit(_, .redo):
+            hadPersonEdits = true
+        case .javaScriptDialogResult(_, let dialog, let accepted, _):
+            if dialog == closeQuestion?.id {
+                closeQuestion = nil
+                if !accepted {
+                    isClosing = false
+                    client?.closeStayed(self)
+                }
             }
+            if dialog == javaScriptDialog?.id {
+                javaScriptDialog = nil
+                answered = dialog
+            }
+        case .fileDialogResult(_, let dialog, _) where dialog == fileDialog?.id:
+            fileDialog = nil
+            answered = dialog
         default:
             break
         }
         client?.send(command)
+        // Whoever answered, the other (the panel, the agent's tools) hears that it no longer waits.
+        if let answered {
+            deliver(.dialogClosed(tab: id, dialog: answered))
+            client?.personWaitChanged(self)
+        }
     }
 
     /// The person used the page from its panel without a click or key press on it: an address, Back, Forward
     /// or Reload.
     func notePersonInput() {
         lastPersonInput = .now
+        lastPersonUse = .now
     }
 
     /// The agent's input came after the person's last (or the person has not used the page): what the page does
@@ -991,6 +1350,7 @@ final class BrowserTab {
         guard let question = externalAppQuestion else { return }
         externalAppQuestion = nil
         client?.answer(question, open: open, alwaysAllow: alwaysAllow, on: self)
+        client?.personWaitChanged(self)
     }
 
     fileprivate func forgetBlockedPopup(_ url: String) {
@@ -1023,6 +1383,7 @@ final class BrowserTab {
         guard let prompt = permissionPrompt else { return }
         permissionPrompt = nil
         send(.permissionResult(tab: id, prompt: prompt.id, result: result))
+        client?.personWaitChanged(self)
     }
 
     /// Reports agent use of this tab to the lifetime manager.
@@ -1094,6 +1455,7 @@ final class BrowserTab {
         let new = BrowserHandoff(id: UUID(), reason: reason)
         handoff = new
         onHandoffChange?()
+        client?.personWaitChanged(self)
         return (new, true)
     }
 
@@ -1103,6 +1465,7 @@ final class BrowserTab {
         waiting.answer = answer
         handoff = waiting
         onHandoffChange?()
+        client?.personWaitChanged(self)
     }
 
     /// The agent's wait read the answer: the tab is the agent's again.
@@ -1114,6 +1477,7 @@ final class BrowserTab {
 
     /// The agent's turn ended: the size and color scheme it set go, as the Claude app clears them; the person's stay.
     func endAgentEmulation() async {
+        isInAgentTurn = false
         // A waiting call reads that the turn ended; an answer no call read belongs to the turn that ended.
         if handoff?.answer == nil { answerHandoff(.turnEnded) } else { endHandoff() }
         if emulation?.owner == .agent { try? await emulate(nil) }
@@ -1133,12 +1497,62 @@ final class BrowserTab {
         return identity
     }
 
+    // MARK: Memory saver
+
+    /// What the memory saver weighs about this tab (`BrowserMemorySaver.picks`); nil for a tab it never discards:
+    /// shown, outside a task, already discarded or asked about.
+    fileprivate func memorySaverCandidate(now: SuspendingClock.Instant, hasChromiumWindow: Bool,
+                                          retryAfter: Duration) -> BrowserMemorySaver.Candidate? {
+        guard session != nil, !isShown, let hiddenSince, !isDiscarded, !isDiscardAsked, !isClosed else { return nil }
+        // What Chrome keeps whatever the memory: the tab a window shows (here a panel, also one off screen), a page
+        // still loading, ended or stuck, a person's typing or a page asking the person something, a download, the
+        // agent's tab in its turn or handed to the person, and pages that are not on the web.
+        let isProtected = isPanelAttached || isLoading || crash != nil || openFailure != nil || unresponsive != nil
+            || isClosing || handoff != nil || isInAgentTurn || hasChromiumWindow || hadPersonEdits
+            || permissionPrompt != nil || externalAppQuestion != nil || closeQuestion != nil || javaScriptDialog != nil
+            || fileDialog != nil || !activeDownloads.isEmpty || !BrowserMemorySaver.isWebPage(currentURL)
+        return BrowserMemorySaver.Candidate(
+            tab: id, hidden: hiddenSince.duration(to: now), isProtected: isProtected,
+            isProtectedFromProactive: workedInBackground,
+            refusedRecently: discardRefusedAt.map { $0.duration(to: now) < retryAfter } ?? false)
+    }
+
+    /// The memory saver loads the discarded page again (`BrowserHostClient.wake`).
+    fileprivate func beginRestore() {
+        isDiscarded = false
+        restore = .waiting
+    }
+
+    /// Waits until a discarded page the agent's tools woke has loaded again, at most `BrowserMemorySaver.restoreWait`,
+    /// so a tool reads the page and not its load. A discard the host is still deciding is waited for too: if it ends
+    /// the page, the tool's use loads it again.
+    func untilRestored() async {
+        let deadline = ContinuousClock.now + BrowserMemorySaver.restoreWait
+        while restore != .none || isDiscardAsked, !isClosed, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// The page's title or icon changed: while the tab is hidden and past its load, the page works in the background.
+    private func noteChangeWhileHidden() {
+        guard !isShown, documentStartedAt.duration(to: .now) > BrowserMemorySaver.backgroundActivityGrace else { return }
+        workedInBackground = true
+    }
+
     fileprivate func markClosed() {
         isClosed = true
         devTools.failPending()
     }
 
+    /// What the person is waited on for in the tab's own state, to tell when it changes.
+    private var waitMark: [String] {
+        [javaScriptDialog.map { "\($0.id)" } ?? "", fileDialog.map { "\($0.id)" } ?? "",
+         permissionPrompt.map { "\($0.id)" } ?? "", externalAppQuestion?.url ?? ""]
+    }
+
     fileprivate func receive(_ event: BrowserHostEvent) {
+        let mark = waitMark
+        var closedDialogs: [Int] = []
         switch event {
         case .devTools(_, let message):
             devTools.receive(message)
@@ -1151,15 +1565,42 @@ final class BrowserTab {
                 faviconHost = nil
             }
         case .title(_, let title):
+            if title != self.title { noteChangeWhileHidden() }
             self.title = title
         case .favicon(_, let url, let png):
+            noteChangeWhileHidden()
             favicon = png.isEmpty ? nil : png
             faviconHost = URL(string: currentURL ?? url)?.host()
         case .loading(_, let isLoading, let canGoBack, let canGoForward):
             self.isLoading = isLoading
             self.canGoBack = canGoBack
             self.canGoForward = canGoForward
-            if isLoading { crash = nil }
+            if isLoading {
+                crash = nil
+                isDiscarded = false
+                if restore == .waiting { restore = .loading }
+            } else if restore == .loading {
+                restore = .none
+            }
+        case .discarded:
+            // The page is gone with its renderer, and with it what it asked of the person.
+            isDiscarded = true
+            isDiscardAsked = false
+            isPasswordFieldFocused = false
+            closedDialogs += [javaScriptDialog?.id, fileDialog?.id].compactMap { $0 }
+            if let chooser = fileDialog { client?.send(.fileDialogResult(tab: id, dialog: chooser.id, paths: nil)) }
+            javaScriptDialog = nil
+            fileDialog = nil
+            permissionPrompt = nil
+            externalAppQuestion = nil
+            closeQuestion = nil
+        case .discardRefused(_, let reason):
+            isDiscardAsked = false
+            discardRefusedAt = .now
+            discardRefusal = reason
+        case .download(_, let download):
+            if [.started, .inProgress].contains(download.state) { activeDownloads.insert(download.id) }
+            else { activeDownloads.remove(download.id) }
         case .responsiveness(_, let isResponsive):
             hangReported = !isResponsive
             waitedUntil = nil
@@ -1168,7 +1609,14 @@ final class BrowserTab {
             hangReported = false
             waitedUntil = nil
             unanswered = nil
+            restore = .none
+            isDiscardAsked = false
             crash = BrowserTabCrash(status: status ?? "crashed", code: code ?? 0, errorCode: reason)
+            // A renderer that ended takes its dialog and chooser with it.
+            closedDialogs += [javaScriptDialog?.id, fileDialog?.id].compactMap { $0 }
+            if let chooser = fileDialog { client?.send(.fileDialogResult(tab: id, dialog: chooser.id, paths: nil)) }
+            javaScriptDialog = nil
+            fileDialog = nil
         case .passwordField(_, let isFocused):
             isPasswordFieldFocused = isFocused
         case .failed(let message, _?, let limit):
@@ -1181,26 +1629,88 @@ final class BrowserTab {
         case .newDocument:
             blockedPopups = []
             externalAppQuestion = nil
-        case .javaScriptDialog(_, let dialog) where dialog.kind == .beforeUnload && isClosing:
-            closeQuestion = dialog
+            documentStartedAt = .now
+            hadPersonEdits = false
+            workedInBackground = false
+            // The chooser was the document's that went, as Chrome's goes with its frame.
+            if let chooser = fileDialog {
+                fileDialog = nil
+                client?.send(.fileDialogResult(tab: id, dialog: chooser.id, paths: nil))
+                closedDialogs.append(chooser.id)
+            }
+        case .javaScriptDialog(_, let dialog):
+            if dialog.kind == .beforeUnload && isClosing { closeQuestion = dialog }
+            javaScriptDialog = dialog
+            dialogByAgent = isDrivenByAgent
         case .javaScriptDialogReset:
             closeQuestion = nil
+            if let dialog = javaScriptDialog {
+                javaScriptDialog = nil
+                closedDialogs.append(dialog.id)
+            }
+        case .fileDialog(_, let chooser):
+            fileDialog = chooser
+            fileDialogByAgent = isDrivenByAgent
         case .permissionPrompt(_, let prompt):
             permissionPrompt = prompt
         case .permissionPromptDismissed(_, let prompt):
             if permissionPrompt?.id == prompt { permissionPrompt = nil }
         case .terminated, .closed:
             isClosed = true
+            restore = .none
             permissionPrompt = nil
             externalAppQuestion = nil
             closeQuestion = nil
+            javaScriptDialog = nil
+            fileDialog = nil
             devTools.failPending()
         default:
             break
         }
+        deliver(event)
+        for dialog in closedDialogs { deliver(.dialogClosed(tab: id, dialog: dialog)) }
+        if waitMark != mark { client?.personWaitChanged(self) }
+    }
+
+    private func deliver(_ event: BrowserHostEvent) {
         eventHandler?(event)
         for observer in observers.values { observer(event) }
+        client?.onTabEvent?(self, event)
     }
+}
+
+/// The person is using a tab in its panel (`BrowserHostClient.personUse(of:)`).
+struct BrowserPersonUse: Equatable, Sendable {
+    /// The page has their keyboard.
+    var hasKeyboard: Bool
+    /// Since their last click, key, scroll or drag in it; nil when they have not used it.
+    var secondsSinceInput: Int?
+}
+
+/// What a tab waits on from the person (`BrowserHostClient.personWait(of:)`): the panel that shows the tab shows it,
+/// and the task's marks and one notification say so meanwhile.
+struct BrowserPersonWait: Equatable, Hashable, Sendable {
+    enum Kind: String, Sendable {
+        /// The agent handed the tab over (`browser_handoff`).
+        case handoff
+        /// Chromium's passkey dialog (a passkey, a phone's QR code, a security key).
+        case passkey
+        /// Chromium's sign-in window for a site's HTTP authentication.
+        case signIn
+        /// The page asks a permission (Chrome's permission bubble).
+        case permission
+        /// The page asks to open another app.
+        case externalApp
+        /// An alert, confirm, prompt or "Leave site?".
+        case javaScriptDialog
+        /// A file chooser, to open or to save.
+        case fileChooser
+    }
+    var kind: Kind
+    /// Tells one wait from the next on the tab.
+    var id: String
+    /// The agent's own input led to it, and the agent can answer it too: a JavaScript dialog, a file chooser.
+    var agentLed = false
 }
 
 /// A tab the agent handed to the person (`browser_handoff`): what it asks of them, and how it ended.

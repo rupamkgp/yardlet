@@ -397,6 +397,12 @@ struct TaskSidebar: View {
 
             Rectangle().fill(ParityTheme.separator).frame(height: 1)
 
+            // A staged build ready to install, over the account button as the Claude app's update strip is.
+            if let update = accountMenu.update() {
+                SidebarUpdateStrip(line: update) { accountMenu.onSelect(.installUpdate) }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 6)
+            }
             // One account button, as the Claude and Codex apps end their sidebars; its menu holds
             // Settings, the accounts, archived tasks and the other app-wide places.
             SidebarAccountButton(context: accountMenu)
@@ -951,6 +957,11 @@ struct SidebarTaskStatusView: View {
             SidebarStatusDot(color: .green)
         case .needsInput:
             SidebarStatusDot(color: .orange)
+        case .waitingInBrowser:
+            // The browser's globe, in the color of a question waiting for the person.
+            Image(systemName: "globe")
+                .font(.system(size: 10 * interfaceScale, weight: .semibold))
+                .foregroundStyle(.orange)
         case .failed:
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 10 * interfaceScale, weight: .semibold))

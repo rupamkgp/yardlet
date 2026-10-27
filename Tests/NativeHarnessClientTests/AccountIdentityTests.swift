@@ -185,11 +185,12 @@ import XCTest
         let identity = try XCTUnwrap(HarnessAccountBroker.claudeAccountIdentity(from: output))
         XCTAssertEqual(identity.displayLabel, "owner@example.test")
         XCTAssertEqual(identity.groupingOrganization, "Example Org")
-        XCTAssertEqual(identity.planLabel, L10n.format("Claude %@ plan · %@", "Max", "Example Org"))
-        // A personal account's own organization ("<email>'s Organization") only repeats the address.
-        XCTAssertEqual(HarnessAccountBroker.ClaudeAccountIdentity(email: "owner@example.test",
-            organization: "owner@example.test's Organization", subscription: "max").planLabel,
-            L10n.format("Claude %@ plan", "Max"))
+        XCTAssertEqual(identity.planLabel, L10n.format("Claude %@ plan", "Max"))
+        // The organization goes beside the address: a team's by name, the address's own as personal.
+        XCTAssertEqual(AccountIdentityProjection.organizationTitle("Example Org", of: "owner@example.test"), "Example Org")
+        XCTAssertEqual(AccountIdentityProjection.organizationTitle("owner@example.test's Organization",
+            of: "owner@example.test"), L10n.string("Personal"))
+        XCTAssertNil(AccountIdentityProjection.organizationTitle(nil, of: "owner@example.test"))
 
         XCTAssertNil(HarnessAccountBroker.claudeAccountIdentity(from: #"{"loggedIn": false}"#),
             "No published identity must not become an invented account")

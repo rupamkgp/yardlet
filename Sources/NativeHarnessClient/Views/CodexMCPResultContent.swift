@@ -3,9 +3,13 @@ import SwiftUI
 
 /// The result body of an MCP tool call, shown in the timeline card that already names the server
 /// and tool. Text keeps the bounded monospaced treatment the command output uses; an image is a
-/// scaled preview that opens at its own size; a resource link is its name, description and URI.
+/// scaled preview that opens over the window with the result's other images; a resource link is
+/// its name, description and URI.
 struct CodexMCPResultContent: View {
     let projection: CodexMCPResultProjection
+
+    @Environment(\.openImageViewer) private var openImageViewer
+    @Environment(\.pauseTranscriptFollowing) private var pauseFollowing
 
     var body: some View {
         if !projection.isEmpty {
@@ -14,14 +18,27 @@ struct CodexMCPResultContent: View {
                     switch block {
                     case let .text(_, text):
                         CodexBoundedOutput(text: text)
-                    case let .image(_, data, mimeType):
-                        CodexMCPResultImage(data: data, mimeType: mimeType)
+                    case let .image(id, data, _):
+                        CodexMCPResultImage(data: data) { open(id) }
                     case let .resourceLink(_, link):
                         CodexMCPResultLink(link: link)
                     }
                 }
             }
         }
+    }
+
+    private func open(_ id: CodexMCPResultProjection.Block.ID) {
+        let images = projection.blocks.compactMap { block -> (id: CodexMCPResultProjection.Block.ID, data: Data)? in
+            guard case let .image(id, data, _) = block else { return nil }
+            return (id, data)
+        }
+        guard let index = images.firstIndex(where: { $0.id == id }) else { return }
+        pauseFollowing()
+        openImageViewer(ImageViewerRequest(
+            items: images.map { ImageViewerItem(name: L10n.string("Tool result image"), source: .data($0.data)) },
+            index: index
+        ))
     }
 }
 
@@ -90,25 +107,13 @@ private struct CodexMCPResultLink: View {
 
 private struct CodexMCPResultImage: View {
     let data: Data
-    let mimeType: String
+    let open: () -> Void
 
     @Environment(\.yardletInterfaceScale) private var interfaceScale
-    @Environment(\.pauseTranscriptFollowing) private var pauseFollowing
-    @State private var fullSize: FullSizeImage?
-    @State private var focusBookmark: WindowFocusBookmark?
-
-    private struct FullSizeImage: Identifiable {
-        let id = UUID()
-        let image: NSImage
-    }
 
     var body: some View {
         if let image = NSImage(data: data) {
-            Button {
-                focusBookmark = WindowFocusBookmark(window: NSApp.keyWindow)
-                pauseFollowing()
-                fullSize = FullSizeImage(image: image)
-            } label: {
+            Button(action: open) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -119,15 +124,7 @@ private struct CodexMCPResultImage: View {
             .buttonStyle(.plain)
             .parityPointer()
             .accessibilityLabel(L10n.string("Tool result image"))
-            .help(L10n.string("Open the image at full size"))
-            .sheet(item: $fullSize, onDismiss: {
-                focusBookmark?.restore()
-                focusBookmark = nil
-            }) { full in
-                TranscriptImageSheet(
-                    title: L10n.string("Tool result image"), detail: mimeType, image: full.image
-                ) { fullSize = nil }
-            }
+            .help(L10n.string("View the image"))
         }
     }
 }

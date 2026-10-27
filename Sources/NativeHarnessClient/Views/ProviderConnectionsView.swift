@@ -156,9 +156,7 @@ struct AddProviderConnectionView: View {
                 return
             }
             let isNew = home == nil
-            let root = home ?? CodexEnvironmentPaths.live().yardletRootURL
-                .appending(path: "connections").appending(path: UUID().uuidString).appending(path: harness.rawValue)
-            if isNew { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
+            let root = try home ?? store.makeAccountHome(for: harness)
             let label = name.trimmingCharacters(in: .whitespacesAndNewlines)
             let connection = try store.add(name: label.isEmpty ? L10n.format("%@ account %lld", harness.displayName, Int64(store.connections(for: harness).count + 1)) : label,
                 harness: harness, home: root, providerID: harness == .pi && !provider.isEmpty ? provider : nil)

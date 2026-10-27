@@ -20,6 +20,12 @@ struct WorkSurfaceTab: Identifiable, Equatable, Sendable {
     var favicon: Data? = nil
     /// A browser tab whose page is loading.
     var isLoading = false
+    /// What a browser tab waits on from the person, in words (`BrowserPersonWaitText`); its mark says so.
+    var waitNote: String? = nil
+    /// The agent works in this browser tab (it used it last in its turn).
+    var isAgentUsing = false
+    /// A browser tab the memory saver discarded.
+    var isDiscarded = false
 }
 
 /// A task's side-panel tabs and + menu. They are the same for every harness.
@@ -37,7 +43,9 @@ enum TaskSidePanelTabs {
         let tab = tabs.tab(key)
         return WorkSurfaceTab(id: TaskSurfaceNavigationProjection.browserTabID(key),
                               title: BrowserTabTitle.make(pageTitle: tab?.title ?? "", address: tab?.address),
-                              systemName: "globe", favicon: tab?.favicon, isLoading: tab?.isLoading ?? false)
+                              systemName: "globe", favicon: tab?.favicon, isLoading: tab?.isLoading ?? false,
+                              waitNote: tab?.wait.map { BrowserPersonWaitText.describe($0, site: tab?.site) },
+                              isAgentUsing: tab?.isAgentUsing ?? false, isDiscarded: tab?.isDiscarded ?? false)
     }
 
     @MainActor
@@ -450,7 +458,8 @@ private struct WorkSurfaceTabButton<Menu: View>: View {
             PanelTabRoom {
                 HStack(spacing: 8) {
                     WorkSurfaceTabIcon(systemName: tab.systemName, harness: tab.harness, favicon: tab.favicon,
-                                       isLoading: tab.isLoading)
+                                       isLoading: tab.isLoading, isDiscarded: tab.isDiscarded)
+                        .modifier(BrowserTabMarks(waits: tab.waitNote != nil, agent: tab.isAgentUsing))
                     if titled {
                         Text(tab.title).font(.callout).lineLimit(1).truncationMode(.middle)
                     }
@@ -468,25 +477,75 @@ private struct WorkSurfaceTabButton<Menu: View>: View {
         }
         .buttonStyle(.borderless)
         .parityPointer()
-        .help(tab.title)
-        .accessibilityLabel(tab.title)
+        .help(help)
+        .accessibilityLabel(help)
         .accessibilityAction(named: Text(L10n.string("Close tab")), onClose)
+    }
+
+    /// The title, and what a browser tab waits on from the person or that the agent works in it.
+    private var help: String {
+        [tab.title, tab.waitNote, tab.isAgentUsing ? L10n.string("The agent is using this tab") : nil]
+            .compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+/// A browser tab the panel does not show marks what is going on in it: an orange dot while it waits on the person
+/// (its dialog, passkey or question shows once the panel shows the tab), the agent's sparkles while the agent works
+/// in it.
+private struct BrowserTabMarks: ViewModifier {
+    let waits: Bool
+    let agent: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .topTrailing) {
+                if waits {
+                    Circle().fill(.orange)
+                        .frame(width: 7, height: 7)
+                        .overlay { Circle().stroke(ParityTheme.canvas, lineWidth: 1.5) }
+                        .offset(x: 3, y: -3)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if agent {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.tint)
+                        .padding(1.5)
+                        .background(ParityTheme.canvas, in: Circle())
+                        .offset(x: 4, y: 4)
+                }
+            }
     }
 }
 
 /// A tab's symbol, for another task's conversation its harness's mark, and for a browser tab its
-/// page's icon, or a spinner while the page loads (the Codex app's browser tab icon, `YXa`).
+/// page's icon, or a spinner while the page loads (the Codex app's browser tab icon, `YXa`). A browser tab
+/// the memory saver discarded shows its icon smaller and fainter in a dashed ring, as Chrome marks an inactive tab.
 struct WorkSurfaceTabIcon: View {
     let systemName: String
     var harness: HarnessKind? = nil
     var favicon: Data? = nil
     var isLoading = false
+    var isDiscarded = false
 
     var body: some View {
         if isLoading {
             ProgressView().controlSize(.mini).frame(width: 16, height: 16)
         } else if let harness {
             HarnessIdentityIcon(harness: harness, size: 14)
+        } else if isDiscarded {
+            Group {
+                if let favicon, let image = BrowserFaviconImage.image(favicon) {
+                    Image(nsImage: image).resizable().interpolation(.high).frame(width: 10, height: 10)
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                } else {
+                    Image(systemName: systemName).font(.system(size: 8))
+                }
+            }
+            .opacity(0.6)
+            .frame(width: 16, height: 16)
+            .overlay(Circle().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [2, 1.5])))
         } else if let favicon, let image = BrowserFaviconImage.image(favicon) {
             Image(nsImage: image).resizable().interpolation(.high).frame(width: 16, height: 16)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
@@ -552,11 +611,12 @@ private struct WorkSurfaceOpenMenu: View {
 
 /// What a panel shows when it has nothing to show. A state that is no failure, such as no changes
 /// or no repository, has no symbol and says so in secondary text, as the Claude app's Changes pane
-/// does; a failure keeps its symbol.
-struct WorkSurfaceEmptyState: View {
+/// does; a failure keeps its symbol. `actions` go under the message.
+struct WorkSurfaceEmptyState<Actions: View>: View {
     let title: String
     var message: String? = nil
     var systemName: String? = nil
+    @ViewBuilder var actions: () -> Actions
 
     var body: some View {
         VStack(spacing: 9) {
@@ -577,8 +637,15 @@ struct WorkSurfaceEmptyState: View {
                     .frame(maxWidth: 420)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if Actions.self != EmptyView.self { actions().padding(.top, 4) }
         }
         .padding(30)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+extension WorkSurfaceEmptyState where Actions == EmptyView {
+    init(title: String, message: String? = nil, systemName: String? = nil) {
+        self.init(title: title, message: message, systemName: systemName) { EmptyView() }
     }
 }

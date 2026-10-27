@@ -135,6 +135,15 @@ actor MCPHTTPClient {
 
     private var queryToken: (name: String, value: String)?
 
+    /// Sends the token as is in a header of the server's choosing (`x-api-key`) instead of
+    /// `Authorization: Bearer`.
+    func setHeaderToken(name: String, value: String?) {
+        headerToken = value.map { (name, $0) }
+        bearer = nil
+    }
+
+    private var headerToken: (name: String, value: String)?
+
     private var requestURL: URL {
         guard let queryToken, var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
             return endpoint
@@ -237,6 +246,7 @@ actor MCPHTTPClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
+        if let headerToken { request.setValue(headerToken.value, forHTTPHeaderField: headerToken.name) }
         if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
         if let negotiatedVersion { request.setValue(negotiatedVersion, forHTTPHeaderField: "MCP-Protocol-Version") }
         request.httpBody = try JSONEncoder().encode(body)

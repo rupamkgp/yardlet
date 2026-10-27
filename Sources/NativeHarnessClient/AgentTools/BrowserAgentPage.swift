@@ -61,6 +61,8 @@ final class BrowserAgentPage {
     var tabKey: UUID?
     /// Whether the tab closed.
     var isClosed: () -> Bool = { false }
+    /// Waits while the memory saver's discarded page loads again after the tools woke it (`BrowserTab.untilRestored`).
+    var untilRestored: () async -> Void = {}
     /// Hands the tab to the person (`BrowserTab.handOff`), reads the handoff, and ends it.
     var handOff: (String) -> (handoff: BrowserHandoff, isNew: Bool)? = { _ in nil }
     var handoff: () -> BrowserHandoff? = { nil }
@@ -188,6 +190,10 @@ final class BrowserAgentPage {
             dialog = nil
         case .fileDialog(_, let dialog):
             fileDialog = dialog
+        case .dialogClosed(_, let closed):
+            // The person answered it in the panel, or it went with its page.
+            if dialog?.id == closed { dialog = nil }
+            if fileDialog?.id == closed { fileDialog = nil }
         case .permissionPrompt(_, let prompt):
             permissionPrompt = prompt
         case .permissionPromptDismissed(_, let prompt):

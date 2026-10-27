@@ -426,8 +426,8 @@ actor FakeBridge: RemoteBridge {
         return nextFailure
     }
 
-    func createTask(projectID: String, text: String) -> Result<String, RemoteError> {
-        createdTasks.append((projectID, text))
+    func createTask(_ start: RemoteTaskStart) -> Result<String, RemoteError> {
+        createdTasks.append((start.projectID, start.text))
         return .success("NEW-\(createdTasks.count)")
     }
     func itemDetail(taskID: String, itemID: String) -> Result<RemoteItemDetail, RemoteError> {

@@ -610,14 +610,10 @@ actor HarnessAccountBroker {
         /// account, but it must not also be repeated as the plan line.
         var displayLabel: String? { email ?? organization }
         var groupingOrganization: String? { email == nil ? nil : organization }
-        /// The plan as the Claude app names it ("Max"), then a team's organization; a personal
-        /// account's own organization only repeats the address above it.
+        /// The plan as the Claude app names it ("Max"). The organization goes beside the address
+        /// (`AccountChoice.organizationTitle`); an organization alone names the account.
         var planLabel: String? {
-            let organization = AccountIdentityProjection.sharedOrganization(groupingOrganization, of: email)
-            guard let subscription else { return organization }
-            let plan = HarnessAccountBroker.planName(subscription)
-            guard let organization else { return L10n.format("Claude %@ plan", plan) }
-            return L10n.format("Claude %@ plan · %@", plan, organization)
+            subscription.map { L10n.format("Claude %@ plan", HarnessAccountBroker.planName($0)) }
         }
     }
 

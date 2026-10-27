@@ -80,6 +80,12 @@ struct CLIUpdateRowPresentation: Equatable {
         }
     }
 
+    /// A newer install than the runtime the person chose, and where it comes from.
+    static func newerInstallText(_ install: RuntimeSelectionStore.Install, harness: HarnessKind) -> String {
+        L10n.format("Newer version installed: %1$@ · %2$@", install.version,
+                    methodText(CLIInstallDetector.detect(harness: harness, executable: install.url)))
+    }
+
     static func methodText(_ method: CLIInstallMethod) -> String {
         switch method {
         case let .homebrewFormula(name, _): L10n.format("Homebrew formula %@", name)
@@ -93,9 +99,11 @@ struct CLIUpdateRowPresentation: Equatable {
 }
 
 /// Settings › CLI Updates: the automatic-update switch and each installed harness's install
-/// method, versions, and a check button.
+/// method, versions, and a check button. Where the person chose a harness's runtime and a newer
+/// install is elsewhere on this Mac, its row says so with a button that uses it.
 struct CLIUpdateSettingsView: View {
     @Bindable var center: CLIUpdateCenter
+    var runtimes: RuntimeSelectionStore?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -150,6 +158,8 @@ struct CLIUpdateSettingsView: View {
                 .parityCard()
             }
         }
+        // Only installs whose file changed since they were last read run `--version`.
+        .task { await runtimes?.findNewest() }
     }
 
     private func harnessRow(_ row: CLIUpdateCenter.Row) -> some View {
@@ -171,6 +181,23 @@ struct CLIUpdateSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(text.isWarning ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if let runtimes, let newer = runtimes.newerInstalls[row.harness] {
+                    HStack(spacing: 8) {
+                        Text(CLIUpdateRowPresentation.newerInstallText(newer, harness: row.harness))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button(L10n.string("Use This Version")) {
+                            runtimes.useNewest(for: row.harness)
+                            Task { await center.check(row.harness) }
+                        }
+                        .controlSize(.small)
+                        .disabled(working)
+                        .parityPointer()
+                        .accessibilityLabel(L10n.format("Use %1$@ %2$@", row.harness.displayName, newer.version))
+                    }
+                    .padding(.top, 2)
                 }
             }
             Spacer(minLength: 8)

@@ -71,6 +71,43 @@ final class BrowserHostVisibilityTests: XCTestCase {
         XCTAssertNil(client.lastAddress(forSession: session), "a new tab for the task replaces what the host lost")
     }
 
+    /// The memory saver (docs/BROWSER_HOST.md §3 "Memory saver"): a task's tab hidden past Chrome's time is offered to the host
+    /// for discarding, once; a tab the person typed into, one downloading and one not on the web are not. A discarded tab
+    /// loads its page again when a panel shows it, and turning the saver off brings the others back.
+    func testTheMemorySaverDiscardsLongHiddenTabsAndAShownOneLoadsAgain() async throws {
+        let client = makeClient(visibleWindow: .milliseconds(20))
+        client.memorySaverTiming = BrowserMemorySaver.Timing(
+            hiddenBeforeDiscard: .milliseconds(120), urgentInterval: .milliseconds(20), urgentProtection: .milliseconds(120),
+            sweepInterval: .milliseconds(30), retryAfter: .seconds(60))
+        let session = UUID()
+        let first = try client.openTab(forSession: session, url: "https://a.test/", viewport: .offscreenDefault)
+        let second = try client.newTab(forSession: session, url: "https://a.test/2", viewport: .offscreenDefault, select: false)
+        let typed = try client.newTab(forSession: session, url: "https://a.test/form", viewport: .offscreenDefault, select: false)
+        let downloading = try client.newTab(forSession: session, url: "https://a.test/file", viewport: .offscreenDefault, select: false)
+        let blank = try client.newTab(forSession: session, url: "about:blank", viewport: .offscreenDefault, select: false)
+        for tab in [first, second, typed, downloading] {
+            connection.eventHandler?(.address(tab: tab.id, url: "https://a.test/\(tab.id)"))
+        }
+        typed.send(.key(tab: typed.id, input: BrowserKeyInput(kind: .character, windowsKeyCode: 65, nativeKeyCode: 0, character: 97)))
+        connection.eventHandler?(.download(tab: downloading.id, download: BrowserDownload(
+            id: 1, state: .inProgress, fileName: "a.zip", path: "/tmp/a.zip", receivedBytes: 1, totalBytes: 2)))
+        client.isMemorySaverOn = true
+        try await wait(.milliseconds(500))
+        let asked = connection.sent.compactMap { if case .discard(let id, false) = $0 { id } else { nil } }
+        XCTAssertEqual(asked.sorted(), [first.id, second.id], "only the long-hidden web pages, each asked once")
+        XCTAssertFalse(asked.contains(blank.id))
+
+        connection.eventHandler?(.discarded(tab: first.id))
+        connection.eventHandler?(.discarded(tab: second.id))
+        XCTAssertTrue(first.isDiscarded && second.isDiscarded)
+        client.attachPanel(to: first)
+        XCTAssertEqual(connection.sent.last, .navigation(tab: first.id, action: .reload), "a shown tab loads its page again")
+        XCTAssertFalse(first.isDiscarded)
+        client.isMemorySaverOn = false
+        XCTAssertEqual(connection.sent.last, .navigation(tab: second.id, action: .reload), "turned off, the tabs are as before")
+        XCTAssertFalse(second.isDiscarded)
+    }
+
     func testAnOccludedPanelHidesTheTabUntilItIsOnScreenAgain() async throws {
         let client = makeClient()
         let tab = try client.openTab(forSession: UUID(), url: "about:blank", viewport: .offscreenDefault)

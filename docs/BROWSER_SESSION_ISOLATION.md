@@ -2,7 +2,7 @@
 
 Status: implemented (2026-10-24; the disk profile path was fixed the same day: section 7. On 2026-10-25 the cookie copy
 that changed the shape of cookies was fixed: section 8. On 2026-10-26, importing sign-ins from another browser: section
-10). The browser host contract is in [BROWSER_HOST](BROWSER_HOST.md) section 3, "Profiles", and the vault is in
+10. On 2026-10-27, tasks follow the person's sign-ins: section 11). The browser host contract is in [BROWSER_HOST](BROWSER_HOST.md) section 3, "Profiles", and the vault is in
 [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md).
 
 ## 1. Background and goals
@@ -36,12 +36,12 @@ credentials are shared through the vault.
 |---|---|---|
 | Disk folder or memory | A disk folder (`Browser/Task-<key>`, the `cache_path` of `CefRequestContext`). Chromium opens as a disk profile only a folder directly under the root cache | The host ends 60 seconds after it has no tabs. With an in-memory context, sign-ins would be lost every time |
 | Does a new task start empty | It starts with a copy of the default profile's cookies. A child task starts with the parent task's cookies | Signing in again every time would bring new-device alerts and two-step verification in every task. The Claude app also copies the parent's cookies on fork. localStorage and IndexedDB are not copied (on such sites the vault signs in again) |
-| When the person signs in in the panel | The sign-in stays in that task, and that site's (registrable domain's) cookies are also copied to the default profile. Other tasks that are already running do not change | The default profile must follow "the account the person uses now" so that new tasks start with that account. A sign-in the agent made with the vault stays only in its task |
+| When the person signs in in the panel | (Revised 2026-10-27, section 11) Whether with a password or with a passkey, "Sign in with Google" or single sign-on, that site's (registrable domain's) cookies go to the default profile and to every task that follows the site: at once to tasks with tabs open, to the rest when their tab next opens. A sign-in the person makes on a page the agent handed over goes the same way. A site a task signed in to itself (a sign-in its agent filled from the vault or typed) stays that task's and is not overwritten | As in the Codex app, every task normally uses the same sign-ins, and only a task that went in with another account keeps its own. From 2026-10-24 to 10-26 only password sign-ins went to the default profile, and running tasks stayed as they were |
 | Do child tasks inherit | When first opened, they copy the parent's cookies. After that they are separate | Same as the Claude app's fork |
 | Tabs on the new task screen | The new task screen has its own profile key, and the task its tab moves to keeps using that key. The new task screen gets a new key | The moved tab's page stays as it is, so its storage must stay the same too |
 | Archive and delete | Both delete that task's folder. When the host does not have the folders open (when the host ends), folders that belong to no remaining task are deleted, along with the record of that profile that Chromium left in `Local State` | So that nothing is left behind after removal. The Claude app deletes only on delete |
 | Turning it on and off | Settings › General "Keep cookies": "Per task" (default) / "Shared by all tasks" (as before) | A setting in the same place as the Claude app's "Keep cookies". "Until quit" was left out, because it would mean something different in Yardlet, whose host ends often |
-| Sign-ins from another browser (2026-10-26) | The cookies of the sites the person chose from the page menu of the browser panel go into the default profile and that task's profile. The cookies those sites had before are deleted | So that sites whose passkey exists only in another browser can be used in Yardlet. Other tasks that are already running stay as they are, as with copying the person's sign-in (section 10) |
+| Sign-ins from another browser (2026-10-26) | The cookies of the sites the person chose from the page menu of the browser panel go into the default profile and that task's profile. The cookies those sites had before are deleted | So that sites whose passkey exists only in another browser can be used in Yardlet (section 10). Since 2026-10-27 it counts as the person's sign-in, so the tasks that follow those sites take it too (section 11) |
 | Touch ID passkeys | The default profile's `webauthn.touchid.metadata_secret` is put into each new task profile | Chromium reads Touch ID passkey metadata per profile with this key. Without it, the passkeys would not show in each task |
 
 ## 4. Structure
@@ -59,8 +59,11 @@ credentials are shared through the vault.
   (`on_request_context_initialized`). When the folder is new, it puts in the Touch ID key, opens the tab at about:blank,
   copies the starting cookies and then opens the requested address (navigation and DevTools messages that arrive while
   it waits for the profile or copies wait until it is done). The `copyCookies` command moves one site's cookies from
-  one profile to another. The `importCookies` command replaces the chosen sites' cookies in one profile with cookies
-  imported from another browser (section 10).
+  one profile to another, and with `replace` first deletes the target's cookies of that site. The `importCookies` command
+  replaces the chosen sites' cookies in one profile with cookies imported from another browser (section 10). When the
+  `open` command's `profile` has `follow` (a list of sites) or `fill`, the tab opens at about:blank, takes those sites
+  from the default profile in place of its own, fills in the sites it has no cookie of, and then opens the address. The
+  `cookieDigest` command answers a sum of hashes of one profile's cookies of one site (section 11).
 - **Yardlet:** `BrowserTaskProfiles` handles the task's key (the task ID; for a task that came from the new task screen,
   that screen's key), the source of the starting cookies (the parent task's folder if there is one, otherwise the
   default profile), the setting and cleanup. `BrowserHostClient` attaches the profile every time it opens a task's tab,
@@ -68,9 +71,10 @@ credentials are shared through the vault.
   list has been read in full. Chromium writes every profile it opens into `Local State` (`profile.info_cache`,
   `profile.profiles_order`, `variations_google_groups`) and does not remove them when the folder disappears, so cleanup
   also removes `Task-` names without a folder from there.
-- **The person's sign-in:** When the watcher that the vault's save offer uses (submission of a form with a password
-  field the person typed into) reports one, the site's cookies are copied to the default profile 4 and 12 seconds later.
-  With "Per task", the watcher runs even when the vault is off.
+- **The person's sign-in (revised 2026-10-27):** `BrowserLoginFollow` finds sign-ins and passes the person's to the
+  default profile and the tasks that follow the site; how it finds them and the rules are in section 11. The vault's
+  watcher (submission of a form with a password field the person typed into, a one-time code field) runs with "Per
+  task" even when the vault is off, and what it reports is used to find sign-ins too.
 
 ## 5. Costs and limits
 
@@ -91,8 +95,9 @@ credentials are shared through the vault.
 - A moved cookie keeps, instead of the scheme and port of whatever set it, those of the address the copy used (https:443
   if Secure, otherwise http:80). CEF does not report the original values. CEF 154 does not bind cookies to schemes (QA
   `schemeBoundCookies: false`), so sending them makes no difference. The Claude app's copy uses the same addresses.
-- The person's sign-in is detected only when a password was typed. Popup and OAuth sign-ins such as "Sign in with
-  Google" are not moved to the default profile.
+- Finding the person's sign-in (section 11) needs a moment that starts one (a password field, a one-time code field, a
+  passkey window, a popup, leaving for another site). A sign-in without such a moment (a sign-in link opened outside
+  Yardlet, for example) is not passed on. Until 2026-10-26 only password sign-ins were passed on.
 - When an archived task is restored, that task's browser starts again with the default profile's cookies.
 - Changing the setting leaves already open tabs as they are. Tabs opened after that follow it.
 
@@ -112,7 +117,8 @@ cookie on `accounts.example.com`, Secure and non-Secure cookies on `.example.com
 top-level site) go into a new task with the same domain and Secure flag, and the partitioned cookie does not become a
 top-level cookie; whether, after a sign-in done again in a task is moved to the default profile, the account site
 receives each name once with the new value (both in the default profile and in tasks after it). Adding
-`--ui-fixture-isolation-cookies` runs only this check. Every check uses a new task and decides first which values it
+`--ui-fixture-isolation-cookies` runs only this check. Since 2026-10-27 the checks of the sign-ins tasks follow
+(section 11) run too, and adding `--ui-fixture-isolation-follow` runs only those. Every check uses a new task and decides first which values it
 will read (the cookie check first deletes cookies of the same name from earlier runs), so state that earlier QA left in
 the same QA home does not matter. Each step measures the process tree's memory (adding `--ui-fixture-isolation-shared`
 opens the same tabs in the single default profile and measures that). 2026-10-24 results (after the fix in section 7):
@@ -326,7 +332,8 @@ first; the 30 vault QA checks passed; "profile keeps cookies across host restart
 - **Limits:** Sites that keep the sign-in in localStorage or IndexedDB do not come along (the Claude app's import moves
   localStorage as well). Chromium shortens the expiry of inserted cookies to at most 400 days from insertion (source
   evidence, not measured with QA). Imported cookies share that browser's session, so on some sites signing out on one
-  side also ends the other. Other tasks that are already running do not change.
+  side also ends the other. Since 2026-10-27 an import is the person's sign-in, so the tasks that follow those sites take
+  it from the default profile too (section 11).
 - **QA:** `run-check.sh … --ui-fixture-browser-check-only=import` (`BrowserHostLoginImportQA`). It creates a fake Whale
   folder in the QA home's Application Support (two profiles, cookies encrypted with a test password: a host-only cookie
   and a `__Host-` cookie on `accounts.example.com`, Secure and non-Secure cookies on `.example.com`, a partitioned
@@ -392,3 +399,97 @@ cookies the help says to sign in again in the new browser. For reference, the bu
 bundle is `com.openai.atlas.web`, "ChatGPT Safe Storage"/"ChatGPT"), **Sidekick** (service ended on 2025-08-03, and the
 team moved to Perplexity), **Thorium** (Thorium-MacOS releases ship without macOS files from M144 (2026-06), the last
 M138 was in 2026-02, and the Homebrew cask is disabled too), **Safari** (above).
+
+## 11. Tasks follow the person's sign-ins (2026-10-27)
+
+- **Why:** The user: "sign-in state is not shared well". Under the rules in section 3, only the person's password
+  sign-ins went to the default profile, and nothing reached tasks already open. When the user signed in to Cloudflare in
+  one task, the agents of other tasks kept seeing it signed out.
+- **Decision (approved by the user):** Only the sites a task signed in to itself (its agent's vault fill or typed
+  sign-in) stay that task's; on every other site
+  all tasks follow the user's latest sign-in. Normally, as in the Codex app, every task uses the same sign-ins, and only
+  a task that went in with another account keeps its own. The two choices of Settings › General "Keep cookies" stay as
+  they are; this rule lives within "Per task".
+- **Finding sign-ins (`BrowserLoginFollow`):** A cookie change alone cannot tell a sign-in from a site renewing its
+  cookies (Google renews them all the time while in use). So only when a moment that starts a sign-in occurs does it
+  measure a sum of hashes of that site's cookies (the FNV-1a of name, domain, path and value, added up; the host
+  computes it and no value leaves the host), and a different value measured again within three minutes is a sign-in.
+  - Moments: the page's password field takes focus (the host's `passwordField`), a one-time code field shows on a
+    panel's page (the vault's watcher), Chromium's passkey window opens over the tab (the host says which tab each window
+    is over: [BROWSER_HOST](BROWSER_HOST.md) section 3, "Chromium's windows and tabs"; a window whose tab is not known is
+    left out), the page opens a popup (a "Sign in with Google" window), the tab leaves the site for another (a single
+    sign-on round trip).
+  - When it measures again: when the tab has loaded a page of that site, when it leaves the site, 2 and 8 seconds after
+    a popup or passkey window closes, 4 and 12 seconds after the panel's sign-in form is submitted. Within the three
+    minutes it also catches the cookies set after two-step verification.
+  - Whose sign-in: whoever used the tab last when it measures again. The person's when the person used the tab in the
+    last three minutes and the agent has not used it since (`BrowserTab.isDrivenByAgent`), on a page the agent handed
+    over (`browser_handoff`) too (the user's decision of 2026-10-27, "sign-ins should spread"). A popup that has closed
+    goes by who used the tab that opened it when the sign-in began. A sign-in the agent made through a password or code
+    field and a vault fill (`.vaultFilled`) are the task's own. When the agent's moment is not a password or code field
+    (browsing), it is nothing, and so is a tab nobody drives that goes through another site on its own.
+- **Passing it on:** For the person's sign-in it counts the site's sign-in number up by one and copies that task
+  profile's cookies of the site to the default profile and to the tasks with tabs open now that follow the site. The
+  target's cookies of the site go first (the same visitor as the import in section 10): when two sessions' cookies mix
+  on one site, Google's accounts site blocks it with `/CookieMismatch` (sections 8 and 9). Insertion is the path of
+  sections 8 and 9 (`set_copied_cookies`) as it is, so host-only pairs and deleting the other shape (writing it expired)
+  hold. A task without an open tab takes the site's cookies from the default profile at about:blank when its tab next
+  opens, then opens the address (`BrowserTaskProfiles.opening`, `follow` in the host's `open`). A sign-in imported from
+  another browser (section 10) is the person's too, so it goes from the default profile to the same tasks.
+- **A task's own sign-in:** That site of that task leaves following, and a sign-in the person makes again in that task
+  is not passed to others (whether the task's account is the person's cannot be known, so the side that overwrites
+  nothing). A child task inherits its parent's own sign-ins. When the feature turns on, it reads the agents' fills in the
+  vault's usage log (`~/.yardlet/vault/usage.jsonl`, 90 days) once and takes each as that task's own sign-in on that
+  site.
+- **First run:** A task made before the feature, the first time its tab opens afterwards, fills in from the default
+  profile only the sites it has no cookie of at all (`fill`). Sites that already have cookies stay as they are; what
+  overwrites them starts with the person's sign-ins made after the feature turned on. The bridge has no public suffix
+  list, so a fill's site is coarser than the registrable domain (an IP address whole, otherwise the host's last two
+  labels). Coarser only fills less; it never overwrites.
+- **Storage:** `following` in `Browser/TaskProfiles.json`: each site's sign-in number of the person (`signIns`), per
+  profile key the numbers it took (`received`) and its own sign-ins (`own`), the keys that began following
+  (`followers`), and whether the vault log was read. No cookie values. The records of archived and deleted tasks go with
+  their folders.
+- **Where:** `BrowserLoginFollow.swift` (new), `BrowserTaskProfiles.swift` (`opening`, `personSignedIn`,
+  `signedInItself`), `BrowserHostClient.swift` (`cookieDigest`, `copyCookies(from:to:site:)`, the tab event hook),
+  `BrowserHostProtocol.swift`, `BrowserHostPaneVault.swift` and `BrowserHostPaneLoginImport.swift` (moments and
+  imports), `VaultCenter.swift` (`agentFills`), the host's `BrowserHost.swift` and `TaskProfiles.swift` (the list of
+  copies, `cookieDigest`), and in the bridge `yardlet_cef_copy_cookies` (a list of sites; add, replace or fill) and
+  `yardlet_cef_cookie_digest`.
+- **QA:** `run-check.sh … --ui-fixture-browser-check-only=isolation` (only these with `--ui-fixture-isolation-follow`).
+  The QA server's `/follow/signin` (localhost) has a password form and a "Sign in with QA" link that goes through an
+  account picker on another site (127.0.0.1) and back; both plant `qa_follow`. The person clicks through the host's
+  input (the panel's path); the agent acts through DevTools and reports its use. Seven checks: the agent's password
+  sign-in is its task's own (the person's sign-in number unchanged, open task F does not get it); the person's password
+  sign-in reaches open task F and the default profile, and the agent's task G keeps `AGENT`; cookies a site renews while
+  the person browses are not passed on; a single sign-on round trip in a tab nobody drives is not passed on; the
+  person's sign-in without a password (single sign-on) reaches F and a task made later, and G keeps its own; the person's password sign-in on a page the agent handed over
+  reaches F and the default profile and does not become that task's own; a task from
+  before the feature keeps its own cookie on 127.0.0.1 (`OLD`) and takes only the site it had no cookie of
+  (`fill.qa-follow.test`). Following section 3's revision, "the person's sign-in reaches running tasks too" and section
+  8's "running tasks get one of each" changed. 2026-10-27 results (ad-hoc debug bundle,
+  `$TMPDIR/browser-host-qa/login-follow/`): 18 isolation checks passed in a new QA home and again in the same home. With
+  the last bundle, which adds the check of a tab nobody drives and the code field moment, in a new QA home (`final/`):
+  19 isolation, 37 vault and 13 import checks all passed, no processes or crash reports left. After the handoff decision and the window owners
+  (merged with 0.11.1), in a new QA home (`decision/`): 20 isolation (the handoff check added), 37 vault and 13 import
+  checks passed, no processes or crash reports left. The host log has command names only, no cookie values. The moments the QA goes through are the password field and the round trip through
+  another site. The popup, passkey window and code field moments use the same comparison but were not run in QA (the
+  passkey window could take the screen). The `compat` and `passkey` runs, which show Chromium's windows, were not run
+  again for the shared window hook (they can raise system prompts on the screen); `ChromiumWindowPresentationTests` and
+  `BrowserAgentTabToolsTests` passed.
+- **Limits:**
+  - A sign-in the person makes on a page the agent handed over is the person's even with an account for that task alone
+    (someone else's account, for example), so it spreads to other tasks. Such an account stays in its task when the
+    agent fills it from the vault.
+  - A task-only sign-in from before the feature with no vault record has no mark, so when the person later signs in to
+    the same site, that task follows too.
+  - A sign-in without a moment (a sign-in link opened outside Yardlet, for example) is not passed on. A passkey request
+    the agent started and the person answered with Touch ID is no one's sign-in (the agent's moment is not a password or
+    code field).
+  - If the site changes its cookies by itself within three minutes after a moment, that is passed on once too (the
+    window kept to catch two-step verification).
+  - When passing a sign-in on, the target's partitioned cookies of the site are deleted too and do not come back
+    (section 5: partitioned cookies cannot be moved). localStorage and IndexedDB do not follow.
+  - A sign-out that ends within the site is not passed on (no moment). A sign-out that goes through another site
+    (single sign-on sign-out) is passed on like a sign-in, so the tasks that follow the site are signed out too. When
+    the person then signs in with another account, that sign-in is passed on.

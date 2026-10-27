@@ -7,8 +7,13 @@ struct BrowserAgentTabInfo: Equatable, Sendable {
     /// Where the page is from: scheme, host and port only, since titles and paths are the page's own
     /// words (the Claude app's `tabs_context` lists origins for the same reason).
     var origin: String
-    /// The fronted tab: the one the panel shows and the tools use when they name none.
+    /// The agent's active tab: the one the tools use when they name none (`BrowserHostClient.agentTab(forSession:)`),
+    /// which is the one the panel shows unless the person kept the panel on theirs.
     var isActive: Bool
+    /// The task's panel shows it on screen.
+    var isShown = false
+    /// The person is using it in the panel (`BrowserHostClient.personUse(of:)`).
+    var personUse: BrowserPersonUse?
     /// False while the tab's page does not respond (`BrowserTab.unresponsive`), its renderer ended, or the
     /// host could not open it.
     var isResponding = true
@@ -21,14 +26,18 @@ struct BrowserAgentTabInfo: Equatable, Sendable {
 /// The task's tabs, for the tab tools and for a tool that names a tab.
 @MainActor
 protocol BrowserAgentTabDirectory: AnyObject {
-    /// The page of the task's tab `tabID`, or of its fronted tab when `tabID` is nil (opening one when
+    /// The page of the task's tab `tabID`, or of the agent's active tab when `tabID` is nil (opening one when
     /// the task has none). Reports agent use of the tab.
     func page(for sessionID: UUID, tabID: String?) throws -> BrowserAgentPage
     func tabs(for sessionID: UUID) throws -> (tabs: [BrowserAgentTabInfo], panelOpen: Bool)
-    /// A blank tab after the task's others; `foreground` fronts it.
+    /// A blank tab after the task's others; `foreground` makes it the agent's active tab, which the panel shows unless
+    /// the person is using another tab there.
     func newTab(for sessionID: UUID, foreground: Bool) throws -> BrowserAgentTabInfo
+    /// Makes the tab the agent's active tab, which the panel shows unless the person is using another tab there.
     func select(_ tabID: String, for sessionID: UUID) throws
-    /// Closes the tab and returns the tab fronted now, if any.
+    /// The task's tab the person is using in its panel, if any.
+    func personTab(for sessionID: UUID) -> BrowserAgentTabInfo?
+    /// Closes the tab and returns the agent's active tab now, if any.
     func close(_ tabID: String, for sessionID: UUID) throws -> BrowserAgentTabInfo?
     /// The task was archived or deleted: its tabs close.
     func closeAll(for sessionID: UUID)
@@ -89,9 +98,9 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         if client.tabs(forSession: sessionID).isEmpty, client.rememberedTabs(forSession: sessionID) != nil {
             _ = try start { try client.restoreTabs(forSession: sessionID, viewport: .offscreenDefault) }
         }
-        let fronted = client.tab(forSession: sessionID)
+        let active = client.agentTab(forSession: sessionID)
         let tabs = client.tabs(forSession: sessionID)
-        return (tabs.map { info($0, fronted: fronted) }, tabs.contains { $0.isPanelAttached })
+        return (tabs.map { info($0, active: active, in: client) }, tabs.contains { $0.isPanelAttached })
     }
 
     func newTab(for sessionID: UUID, foreground: Bool) throws -> BrowserAgentTabInfo {
@@ -101,18 +110,24 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
             _ = try start { try client.restoreTabs(forSession: sessionID, viewport: .offscreenDefault) }
         }
         let tab = try start {
-            try client.newTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault, select: foreground)
+            try client.newTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault, select: false)
         }
+        if foreground { client.selectForAgent(tab) }
         _ = entry(for: tab)
         tab.noteAgentActivity()
-        return info(tab, fronted: client.tab(forSession: sessionID))
+        return info(tab, active: client.agentTab(forSession: sessionID), in: client)
     }
 
     func select(_ tabID: String, for sessionID: UUID) throws {
         let client = try requireClient(for: sessionID)
         let tab = try existingTab(tabID, for: sessionID, in: client)
-        tab.select()
+        client.selectForAgent(tab)
         tab.noteAgentActivity()
+    }
+
+    func personTab(for sessionID: UUID) -> BrowserAgentTabInfo? {
+        guard let client = client(), let tab = client.personUsedTab(forSession: sessionID) else { return nil }
+        return info(tab, active: client.agentTab(forSession: sessionID), in: client)
     }
 
     func close(_ tabID: String, for sessionID: UUID) throws -> BrowserAgentTabInfo? {
@@ -120,7 +135,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         let tab = try existingTab(tabID, for: sessionID, in: client)
         forget(tab.id)
         tab.close()
-        return client.tab(forSession: sessionID).map { info($0, fronted: $0) }
+        return client.agentTab(forSession: sessionID).map { info($0, active: $0, in: client) }
     }
 
     func replace(_ tabID: String, for sessionID: UUID) throws -> BrowserAgentPage {
@@ -149,6 +164,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
     }
 
     func endAgentEmulation(for sessionID: UUID) async {
+        client()?.endAgentTurn(forSession: sessionID)
         for tab in client()?.tabs(forSession: sessionID) ?? [] { await tab.endAgentEmulation() }
     }
 
@@ -160,9 +176,9 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         return client
     }
 
-    /// The task's fronted tab; when it has none, the tabs it lost with the host, else a blank tab.
+    /// The agent's active tab; when the task has none, the tabs it lost with the host, else a blank tab.
     private func frontedTab(for sessionID: UUID, in client: BrowserHostClient) throws -> BrowserTab {
-        if let tab = client.tab(forSession: sessionID) { return tab }
+        if let tab = client.agentTab(forSession: sessionID) { return tab }
         return try start {
             try client.restoreTabs(forSession: sessionID, viewport: .offscreenDefault)
                 ?? client.openTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault)
@@ -200,6 +216,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         page.emulateColorScheme = { [weak tab] in try await tab?.emulateColorScheme($0) }
         page.tabKey = tab.key
         page.isClosed = { [weak tab] in tab?.isClosed ?? true }
+        page.untilRestored = { [weak tab] in await tab?.untilRestored() }
         page.handOff = { [weak tab] in tab?.handOff(reason: $0) }
         page.handoff = { [weak tab] in tab?.handoff }
         page.endHandoff = { [weak tab] in tab?.endHandoff() }
@@ -214,8 +231,9 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         entry.tab.removeEventObserver(entry.observer)
     }
 
-    private func info(_ tab: BrowserTab, fronted: BrowserTab?) -> BrowserAgentTabInfo {
-        BrowserAgentTabInfo(id: String(tab.id), origin: Self.origin(of: tab.currentURL ?? "about:blank"), isActive: tab === fronted,
+    private func info(_ tab: BrowserTab, active: BrowserTab?, in client: BrowserHostClient) -> BrowserAgentTabInfo {
+        BrowserAgentTabInfo(id: String(tab.id), origin: Self.origin(of: tab.currentURL ?? "about:blank"), isActive: tab === active,
+                            isShown: tab.visiblePanelCount > 0, personUse: client.personUse(of: tab),
                             isResponding: tab.unresponsive == nil && tab.crash == nil && tab.openFailure == nil,
                             crash: tab.crash?.errorCode, openFailure: tab.openFailure?.message)
     }

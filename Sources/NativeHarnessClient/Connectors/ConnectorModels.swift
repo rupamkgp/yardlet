@@ -62,6 +62,12 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
     /// The icons the server gave for itself when Yardlet last connected (`serverInfo.icons`), for
     /// its picture. Absent in files from before and for a server that gives none.
     var serverIcons: [MCPServerIcon]?
+    /// The header a pasted key goes in, as is, for a server that takes it outside
+    /// `Authorization: Bearer` (`x-api-key`, an MCP registry's entry). Absent in files from before.
+    var tokenHeader: String?
+    /// The program Yardlet runs on this Mac for the server (stdio), as the person confirmed it;
+    /// nil for a server at an address. Absent in files from before.
+    var program: ConnectorProgram?
 
     init(
         id: UUID = UUID(),
@@ -80,7 +86,9 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
         localService: LocalConnectorService? = nil,
         account: String? = nil,
         googleAccountID: UUID? = nil,
-        serverIcons: [MCPServerIcon]? = nil
+        serverIcons: [MCPServerIcon]? = nil,
+        tokenHeader: String? = nil,
+        program: ConnectorProgram? = nil
     ) {
         self.id = id
         self.name = name
@@ -99,6 +107,8 @@ struct ConnectorRecord: Codable, Equatable, Identifiable, Sendable {
         self.account = account
         self.googleAccountID = googleAccountID
         self.serverIcons = serverIcons
+        self.tokenHeader = tokenHeader
+        self.program = program
     }
 
     /// The secure-store item this connector's sign-in is under: its Google account's for a Google
@@ -283,6 +293,8 @@ struct ConnectorCredential: Codable, Equatable, Sendable {
         case client
         /// A private key that signs each token Yardlet sends (an App Store Connect API key).
         case signingKey
+        /// The arguments and environment a program on this Mac starts with (`ConnectorProgram`).
+        case program
     }
 
     var kind: Kind
@@ -303,6 +315,8 @@ struct ConnectorCredential: Codable, Equatable, Sendable {
     var keyID: String?
     var issuerID: String?
     var privateKey: String?
+    /// A program's arguments and environment values. Absent in items from before.
+    var program: ConnectorProgramSpec?
 
     static func token(_ value: String) -> ConnectorCredential {
         ConnectorCredential(kind: .token, accessToken: value)
@@ -316,16 +330,26 @@ struct ConnectorCredential: Codable, Equatable, Sendable {
         ConnectorCredential(kind: .signingKey, accessToken: "", keyID: id, issuerID: issuer, privateKey: privateKey)
     }
 
-    /// What goes to the server: nothing for a client kept before its first sign-in, or for a
-    /// signing key, whose tokens are made per request.
+    static func program(_ spec: ConnectorProgramSpec) -> ConnectorCredential {
+        ConnectorCredential(kind: .program, accessToken: "", program: spec)
+    }
+
+    /// What goes to the server: nothing for a client kept before its first sign-in, for a
+    /// signing key, whose tokens are made per request, or for a program's start.
     var presentedToken: String? {
-        kind == .client || kind == .signingKey || accessToken.isEmpty ? nil : accessToken
+        kind == .client || kind == .signingKey || kind == .program || accessToken.isEmpty ? nil : accessToken
     }
 
     /// The registered client alone, as a disconnect keeps it for the next sign-in.
     var clientOnly: ConnectorCredential? {
         guard let clientID, !clientID.isEmpty else { return nil }
         return .client(id: clientID, secret: clientSecret)
+    }
+
+    /// What a disconnect keeps for the next connection: the registered client, or a program's
+    /// start as the person confirmed it.
+    var keptAfterDisconnect: ConnectorCredential? {
+        kind == .program ? self : clientOnly
     }
 
     /// True when the access token is past, or within a minute of, its expiry.

@@ -48,15 +48,17 @@ enum RemoteConversationProjection {
     }
 
     /// Messages waiting in the task's follow-up queue — on the Mac, the queue chips above the composer
-    /// — as `queued` user items at the end of the last turn. Each leaves when the provider takes it,
-    /// and the message then reads as an ordinary sent message in its turn.
-    static func queued(_ followUps: [QueuedFollowUp], into conversation: RemoteConversation) -> RemoteConversation {
+    /// — as `queued` user items at the end of the last turn, with the chip's actions (§15.15). Each
+    /// leaves when the provider takes it, and the message then reads as an ordinary sent message in its
+    /// turn. A message another task sent is not the person's to manage, so it offers none.
+    static func queued(_ followUps: [QueuedFollowUp], policy: FollowUpPolicy? = nil,
+                       into conversation: RemoteConversation) -> RemoteConversation {
         guard !followUps.isEmpty else { return conversation }
         var conversation = conversation
         if conversation.turns.isEmpty { conversation.turns.append(RemoteTurn(id: "queue", items: [])) }
         let last = conversation.turns.count - 1
         let turnID = conversation.turns[last].id
-        conversation.turns[last].items += followUps.map { followUp in
+        conversation.turns[last].items += followUps.enumerated().map { index, followUp in
             var item = RemoteItem(id: "queued:\(followUp.id.uuidString)", turnId: turnID, kind: .user)
             let sent = DiffCommentPrompt.parse(followUp.draft.text)
             setText(&item, sent?.request ?? followUp.draft.text, RemoteText.userLimit)
@@ -70,8 +72,30 @@ enum RemoteConversationProjection {
             if images > 0 { item.imageCount = images }
             item.queued = true
             if followUp.state == .failed { item.queueFailed = true }
+            if let policy, TaskMessage.parse(followUp.draft.text) == nil {
+                let chip = ComposerQueueChip.make(policy: policy, queue: followUps, at: index, canSend: true)
+                item.options = [chip.send == nil ? nil : RemoteQueuedAction.sendNow, chip.stopAndSend == nil ? nil : .stopAndSend,
+                                .remove].compactMap { $0?.rawValue }
+            }
             return item
         }
+        return conversation
+    }
+
+    /// A tab the agent handed to the person and waits on, as a waiting request at the end of the last
+    /// turn (§15.18): the site, the agent's reason, and the bar's two answers.
+    static func handoff(_ wait: BrowserHandoffWait, site: String?, into conversation: RemoteConversation) -> RemoteConversation {
+        var conversation = conversation
+        if conversation.turns.isEmpty { conversation.turns.append(RemoteTurn(id: "handoff", items: [])) }
+        let last = conversation.turns.count - 1
+        var item = RemoteItem(id: "req:\(wait.notice)", turnId: conversation.turns[last].id, kind: .approval)
+        item.requestId = wait.notice
+        item.requestKind = "browserHandoff"
+        item.status = "pending"
+        item.title = RemoteText.short(site ?? L10n.string("Browser"), RemoteText.titleLimit)
+        item.detail = RemoteText.short(wait.reason, RemoteText.requestDetailLimit)
+        item.options = [RemoteHandoffAnswer.done.rawValue, RemoteHandoffAnswer.decline.rawValue]
+        conversation.turns[last].items.append(item)
         return conversation
     }
 
@@ -255,12 +279,26 @@ enum RemoteConversationProjection {
             let answers = RemoteApprovalPolicy.answers(for: request)
             let formAnswers = RemoteApprovalPolicy.formAnswers(for: request)
             item.options = answers.map(\.rawValue) + formAnswers
-            if !formAnswers.isEmpty {
+            if let route = RemoteApprovalPolicy.allowForSession(request),
+               let title = request.responses.first(where: { $0.route == route })?.title {
+                item.optionTitles = [RemoteApprovalAnswer.allowForSession.rawValue: title]
+            }
+            item.choices = RemoteApprovalPolicy.choices(for: request)
+            if case let .mcpForm(form)? = request.form, item.choices != nil { item.formFields = form.fields.map(formField) }
+            if formAnswers.contains(RemoteProtocol.answerSecretOption) {
+                // A phone that masks a secret answers it; one that does not reads it as the Mac's (§15.19).
+                item.questionSteps = request.form?.questionSteps.map(questionStep)
+                item.moreOnMac = true
+                item.macNote = RemoteText.short(L10n.string("This question takes a secret answer. Answer it on the Mac."),
+                                                RemoteText.requestDetailLimit)
+            } else if !formAnswers.isEmpty {
                 if formAnswers.contains(RemoteProtocol.answerOption) {
                     item.questionSteps = request.form?.questionSteps.map(questionStep)
                 }
             } else if RemoteApprovalPolicy.hasMoreOnMac(request, phoneAnswers: answers.count) {
                 item.moreOnMac = true
+                item.macNote = RemoteText.short(RemoteApprovalPolicy.macNote(request, phoneAnswers: answers),
+                                                RemoteText.requestDetailLimit)
             }
         }
         return item
@@ -273,7 +311,45 @@ enum RemoteConversationProjection {
             options: step.options.map {
                 .init(label: $0.label, description: RemoteText.short($0.description, RemoteText.questionLimit))
             },
-            multiple: step.allowsMultipleSelections, custom: step.allowsCustomAnswer, skippable: step.canSkip)
+            multiple: step.allowsMultipleSelections, custom: step.allowsCustomAnswer, skippable: step.canSkip,
+            secret: step.isSecret ? true : nil)
+    }
+
+    /// An MCP form field as the phone draws it (§15.19), with the limits the card checks.
+    private static func formField(_ field: CodexMCPElicitationForm.Field) -> RemoteFormField {
+        var result = RemoteFormField(id: field.id, label: RemoteText.capped(field.label, RemoteText.titleLimit).text, type: "text")
+        result.description = RemoteText.short(field.description, RemoteText.questionLimit)
+        result.required = field.isRequired ? true : nil
+        switch field.kind {
+        case let .text(format, minLength, maxLength):
+            result.format = format?.rawValue
+            result.minLength = minLength
+            result.maxLength = maxLength
+        case let .number(isInteger, minimum, maximum):
+            result.type = isInteger ? "integer" : "number"
+            result.minimum = minimum
+            result.maximum = maximum
+        case .boolean:
+            result.type = "boolean"
+        case let .choice(options):
+            result.type = "choice"
+            result.options = options.map { .init(value: $0.value, title: $0.title) }
+        case let .choices(options, minItems, maxItems):
+            result.type = "choices"
+            result.options = options.map { .init(value: $0.value, title: $0.title) }
+            result.minItems = minItems
+            result.maxItems = maxItems
+        }
+        switch field.defaultValue {
+        case let .text(text)?: result.default = .text(text)
+        case let .flag(flag)?: result.default = .flag(flag)
+        case let .picked(values)?:
+            if case .choice = field.kind { result.default = values.first.map(RemoteFormValue.text) } else {
+                result.default = .list(values.sorted())
+            }
+        case nil: break
+        }
+        return result
     }
 
     private static func plan(_ plan: ConversationPlan, turnID: String) -> RemoteItem {
@@ -337,20 +413,120 @@ enum RemoteConversationProjection {
     }
 }
 
-/// The answers the phone may give a waiting request (§4.4 `answerApproval`): "Allow once", the
+/// The answers the phone may give a waiting request (§4.4 `answerApproval`, §15.13): "Allow once", the
 /// narrowest allow the Mac's card offers — the same one the Mac notification's "Allow once" gives
-/// (`NotificationApprovalProjection`) — and the card's plain deny. Questions, plan reviews, forms and
-/// answers that set a standing rule stay on the Mac.
+/// (`NotificationApprovalProjection`) —, the card's allow for the rest of the session, and its plain
+/// deny. Questions, plan reviews and forms go their own ways (§15.2); answers that write a standing
+/// rule to a file or policy, and requests for more permissions, stay on the Mac.
 enum RemoteApprovalPolicy {
     static func answers(for request: ConversationRequest) -> [RemoteApprovalAnswer] {
-        [allowOnce(request) == nil ? nil : RemoteApprovalAnswer.allowOnce, deny(request) == nil ? nil : .deny]
-            .compactMap { $0 }
+        [allowOnce(request) == nil ? nil : RemoteApprovalAnswer.allowOnce,
+         allowForSession(request) == nil ? nil : .allowForSession,
+         deny(request) == nil ? nil : .deny].compactMap { $0 }
     }
 
     static func route(for answer: RemoteApprovalAnswer, to request: ConversationRequest) -> ConversationRequestRoute? {
         switch answer {
         case .allowOnce: allowOnce(request)
+        case .allowForSession: allowForSession(request)
         case .deny: deny(request)
+        }
+    }
+
+    /// The card's allow that lasts for the rest of the task's session: Codex's "Allow for session" on
+    /// a command or file change, Claude Code's suggestion kept for the session (which may switch its
+    /// mode for the session too). Nil where the card has none, where its broader allow is kept in a
+    /// settings file or a policy, and for a mode switch or a Codex request for more permissions.
+    static func allowForSession(_ request: ConversationRequest) -> ConversationRequestRoute? {
+        guard request.state == .pending, request.form == nil else { return nil }
+        let route: ConversationRequestRoute
+        switch request.source {
+        case let .transcript(entry):
+            guard case let .permission(permission, _) = entry.content, permission.structured == nil,
+                  !permission.requiresInAppAnswer, permission.detail != "switch_mode",
+                  let action = permission.actions.first(where: { $0.decision == .allow && isSessionScoped($0) })
+            else { return nil }
+            route = .providerAction(action)
+        case let .codexServerRequest(state):
+            switch state.kind {
+            case .commandExecutionApproval: route = .codex(.command(.acceptForSession))
+            case .fileChangeApproval: route = .codex(.fileChange(.acceptForSession))
+            case .applyPatchApproval, .execCommandApproval: route = .codex(.legacyReview(.approvedForSession))
+            default: return nil
+            }
+        case .codexApproval:
+            return nil
+        }
+        // Only an answer the card itself offers.
+        return request.responses.contains { $0.route == route } ? route : nil
+    }
+
+    /// Every answer the Mac's card gives a request without a question or plan form (§15.19), in its order and
+    /// words, marking those that leave a rule beyond the task. Nil where the phone answers another way (questions
+    /// and plan reviews), for one Yardlet answers nothing for, and for an MCP form Yardlet cannot fill.
+    static func choices(for request: ConversationRequest) -> [RemoteChoice]? {
+        guard request.state == .pending, request.unanswerableReason == nil, !request.responses.isEmpty else { return nil }
+        switch request.form {
+        case nil, .mcpForm?: break
+        case .choices?, .freeText?, .planReview?: return nil
+        }
+        return request.responses.enumerated().map { index, response in
+            let role = switch response.role {
+            case .primary: "primary"
+            case .secondary: "secondary"
+            case .destructive: "destructive"
+            }
+            return RemoteChoice(id: String(index), title: RemoteText.capped(response.title, RemoteText.titleLimit).text,
+                                role: role, standing: leavesStandingRule(response.route) ? true : nil)
+        }
+    }
+
+    /// The answer approves later calls nobody has seen yet, beyond this task: a rule kept in a settings file or a
+    /// policy, a Codex exec or network policy amendment, an MCP tool allowed for good. A one-time answer, one for
+    /// the session, and a denial for this call only do not.
+    static func leavesStandingRule(_ route: ConversationRequestRoute) -> Bool {
+        switch route {
+        case let .providerAction(action):
+            return PermissionActionPreference.scope(id: action.id, intent: action.kind) == .broad && !isSessionScoped(action)
+        case let .codex(response):
+            switch response {
+            case .command(.acceptWithExecpolicyAmendment), .command(.applyNetworkPolicyAmendment),
+                 .legacyReview(.approvedExecpolicyAmendment), .legacyReview(.approvedMCPPolicyAmendment),
+                 .legacyReview(.networkPolicyAmendment):
+                return true
+            case let .mcpElicitation(_, _, meta):
+                return meta?["persist"]?.stringValue == "always"
+            default:
+                return false
+            }
+        case .decision, .answer, .structured:
+            return false
+        }
+    }
+
+    /// A provider action that names the session as its scope and no standing rule.
+    private static func isSessionScoped(_ action: PermissionRequestAction) -> Bool {
+        let token = [action.kind ?? "", action.id].joined(separator: " ").lowercased()
+        return token.contains("session") && !token.contains("always") && !token.contains("policy")
+            && !token.contains("forever")
+    }
+
+    /// What only the Mac's card does, in one line (§15.13): the card's own reason when Yardlet answers
+    /// nothing for it, the form or secret answer the phone does not take, or the answers it does not give.
+    static func macNote(_ request: ConversationRequest, phoneAnswers: [RemoteApprovalAnswer]) -> String? {
+        if let reason = request.unanswerableReason { return reason }
+        switch request.form {
+        case .mcpForm?:
+            return L10n.string("Fill in this form on the Mac.")
+        case .choices?, .freeText?:
+            guard request.form?.questionSteps.contains(where: \.isSecret) == true else { return nil }
+            return L10n.string("This question takes a secret answer. Answer it on the Mac.")
+        case .planReview?:
+            return L10n.string("Review this plan on the Mac.")
+        case nil:
+            let phone = phoneAnswers.compactMap { route(for: $0, to: request) }
+            let others = request.responses.filter { !phone.contains($0.route) }.map(\.title)
+            return others.isEmpty ? nil : L10n.format("Only on the Mac: %@", others.joined(separator: ", "))
         }
     }
 
@@ -391,7 +567,9 @@ enum RemoteApprovalPolicy {
         switch request.form {
         case .choices?, .freeText?:
             let steps = request.form?.questionSteps ?? []
-            return structured && !steps.isEmpty && !steps.contains(where: \.isSecret) ? [RemoteProtocol.answerOption] : []
+            guard structured, !steps.isEmpty else { return [] }
+            // Only a phone that masks a secret answer is offered it (§15.19).
+            return [steps.contains(where: \.isSecret) ? RemoteProtocol.answerSecretOption : RemoteProtocol.answerOption]
         case .planReview?:
             let approves = request.responses.contains { $0.route == .decision(.allow) }
             return structured && approves ? [RemoteProtocol.keepPlanningOption, RemoteProtocol.approvePlanOption] : []

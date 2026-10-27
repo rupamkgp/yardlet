@@ -1,0 +1,550 @@
+{
+ "servers": [
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Markitdown",
+       "nameWithOwner": "microsoft/markitdown",
+       "stargazerCount": 192448,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Convert various file formats (PDF, Word, Excel, images, audio) to Markdown.",
+    "name": "microsoft/markitdown",
+    "packages": [
+     {
+      "identifier": "markitdown-mcp",
+      "registryType": "pypi",
+      "runtimeHint": "uvx",
+      "transport": {
+       "type": "stdio"
+      },
+      "version": "0.0.1a4"
+     }
+    ],
+    "repository": {
+     "id": "888092115",
+     "source": "github",
+     "url": "https://github.com/microsoft/markitdown"
+    },
+    "version": "1.0.0"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2025-09-09T17:55:23Z",
+     "status": "active",
+     "updatedAt": "2026-01-21T09:35:10Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Netdata",
+       "nameWithOwner": "netdata/netdata",
+       "stargazerCount": 81175,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Real-time infrastructure monitoring with metrics, logs, alerts, and ML-based anomaly detection.",
+    "name": "io.github.netdata/mcp-server",
+    "remotes": [
+     {
+      "headers": [
+       {
+        "description": "Netdata Cloud API token with scope:mcp",
+        "isRequired": true,
+        "isSecret": true,
+        "value": "Bearer {NETDATA_CLOUD_API_TOKEN}",
+        "variables": {
+         "NETDATA_CLOUD_API_TOKEN": {
+          "description": "Netdata Cloud API token (create at app.netdata.cloud > User Settings > API Tokens with scope:mcp)",
+          "isSecret": true
+         }
+        },
+        "name": "Authorization"
+       }
+      ],
+      "type": "streamable-http",
+      "url": "https://app.netdata.cloud/api/v1/mcp"
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "subfolder": "docs/netdata-ai/mcp",
+     "url": "https://github.com/netdata/netdata"
+    },
+    "title": "Netdata",
+    "version": "2.12.2",
+    "websiteUrl": "https://www.netdata.cloud"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-10-23T13:29:33Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T08:38:13Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Context7",
+       "nameWithOwner": "upstash/context7",
+       "stargazerCount": 63749,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Up-to-date docs for AI agents",
+    "icons": [
+     {
+      "mimeType": "image/png",
+      "src": "https://raw.githubusercontent.com/upstash/context7/master/public/icon.png"
+     }
+    ],
+    "name": "io.github.upstash/context7",
+    "packages": [
+     {
+      "environmentVariables": [
+       {
+        "description": "API key for authentication",
+        "isSecret": true,
+        "name": "CONTEXT7_API_KEY"
+       }
+      ],
+      "identifier": "@upstash/context7-mcp",
+      "registryType": "npm",
+      "transport": {
+       "type": "stdio"
+      },
+      "version": "4.4.4"
+     },
+     {
+      "environmentVariables": [
+       {
+        "description": "API key for authentication",
+        "isSecret": true,
+        "name": "CONTEXT7_API_KEY"
+       }
+      ],
+      "fileSha256": "25cabf3767cc61171e3435c4ce5427e03ffe7ab671cc0e2d5b89e04eef246949",
+      "identifier": "https://github.com/upstash/context7/releases/download/mcpb-v4.4.4/context7.mcpb",
+      "registryType": "mcpb",
+      "transport": {
+       "type": "stdio"
+      },
+      "version": "4.4.4"
+     }
+    ],
+    "remotes": [
+     {
+      "headers": [
+       {
+        "description": "API key for authentication. Accepts \"Bearer <key>\" or the raw key.",
+        "isSecret": true,
+        "name": "Authorization"
+       }
+      ],
+      "type": "streamable-http",
+      "url": "https://mcp.context7.com/mcp"
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "url": "https://github.com/upstash/context7"
+    },
+    "title": "Context7",
+    "version": "4.4.4",
+    "websiteUrl": "https://context7.com"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-10-19T13:48:33Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T08:42:45Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Omnara",
+       "nameWithOwner": "omnara-ai/omnara",
+       "stargazerCount": 3279,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Deploy durable AI agents with Omnara, an open-source managed-agent platform.",
+    "name": "com.omnara/omnara",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://app.omnara.com/mcp"
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "url": "https://github.com/omnara-ai/omnara"
+    },
+    "title": "Omnara",
+    "version": "0.1.0",
+    "websiteUrl": "https://www.omnara.com"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-09-14T08:19:04Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T09:08:03Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Skyvern",
+       "nameWithOwner": "Skyvern-AI/skyvern",
+       "stargazerCount": 23286,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "AI-powered browser automation — navigate, click, fill forms, and extract data from any website.",
+    "name": "io.github.Skyvern-AI/skyvern",
+    "remotes": [
+     {
+      "headers": [
+       {
+        "description": "Your Skyvern API key. Get one at https://app.skyvern.com/settings.",
+        "isRequired": true,
+        "isSecret": true,
+        "value": "{SKYVERN_API_KEY}",
+        "name": "x-api-key"
+       }
+      ],
+      "type": "streamable-http",
+      "url": "https://api.skyvern.com/mcp/",
+      "variables": {
+       "SKYVERN_API_KEY": {
+        "description": "Your Skyvern API key. Get one at https://app.skyvern.com/settings.",
+        "isRequired": true,
+        "isSecret": true
+       }
+      }
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "url": "https://github.com/Skyvern-AI/skyvern"
+    },
+    "title": "Skyvern",
+    "version": "1.0.23"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-03-13T03:08:33Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T08:30:32Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Terraform",
+       "nameWithOwner": "hashicorp/terraform-mcp-server",
+       "stargazerCount": 1554,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Generate more accurate Terraform and automate workflows for HCP Terraform and Terraform Enterprise",
+    "name": "io.github.hashicorp/terraform-mcp-server",
+    "packages": [
+     {
+      "identifier": "docker.io/hashicorp/terraform-mcp-server:1.4.1",
+      "registryType": "oci",
+      "runtimeArguments": [
+       {
+        "description": "HCP Terraform or Terraform Enterprise base URL.",
+        "value": "TFE_ADDRESS={address}",
+        "variables": {
+         "address": {
+          "default": "https://app.terraform.io",
+          "format": "string"
+         }
+        },
+        "name": "-e",
+        "type": "named"
+       },
+       {
+        "description": "HCP Terraform or Terraform Enterprise API token used to authenticate requests.",
+        "value": "TFE_TOKEN={token}",
+        "variables": {
+         "token": {
+          "format": "string",
+          "isSecret": true
+         }
+        },
+        "name": "-e",
+        "type": "named"
+       },
+       {
+        "description": "Set to true to enable tools that execute Terraform operations requiring explicit approval.",
+        "value": "ENABLE_TF_OPERATIONS={enabled}",
+        "variables": {
+         "enabled": {
+          "default": "false",
+          "format": "boolean"
+         }
+        },
+        "name": "-e",
+        "type": "named"
+       }
+      ],
+      "runtimeHint": "docker",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "url": "https://github.com/hashicorp/terraform-mcp-server"
+    },
+    "title": "Terraform",
+    "version": "1.4.1"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-10-23T22:40:19Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T08:34:36Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Zapier",
+       "nameWithOwner": "zapier/zapier-mcp",
+       "stargazerCount": 449,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Zapier MCP is a remote MCP server that gives your AI direct access to 8,000+ apps and 30,000+ actions—no complex API integrations required.",
+    "name": "zapier/zapier-mcp",
+    "remotes": [
+     {
+      "type": "sse",
+      "url": "{zapier_mcp_url}",
+      "variables": {
+       "zapier_mcp_url": {
+        "description": "Paste the Zapier MCP server URL you generated at https://mcp.zapier.com (server-specific or OAuth URL).",
+        "isRequired": true,
+        "isSecret": true
+       }
+      }
+     }
+    ],
+    "repository": {
+     "id": "1054982602",
+     "source": "github",
+     "url": "https://github.com/zapier/zapier-mcp"
+    },
+    "version": "1.0.0"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2025-09-09T17:55:23Z",
+     "status": "active",
+     "updatedAt": "2026-01-21T13:35:03Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "Basicmachines Co Basic Memory",
+       "nameWithOwner": "basicmachines-co/basic-memory",
+       "stargazerCount": 4367,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Local-first knowledge management with bi-directional LLM sync via Markdown files.",
+    "name": "io.github.basicmachines-co/basic-memory",
+    "packages": [
+     {
+      "identifier": "basic-memory",
+      "registryType": "pypi",
+      "runtimeArguments": [
+       {
+        "description": "basic-memory depends on a FastMCP pre-release; uv needs this to resolve it",
+        "value": "allow",
+        "name": "--prerelease",
+        "type": "named"
+       },
+       {
+        "value": "basic-memory",
+        "type": "positional"
+       },
+       {
+        "value": "mcp",
+        "type": "positional"
+       }
+      ],
+      "runtimeHint": "uvx",
+      "transport": {
+       "type": "stdio"
+      },
+      "version": "0.24.1"
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "url": "https://github.com/basicmachines-co/basic-memory.git"
+    },
+    "version": "0.24.1"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-10-23T02:24:32Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T08:31:41Z"
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+    "_meta": {
+     "io.modelcontextprotocol.registry/publisher-provided": {
+      "github": {
+       "displayName": "GitHub",
+       "nameWithOwner": "github/github-mcp-server",
+       "stargazerCount": 33992,
+       "isInOrganization": true,
+       "readme": "# Recorded README, cut short"
+      }
+     }
+    },
+    "description": "Connect AI assistants to GitHub - manage repos, issues, PRs, and workflows through natural language.",
+    "name": "io.github.github/github-mcp-server",
+    "packages": [
+     {
+      "identifier": "ghcr.io/github/github-mcp-server:2.0.3",
+      "registryType": "oci",
+      "runtimeArguments": [
+       {
+        "description": "Publish the OAuth callback port to loopback so the in-container login callback is reachable",
+        "value": "127.0.0.1:8085:8085",
+        "name": "-p",
+        "type": "named"
+       },
+       {
+        "description": "Fixed OAuth callback port, matching the published port above",
+        "value": "GITHUB_OAUTH_CALLBACK_PORT=8085",
+        "name": "-e",
+        "type": "named"
+       },
+       {
+        "description": "Optional GitHub Personal Access Token. Omit to log in with OAuth on first use.",
+        "value": "GITHUB_PERSONAL_ACCESS_TOKEN={token}",
+        "variables": {
+         "token": {
+          "format": "string",
+          "isSecret": true
+         }
+        },
+        "name": "-e",
+        "type": "named"
+       }
+      ],
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ],
+    "remotes": [
+     {
+      "headers": [
+       {
+        "description": "Authorization header with authentication token (PAT or App token)",
+        "isSecret": true,
+        "name": "Authorization"
+       }
+      ],
+      "type": "streamable-http",
+      "url": "https://api.githubcopilot.com/mcp/"
+     }
+    ],
+    "repository": {
+     "source": "github",
+     "url": "https://github.com/github/github-mcp-server"
+    },
+    "title": "GitHub",
+    "version": "2.0.3"
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "isLatest": true,
+     "publishedAt": "2026-10-21T09:53:51Z",
+     "status": "active",
+     "updatedAt": "2026-10-27T08:34:12Z"
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "count": 9,
+  "nextCursor": "mcp.cursor.recorded",
+  "per_page": 9,
+  "total": 648,
+  "total_pages": 1
+ }
+}

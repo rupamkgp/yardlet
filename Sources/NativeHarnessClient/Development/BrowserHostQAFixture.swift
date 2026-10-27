@@ -2,6 +2,7 @@
 import AppKit
 import CoreImage
 import CoreBluetooth
+import CryptoKit
 import Foundation
 import IOSurface
 import SwiftUI
@@ -18,6 +19,8 @@ enum BrowserHostQAFixture {
     static let closeBrowserPanel = Notification.Name("YardletBrowserQAClosePanel")
     /// The QA task's composer draft, which a picked element joins (`visual-context`).
     static weak var composerDraft: TaskComposerDraft?
+    /// The app, whose tasks mark and announce browser tabs that wait on the person (`AppModel.browserWaits`).
+    static weak var model: AppModel?
     private static var started = false
 
     static func argument(_ name: String) -> String? {
@@ -50,6 +53,17 @@ enum BrowserHostQAFixture {
         // alone (BrowserHostBrowserUseQA).
         if argument("ui-fixture-browser-check-only") == "browser-use" {
             Task { @MainActor in await BrowserHostBrowserUseQA(output: output, base: base, panelSession: session).run() }
+            return
+        }
+        // `--ui-fixture-browser-check-only=person-first` runs the person's screen against the agent and the page alone
+        // (BrowserHostPersonFirstQA): dialogs that wait in their tab, and the tab the person uses.
+        if argument("ui-fixture-browser-check-only") == "person-first" {
+            Task { @MainActor in await BrowserHostPersonFirstQA(output: output, panelSession: session).run() }
+            return
+        }
+        // `--ui-fixture-browser-check-only=memory-saver` runs the memory saver's discards alone (BrowserHostMemorySaverQA).
+        if argument("ui-fixture-browser-check-only") == "memory-saver" {
+            Task { @MainActor in await BrowserHostMemorySaverQA(output: output, base: base).run() }
             return
         }
         Task { @MainActor in await BrowserHostQARunner(output: output, base: base, session: session).run() }
@@ -1582,22 +1596,27 @@ private final class BrowserHostQARunner {
 
     private func exerciseDialogs(_ controller: BrowserHostPaneController, _ view: BrowserHostView) async throws {
         _ = try await evaluate(controller, "setTimeout(() => { window.qa.alert = (alert('Hello'), 'shown') }, 0); 'ok'")
-        let alertAnswered = await answerSheet(view, button: L10n.string("OK"))
+        _ = await waitUntil(.seconds(5)) { controller.javaScriptDialog != nil }
+        // The dialog is the tab's, over its page: no sheet holds the window.
+        let windowFree = controller.javaScriptDialog != nil && view.window?.attachedSheet == nil
+        capturePanel(view, named: "dialog-alert.png")
+        let alertAnswered = await answerDialog(controller, button: L10n.string("OK"))
         _ = try await evaluate(controller, "setTimeout(() => { window.qa.confirm = confirm('Sure?') }, 0); 'ok'")
-        let confirmAnswered = await answerSheet(view, button: L10n.string("Cancel"))
+        let confirmAnswered = await answerDialog(controller, button: L10n.string("Cancel"))
         _ = try await evaluate(controller, "setTimeout(() => { window.qa.prompt = prompt('Name?', 'x') }, 0); 'ok'")
-        let promptAnswered = await answerSheet(view, button: L10n.string("OK"), text: "프롬프트")
+        let promptAnswered = await answerDialog(controller, button: L10n.string("OK"), text: "프롬프트")
         try? await Task.sleep(for: .milliseconds(300))
         let results = try await evaluate(controller, "[window.qa.alert, String(window.qa.confirm), window.qa.prompt].join('|')")
-        check("alert, confirm and prompt as sheets", alertAnswered && confirmAnswered && promptAnswered && results == "shown|false|프롬프트",
-              "page results \(results)")
+        check("alert, confirm and prompt over the tab's page, not as window sheets",
+              windowFree && alertAnswered && confirmAnswered && promptAnswered && results == "shown|false|프롬프트",
+              "window free \(windowFree), page results \(results)")
 
         // beforeunload needs a user gesture on the page first.
         click(view, at: try await center(controller, "#arm-unload"))
         try? await Task.sleep(for: .milliseconds(200))
         let before = controller.addressInput
         _ = try await evaluate(controller, "setTimeout(() => location.href = '/second', 0); 'ok'")
-        let stayed = await answerSheet(view, button: L10n.string("Cancel"))
+        let stayed = await answerDialog(controller, button: L10n.string("Cancel"))
         try? await Task.sleep(for: .milliseconds(500))
         check("beforeunload sheet, Cancel keeps the page", stayed && controller.addressInput == before,
               "address \(controller.addressInput)")
@@ -1834,14 +1853,6 @@ private final class BrowserHostQARunner {
         try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appending(path: name))
     }
 
-    /// The sheet over the panel's window, which is a window of its own that `capturePanel` does not draw.
-    private func captureSheet(_ view: BrowserHostView, named name: String) {
-        guard let content = view.window?.attachedSheet?.contentView,
-              let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
-        content.cacheDisplay(in: content.bounds, to: bitmap)
-        try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appending(path: name))
-    }
-
     /// WebAuthn in the windowless browser, on localhost (a secure context and a valid relying party
     /// id; no passkey for it anywhere), from the QA page `/passkey`: what the page learns of the
     /// authenticators, whether Chromium shows its passkey dialog and which sheet (the host draws any
@@ -1971,9 +1982,84 @@ private final class BrowserHostQARunner {
         }
         record["passkeyMoves"] = .string(moves.joined(separator: "; "))
         check("a passkey dialog is its tab's and closes when the page moves", movesClose, moves.joined(separator: "; "))
+        await exerciseDevicePasskey(controller)
         controller.addressInput = base
         controller.submitAddress()
         _ = await waitUntil(.seconds(10)) { controller.title == "Browser QA" }
+    }
+
+    /// What decides between the phone's QR code and this Mac's own passkey (2026-10-27): Chromium goes to its
+    /// passkey on this Mac (Touch ID) only when that authenticator holds a credential for the request, for the
+    /// site's RP ID and, when the site lists the account's credentials, one of those (`TouchIdCredentialStore`,
+    /// `StartGuidedFlowForMostLikelyTransportOrShowMechanismSelection`); otherwise it drops it, and with the phone
+    /// left alone it opens on the QR code. A QA bundle has no Touch ID (no keychain group), so a CDP virtual
+    /// authenticator on this device's transport stands in for it, with Chromium's own dialog on (`enableUI`), and
+    /// its user verification stands in for the fingerprint. The requests list only credentials on this device, so
+    /// Chromium does not reach for Bluetooth (macOS would ask the person about it in a window of its own).
+    private func exerciseDevicePasskey(_ controller: BrowserHostPaneController) async {
+        let local = base.replacingOccurrences(of: "127.0.0.1", with: "localhost")
+        controller.addressInput = local + "passkey"
+        controller.submitAddress()
+        _ = await waitUntil(.seconds(10)) { controller.title == "Passkey" && !controller.isLoading }
+        guard let cdp = controller.tab?.devTools else { return check("a passkey on this Mac decides the sheet", false, "no tab") }
+        func credentialID() -> String { Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString() }
+        let here = credentialID(), forAnotherSite = credentialID(), elsewhere = credentialID()
+        let key = P256.Signing.PrivateKey().derRepresentation.base64EncodedString()
+        var authenticator: String?
+        do {
+            _ = try await cdp.send("WebAuthn.enable", ["enableUI": .bool(true)])
+            authenticator = try await cdp.send("WebAuthn.addVirtualAuthenticator",
+                                               ["options": VaultPasskeyAuthenticator.options])["authenticatorId"]?.stringValue
+            for (id, rp) in [(here, "localhost"), (forAnotherSite, "stripe.example")] {
+                _ = try await cdp.send("WebAuthn.addCredential", ["authenticatorId": .string(authenticator ?? ""), "credential": .object([
+                    "credentialId": .string(id), "isResidentCredential": .bool(true), "rpId": .string(rp), "privateKey": .string(key),
+                    "userHandle": .string(Data("qa-user".utf8).base64EncodedString()), "signCount": .integer(0)
+                ])])
+            }
+        } catch {
+            return check("a passkey on this Mac decides the sheet", false, "virtual authenticator: \(error.localizedDescription)")
+        }
+        let cases: [(name: String, allow: String, verified: Bool)] = [
+            ("this Mac holds the account's passkey", here, true),
+            ("the fingerprint is refused", here, false),
+            ("the account's passkey is not on this Mac", elsewhere, true),
+            ("this Mac's passkey is another site's", forAnotherSite, true)
+        ]
+        var results: [String: JSONValue] = [:]
+        var lines: [String] = []
+        for item in cases {
+            _ = try? await cdp.send("WebAuthn.setUserVerified", ["authenticatorId": .string(authenticator ?? ""),
+                                                                 "isUserVerified": .bool(item.verified)])
+            _ = try? await evaluate(controller, "window.qa.allow = [{ id: '\(item.allow)', transports: ['internal'] }]; 'ok'")
+            let linesBefore = hostWindowLines().count
+            let textsBefore = hostWindowTexts().count
+            _ = try? await evaluate(controller, "window.passkey('getAllowed')", userGesture: true)
+            var outcome = "pending"
+            for _ in 0..<20 where outcome == "pending" {
+                try? await Task.sleep(for: .milliseconds(200))
+                outcome = (try? await evaluate(controller, "window.qa.passkey")) ?? "?"
+            }
+            try? await Task.sleep(for: .seconds(2))
+            let windows = hostWindowLines().count - linesBefore
+            let text = Array(hostWindowTexts().dropFirst(textsBefore)).joined(separator: " / ")
+                .split(separator: "\n").prefix(3).joined(separator: " ")
+            results[item.name] = .object(["outcome": .string(outcome), "windows": .integer(Int64(windows)), "text": .string(text)])
+            lines.append("\(item.name) → \(outcome), windows \(windows) [\(text)]")
+            _ = try? await evaluate(controller, "window.qa.abort()")
+            if !client.chromiumWindows.isEmpty { client.closeChromiumWindows() }
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+        if let authenticator {
+            _ = try? await cdp.send("WebAuthn.removeVirtualAuthenticator", ["authenticatorId": .string(authenticator)])
+        }
+        _ = try? await cdp.send("WebAuthn.disable", [:])
+        record["devicePasskey"] = .object(results)
+        func outcome(_ index: Int) -> String { results[cases[index].name]?["outcome"]?.stringValue ?? "?" }
+        func windows(_ index: Int) -> Int64 { results[cases[index].name]?["windows"]?.integerValue ?? -1 }
+        check("a passkey on this Mac signs once the fingerprint step passes, with no sheet before it",
+              outcome(0) == "resolved" && windows(0) == 0 && outcome(1) != "resolved", lines.joined(separator: "; "))
+        check("a passkey on this Mac for another account or site is left out of the request",
+              outcome(2) != "resolved" && outcome(3) != "resolved", lines.joined(separator: "; "))
     }
 
     /// What ordinary sites ask of a browser beyond showing pages, on the QA page `/compat` (BROWSER_HOST
@@ -2318,20 +2404,18 @@ private final class BrowserHostQARunner {
             String(decoding: ((try? String(contentsOf: logPath, encoding: .utf8)) ?? "").utf8.dropFirst(logStart), as: UTF8.self)
         }
         func sheetText() -> String {
-            guard let content = view.window?.attachedSheet?.contentView else { return "" }
-            return Self.subviews(of: content).compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty }
-                .joined(separator: " / ")
+            controller.javaScriptDialog.map { BrowserHostPaneController.dialogTitle($0) + " / " + $0.message } ?? ""
         }
         func isOpen() -> Bool { client.tab(key: closingKey, forSession: session) != nil }
         controller.onCloseTab?(closingKey)
-        let asked = await waitUntil(.seconds(5)) { view.window?.attachedSheet != nil }
+        let asked = await waitUntil(.seconds(5)) { controller.javaScriptDialog?.kind == .beforeUnload }
         let question = sheetText()
-        captureSheet(view, named: "compat-leave-site.png")
-        let cancelled = asked ? await answerSheet(view, button: L10n.string("Cancel")) : false
+        capturePanel(view, named: "compat-leave-site.png")
+        let cancelled = asked ? await answerDialog(controller, button: L10n.string("Cancel")) : false
         try? await Task.sleep(for: .milliseconds(800))
         let kept = isOpen() && controller.key == closingKey
         controller.onCloseTab?(closingKey)
-        let left = await answerSheet(view, button: L10n.string("Leave"))
+        let left = await answerDialog(controller, button: L10n.string("Leave"))
         let closedInHost = await waitUntil(.seconds(5)) { logSinceClose().contains("browser closed tab=\(closing)\n") }
         let gone = await waitUntil(.seconds(3)) { !isOpen() }
         results["beforeunloadOnTabClose"] = .string("asked \(asked) “\(question)”, cancel \(cancelled) → kept \(kept), "
@@ -2391,13 +2475,12 @@ private final class BrowserHostQARunner {
             + "onclick=\"document.title='clicked'\">Press</button><script>window.downs=0;addEventListener('mousedown',()=>window.downs++)</script>"
         let page = "data:text/html," + (html.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
         let session = self.session, other = UUID()
-        var told: [BrowserTabID] = []
-        let appHandler = client.onChromiumWindowOverHiddenTab
-        client.onChromiumWindowOverHiddenTab = { tab in told.append(tab.id); appHandler?(tab) }
-        defer {
-            client.onChromiumWindowOverHiddenTab = appHandler
-            client.closeTabs(forSession: other)
+        let model = BrowserHostQAFixture.model
+        /// The task's panel the app left on a tab: where the person finds what waits when they come to the task.
+        func panelTabKey(_ task: UUID) -> UUID? {
+            model.flatMap { TaskSurfaceNavigationProjection.browserKey(inTab: $0.taskWorkspaces.state(for: task).panels.trailingSurfaceID) }
         }
+        defer { client.closeTabs(forSession: other) }
 
         // Another task's tab, in the background as the agent's are, asks for a sign-in.
         guard let otherTab = try? client.newTab(forSession: other, url: page, viewport: .offscreenDefault, select: false) else {
@@ -2408,9 +2491,12 @@ private final class BrowserHostQARunner {
         otherTab.send(.navigate(tab: otherTab.id, url: base + "basic-auth?other-task"))
         let otherShown = await waitUntil(.seconds(8)) { window(over: otherTab) != nil }
         step("the window's tab", otherShown, "windows \(windows()); the other task's tab \(otherTab.id), the panel's \(controller.tab?.id ?? -1)")
-        step("a window over a tab no panel shows waits, and its task's panel is set to show the tab",
-             otherShown && placement(over: otherTab) == nil && told.contains(otherTab.id),
-             "placed \(placement(over: otherTab) != nil), the app was told of tabs \(told), app handler \(appHandler != nil)")
+        let waits = await waitUntil(.seconds(3)) { model?.browserWaits[other]?.tabKey == otherTab.key }
+        step("a window over a tab no panel shows waits, its task waits in the browser, and its panel is set to show the tab",
+             otherShown && placement(over: otherTab) == nil && waits && panelTabKey(other) == otherTab.key
+                && model?.taskAttentionDetails[other]?.browserWait?.kind == .signIn,
+             "placed \(placement(over: otherTab) != nil), the task's wait \(String(describing: model?.browserWaits[other])), "
+                + "its panel on \(panelTabKey(other).map { $0 == otherTab.key ? "the tab" : "another tab" } ?? "nothing")")
 
         // This task's agent: the window is in none of its results, and it cannot close it.
         let heard = await run(AgentToolCatalog.consoleMessages, as: session)
@@ -2479,9 +2565,12 @@ private final class BrowserHostQARunner {
         _ = await waitUntil(.seconds(10)) { behind.title == "Owner QA" }
         behind.send(.navigate(tab: behind.id, url: base + "basic-auth?behind"))
         let behindShown = await waitUntil(.seconds(8)) { window(over: behind) != nil }
-        step("a window over a tab behind the panel's waits, and the panel stays on its tab",
-             behindShown && placement(over: behind) == nil && !told.contains(behind.id) && controller.tab === panelTab,
-             "windows \(windows()); placed \(placement(over: behind) != nil); the app was told of tabs \(told)")
+        _ = await waitUntil(.seconds(3)) { controller.workspace.browserTabs.tab(behind.key)?.wait != nil }
+        step("a window over a tab behind the panel's waits, the panel stays on its tab, and the tab is marked",
+             behindShown && placement(over: behind) == nil && controller.tab === panelTab
+                && controller.workspace.browserTabs.tab(behind.key)?.wait?.kind == .signIn,
+             "windows \(windows()); placed \(placement(over: behind) != nil); the panel's tab marked "
+                + "\(String(describing: controller.workspace.browserTabs.tab(behind.key)?.wait))")
         controller.onShowTab?(behind.key)
         let panelShows = await waitUntil(.seconds(5)) { controller.tab === behind }
         _ = await waitUntil(.seconds(5)) { placement(over: behind)?.frame != nil }
@@ -3143,17 +3232,13 @@ private final class BrowserHostQARunner {
 
     // MARK: Native sheets
 
-    private func answerSheet(_ view: BrowserHostView, button title: String, text: String? = nil) async -> Bool {
-        guard await waitUntil(.seconds(5), { view.window?.attachedSheet != nil }),
-              let sheet = view.window?.attachedSheet, let content = sheet.contentView else { return false }
-        if let text, let field = Self.subviews(of: content).compactMap({ $0 as? NSTextField }).first(where: \.isEditable) {
-            field.stringValue = text
-        }
-        guard let button = Self.subviews(of: content).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else {
-            return false
-        }
-        button.performClick(nil)
-        return await waitUntil(.seconds(3)) { view.window?.attachedSheet == nil }
+    /// Answers the page's dialog over the panel as its button would (OK, Leave and Reload accept).
+    private func answerDialog(_ controller: BrowserHostPaneController, button title: String, text: String? = nil) async -> Bool {
+        guard await waitUntil(.seconds(5), { controller.javaScriptDialog != nil }),
+              let dialog = controller.javaScriptDialog else { return false }
+        if let text { controller.dialogText = text }
+        controller.answerJavaScriptDialog(accept: [L10n.string("OK"), L10n.string("Leave"), L10n.string("Reload")].contains(title))
+        return await waitUntil(.seconds(3)) { controller.javaScriptDialog?.id != dialog.id }
     }
 
     private static func subviews(of view: NSView) -> [NSView] {

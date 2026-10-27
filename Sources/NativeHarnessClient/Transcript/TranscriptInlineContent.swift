@@ -31,8 +31,11 @@ struct TranscriptInlineContent: Equatable, Sendable, ExpressibleByStringLiteral 
                 continue
             }
             // An anchor alone (`#…`) names no file: a heading, or a task (`TaskLink`).
-            guard let link = run.link, link.scheme == nil, !link.relativeString.hasPrefix("#"),
-                  let resolved = URL(string: link.relativeString, relativeTo: directory)?.absoluteURL else { continue }
+            guard let link = run.link, link.scheme == nil, !link.relativeString.hasPrefix("#") else { continue }
+            // `~/…` is under the home folder, as an inline code path is.
+            let base = link.relativeString.hasPrefix("~/") ? FileManager.default.homeDirectoryForCurrentUser : directory
+            let relative = link.relativeString.hasPrefix("~/") ? String(link.relativeString.dropFirst(2)) : link.relativeString
+            guard let resolved = URL(string: relative, relativeTo: base)?.absoluteURL else { continue }
             result[run.range].link = resolved
         }
         return result
@@ -79,8 +82,8 @@ struct TranscriptInlineContent: Equatable, Sendable, ExpressibleByStringLiteral 
 
 /// A file a code span names, as Claude Code (`file_path:line_number`) and Codex (a path in inline code,
 /// with `:line` or `#Lline`) write one in an answer, and both apps open on a click: relative to the
-/// task's folder, absolute, or under the home folder. Only a file that is there links; a word that
-/// merely looks like a path stays code.
+/// task's folder, absolute, or under the home folder. Only a file or folder that is there links (a
+/// folder opens in Finder); a word that merely looks like a path stays code.
 enum TranscriptFileReference {
     static func url(for code: String, in workspace: URL) -> URL? {
         let text = code.trimmingCharacters(in: .whitespaces)
@@ -100,8 +103,12 @@ enum TranscriptFileReference {
         }
         let standardized = file.standardizedFileURL
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: standardized.path(percentEncoded: false), isDirectory: &isDirectory),
-              !isDirectory.boolValue else { return nil }
+        guard FileManager.default.fileExists(atPath: standardized.path(percentEncoded: false), isDirectory: &isDirectory)
+        else { return nil }
+        if isDirectory.boolValue {
+            // `/` alone is a slash, not the disk.
+            return path.count > 1 && match.2 == nil && match.3 == nil ? standardized : nil
+        }
         guard let line = (match.2 ?? match.3).map(String.init) else { return standardized }
         var components = URLComponents(url: standardized, resolvingAgainstBaseURL: false)
         components?.fragment = "L" + line

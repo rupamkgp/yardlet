@@ -693,8 +693,8 @@ enum ComposerChipContent: Equatable {
 
 /// One attachment, mention or skill in a composer's chip row. An image shows as a thumbnail, as
 /// the Codex and Claude apps show one; anything else, or an image that cannot be read, as its name.
-/// A click on an attached image file marks it up (`ImageMarkupPresenter`), and its marked copy takes
-/// its place.
+/// A click on an image opens it over the window, where an attached image file can be marked up
+/// (`ImageMarkupPresenter`) and its marked copy takes its place.
 struct ComposerInputChip: View {
     let input: CodexUserInput
     var window: NSWindow?
@@ -750,7 +750,8 @@ struct ComposerLabelChip: View {
 /// An attached image as a small thumbnail with its remove button in the corner. The preview is
 /// decoded off the main thread at a bounded size and shared with the sent message's
 /// (`TranscriptImageThumbnails`), so typing never waits for it. Until it is ready the tile is
-/// empty; an image that cannot be read shows its name as other attachments do.
+/// empty; an image that cannot be read shows its name as other attachments do. A click opens it
+/// over the window (`openImageViewer`).
 struct ComposerImageChip: View {
     let url: URL
     let name: String
@@ -761,6 +762,7 @@ struct ComposerImageChip: View {
     static let side: CGFloat = 48
 
     @State private var loaded: (url: URL, preview: TranscriptImageThumbnails.Preview)?
+    @Environment(\.openImageViewer) private var openImageViewer
 
     var body: some View {
         content
@@ -798,12 +800,13 @@ struct ComposerImageChip: View {
         .clipShape(shape)
         .overlay { shape.stroke(ParityTheme.separator) }
         .contentShape(shape)
-        .onTapGesture { onMarkup?() }
+        .onTapGesture(perform: open)
         .parityPointer()
         // Read as the label chip's name is: the image by its name, then its remove button.
         .accessibilityElement()
         .accessibilityLabel(name)
         .accessibilityAddTraits(.isImage)
+        .accessibilityAction { open() }
         .accessibilityAction(named: L10n.string("Mark Up")) { onMarkup?() }
         .overlay(alignment: .topTrailing) {
             Button(action: onRemove) {
@@ -820,10 +823,15 @@ struct ComposerImageChip: View {
             .accessibilityLabel(L10n.string("Remove attachment"))
             .help(L10n.string("Remove attachment"))
         }
-        .help(onMarkup == nil ? name : L10n.format("%@ · Click to mark up", name))
+        .help(L10n.format("%@ · Click to view", name))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.string("Attached input"))
         .accessibilityValue(name)
+    }
+
+    private func open() {
+        openImageViewer(ImageViewerRequest(items: [ImageViewerItem(name: name, source: .url(url))], index: 0,
+                                           markUp: onMarkup))
     }
 
     /// The loaded preview, or one already cached (a sent message's, a chip shown before).

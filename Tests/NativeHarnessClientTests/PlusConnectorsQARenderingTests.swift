@@ -233,7 +233,8 @@ final class PlusConnectorsQARenderingTests: XCTestCase {
         let center = try center([ConnectorsRenderingTests.records[0]])
         XCTAssertEqual(ConnectorSetupGuide.Kind.oneClick.presets.map(\.id),
                        ["linear", "notion", "apple-calendar", "apple-reminders", "apple-contacts", "atlassian", "sentry", "asana",
-                        "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "granola", "fireflies",
+                        "clickup", "monday", "todoist", "airtable", "miro", "dropbox", "intercom", "zapier", "pipedream", "composio",
+                        "make", "granola", "fireflies",
                         "gamma", "xcode", "gitlab", "supabase", "neon", "prisma",
                         "netlify", "cloudflare", "posthog", "semgrep", "postman", "jam", "stripe", "paypal", "square", "mercury", "webflow",
                         "wix", "figma-desktop", "tavily", "exa", "huggingface", "context7", "deepwiki", "openai-docs",
