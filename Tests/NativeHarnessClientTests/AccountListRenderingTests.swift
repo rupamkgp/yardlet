@@ -118,7 +118,7 @@ import XCTest
             canLogin: true, canLogout: false)])
         store.selection[.claudeCode] = personal.id
         let task = SessionRecord(harness: .claudeCode, workspaceURL: root,
-            runtimeExecutableURL: URL(filePath: "/tmp/claude"), title: "Yardlet 계정 전환", connection: developer)
+            runtimeExecutableURL: URL(filePath: "/tmp/claude"), title: "Switch Yardlet account", connection: developer)
         return (store, task)
     }
 

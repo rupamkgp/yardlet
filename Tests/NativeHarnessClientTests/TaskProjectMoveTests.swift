@@ -126,15 +126,15 @@ final class TaskProjectMoveTests: XCTestCase {
     }
 
     func testAChatMovesIntoAProjectAndBackToChats() async throws {
-        let thirteenProject = Project(name: "13주", primaryRoot: thirteen)
+        let thirteenProject = Project(name: "13 Weeks", primaryRoot: thirteen)
         let other = Project(name: "Website", primaryRoot: beta)
-        let chat = try task("OpenAI Game 2026 웹게임 완성", in: chatFolder)
+        let chat = try task("Finish the OpenAI Game 2026 web game", in: chatFolder)
         let model = try makeModel(sessions: [chat], projects: [thirteenProject, other])
-        model.composerDrafts.tasks.draft(for: chat.id).text = "다음 단계"
+        model.composerDrafts.tasks.draft(for: chat.id).text = "Next step"
         XCTAssertTrue(ProjectProjection.isChat(chat, in: model.projects.projects, home: home))
 
         let asChat = model.projectMoveOptions(for: chat, visibleProjects: visibleProjects(model))
-        XCTAssertEqual(Set(asChat.destinations.map(\.name)), ["13주", "Website"])
+        XCTAssertEqual(Set(asChat.destinations.map(\.name)), ["13 Weeks", "Website"])
         XCTAssertNil(asChat.removableFrom, "A chat is in no project to leave")
 
         let moved = try await move(chat, to: thirteenProject, in: model)
@@ -155,7 +155,7 @@ final class TaskProjectMoveTests: XCTestCase {
         XCTAssertEqual(inProject.destinations.map(\.id), [other.id])
         XCTAssertEqual(inProject.removableFrom?.id, thirteenProject.id)
         XCTAssertEqual(TaskProjectMove.commands(inProject).map(\.title), [
-            L10n.format("Move to project: %@", "Website"), L10n.format("Remove from %@", "13주")
+            L10n.format("Move to project: %@", "Website"), L10n.format("Remove from %@", "13 Weeks")
         ])
         XCTAssertEqual(TaskProjectMove.commands(inProject).map(\.destination?.id), [other.id, nil])
 
@@ -164,7 +164,7 @@ final class TaskProjectMoveTests: XCTestCase {
         XCTAssertEqual(back.additionalRoots, [], "A chat has no other roots, as a new chat has none")
         XCTAssertEqual(unchangedFields(back), unchangedFields(chat))
         XCTAssertEqual(model.projects.chats(sessions: model.store.sessions).map(\.id), [chat.id])
-        XCTAssertEqual(model.composerDrafts.tasks.draft(for: chat.id).text, "다음 단계")
+        XCTAssertEqual(model.composerDrafts.tasks.draft(for: chat.id).text, "Next step")
         // Making projects for tasks in none, as the window does, gives the chat's folder none.
         let projectCount = model.projects.projects.count
         model.projects.ensureProjects(forTasks: model.store.sessions)
@@ -243,12 +243,12 @@ final class TaskProjectMoveTests: XCTestCase {
     func testRelaunchKeepsTheMove() async throws {
         let database = root.appending(path: "sessions.sqlite3")
         let projectFile = FileProjectRepository(fileURL: root.appending(path: "projects.json"))
-        let thirteenProject = Project(name: "13주", primaryRoot: thirteen)
+        let thirteenProject = Project(name: "13 Weeks", primaryRoot: thirteen)
         let alphaProject = Project(name: "Alpha", primaryRoot: alpha)
         let betaProject = Project(name: "Beta", primaryRoot: beta)
         projectFile.save(ProjectSnapshot(projects: [thirteenProject, alphaProject, betaProject],
                                          didImportFolderPreferences: true))
-        let chat = try task("OpenAI Game 2026 웹게임 완성", in: chatFolder)
+        let chat = try task("Finish the OpenAI Game 2026 web game", in: chatFolder)
         let returned = try task("Returned chat", in: home.appending(
             path: "Documents/Codex/2026-08-26/new-chat", directoryHint: .isDirectory))
         let legacy = try task("Legacy task", in: alpha)
@@ -296,7 +296,7 @@ final class TaskProjectMoveTests: XCTestCase {
     /// session go on untouched, and the next start or resume hands the harness the new roots.
     func testARunningTaskMovesWithoutTouchingItsTurnAndLaterStartsGetTheNewRoots() async throws {
         let adapter = FakeHarnessAdapter(kind: .codex)
-        let target = Project(name: "13주", primaryRoot: thirteen)
+        let target = Project(name: "13 Weeks", primaryRoot: thirteen)
         let model = try makeModel(projects: [target], registry: HarnessRegistry { _, _ in adapter })
         let started = await model.createSession(harness: .codex, workspaceURL: alpha,
                                                 runtimeExecutableURL: try runtime(), title: "Long build")

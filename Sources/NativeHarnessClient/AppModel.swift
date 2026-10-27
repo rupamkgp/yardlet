@@ -318,7 +318,7 @@ final class AppModel {
     /// Harness CLI update checks (Settings › CLI Updates). The app sets it after restoring the index;
     /// nil in tests and fixtures.
     var cliUpdates: CLIUpdateCenter?
-    /// Yardlet 지침 (Settings › Yardlet Instructions), handed to every task's launch through its
+    /// Yardlet instructions (Settings › Yardlet Instructions), handed to every task's launch through its
     /// harness's own route. The app sets it before restoring the index; nil sends nothing.
     var yardletInstructions: YardletInstructionsStore?
     /// The routing evaluation's switch and ledger (Settings). The app sets it
@@ -5600,7 +5600,7 @@ final class AppModel {
         return false
     }
 
-    /// Hands the adapter Yardlet 지침 for this launch or session request — the global text, then
+    /// Hands the adapter Yardlet instructions for this launch or session request — the global text, then
     /// the project's — or clears it when the setting or the project turned it off, there is no
     /// text, or the harness has no route of its own. A chat has no project and gets the global text.
     func configureYardletInstructions(on adapter: any HarnessAdapter, harness: HarnessKind,

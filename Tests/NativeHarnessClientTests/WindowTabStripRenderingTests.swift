@@ -27,11 +27,11 @@ final class WindowTabStripRenderingTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let cli = URL(filePath: "/usr/bin/true")
         let running = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
-                                    title: "창 위 작업 탭 줄 만들기", status: .running)
+                                    title: "Build the task tab strip", status: .running)
         let left = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
-                                 title: "분할 화면 점검", hasUnreadUpdate: true)
+                                 title: "Check split view", hasUnreadUpdate: true)
         let right = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
-                                  title: "렌더 검사")
+                                  title: "Render check")
         let sessions = [running, left, right]
         let model = AppModel(
             store: SessionStore(sessions: sessions, repository: InMemorySessionRepository(sessions: sessions)),
@@ -77,10 +77,10 @@ final class WindowTabStripRenderingTests: XCTestCase {
             let elements = host.accessibilityElements()
             let labels = Set(elements.map(\.label))
             XCTAssertTrue(labels.contains(L10n.string("New Tab")), "the strip's new-tab button")
-            for title in ["창 위 작업 탭 줄 만들기", "분할 화면 점검 + 렌더 검사", L10n.string("New task")] {
+            for title in ["Build the task tab strip", "Check split view + Render check", L10n.string("New task")] {
                 XCTAssertTrue(labels.contains(title), "tab \(title)")
             }
-            XCTAssertTrue(labels.contains(L10n.format("Close tab %@", "창 위 작업 탭 줄 만들기")),
+            XCTAssertTrue(labels.contains(L10n.format("Close tab %@", "Build the task tab strip")),
                           "the active tab shows its close button")
 
             splits.selectTab(.split(split.id))

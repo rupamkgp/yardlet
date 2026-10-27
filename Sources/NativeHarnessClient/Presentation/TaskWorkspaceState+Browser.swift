@@ -24,7 +24,7 @@ final class BrowserPanelLink {
     }
 }
 
-/// Each of a task's browser tabs is a tab of its side panel, as in the Codex app (docs/BROWSER_HOST.md, "탭"):
+/// Each of a task's browser tabs is a tab of its side panel, as in the Codex app (docs/BROWSER_HOST.md, section 3, "Tabs"):
 /// the panel's browser tabs and the browser engine's tabs for the task are the same tabs, by key
 /// (`BrowserTab.key`). A tab the agent or a page opens joins the panel; one they close leaves it; the
 /// tab the panel shows is the engine's tab in front, and one the engine fronts (the agent's

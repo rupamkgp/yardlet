@@ -1,6 +1,6 @@
 import Foundation
 
-/// The tasks that read or edited a file (docs/NATIVE_SESSION_STORAGE.md, "파일을 다룬 작업의 색인"), read from each task's touches
+/// The tasks that read or edited a file (docs/NATIVE_SESSION_STORAGE.md, "Index of tasks that touched a file"), read from each task's touches
 /// (`FileTouches`): a Claude Code task's transcript, read on from where the last reading stopped, and what
 /// Yardlet holds in memory of any other task. A file and a call's path are the same file when they are one
 /// file of one repository, whichever of its checkouts each is in (`FileRepositoryKey`).

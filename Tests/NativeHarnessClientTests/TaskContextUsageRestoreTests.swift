@@ -355,7 +355,7 @@ final class TaskContextUsageRestoreTests: XCTestCase {
         let directory = try WindowlessRender.directory("context-restore-qa")
         let kept = Self.claudeSnapshot(used: 480_000, window: 1_000_000, at: Date())
         let claude = try await makeDetachedClaudeTask(records: Self.conversation(cacheRead: 410_000), kept: kept,
-                                                title: "컨텍스트 윈도우 되살리기")
+                                                title: "Restore the context window")
         await claude.model.restoreIndex()
         let rollout = root.appending(path: "rollout-2026-10-17T03-00-00-thread-saved.jsonl")
         try Self.rollout([Self.sessionMeta, Self.tokenCount(lastTotal: 64_600, window: 258_400)]).write(to: rollout)
@@ -505,7 +505,7 @@ final class TaskContextUsageRestoreTests: XCTestCase {
         let workspace = base.appending(path: "calculator")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         let session = SessionRecord(id: id, harness: .codex, workspaceURL: workspace, runtimeExecutableURL: executable,
-            title: "테스트 고치기", status: .completed, createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            title: "Fix the tests", status: .completed, createdAt: Date(timeIntervalSince1970: 1_800_000_000),
             updatedAt: Date(timeIntervalSince1970: 1_800_000_000), providerSessionID: "thread-saved")
         try await repository.upsert(session)
         let suite = testDefaultsSuite("TaskContextUsageRestore.codex")

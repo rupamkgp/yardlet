@@ -46,7 +46,7 @@ final class ClaudeAutoMemoryLaunchTests: XCTestCase {
     }
 
     /// A task started through the adapter's own process path, with Yardlet's connectors standing
-    /// in for a server and Yardlet 지침 set, runs a stand-in CLI that records what it was given.
+    /// in for a server and Yardlet instructions set, runs a stand-in CLI that records what it was given.
     func testAStartedTaskGivesTheCLINothingAboutMemory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "yardlet-claude-launch-\(UUID().uuidString)", directoryHint: .isDirectory)

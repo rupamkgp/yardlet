@@ -33,7 +33,7 @@ final class ConversationFindTests: XCTestCase {
     func renderTheCodexCommentaryMatch() async throws {
         let codexState = thread([
             turn("turn-1", status: "completed", items: [
-                userItem("u1", "제목 표시줄(title bar)이 툴바와 겹쳐요"),
+                userItem("u1", "The title bar overlaps the toolbar"),
                 agentItem("m1", "Checking how the title bar measures its height.", phase: "commentary"),
                 commandItem("c1", "grep -rn 'titleBarHeight' Sources"),
                 agentItem("a1", """

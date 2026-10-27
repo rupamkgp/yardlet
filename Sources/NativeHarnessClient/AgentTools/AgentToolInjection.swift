@@ -60,8 +60,8 @@ struct AgentToolServerLaunch: Equatable, Sendable {
     /// Codex's per-thread `config` override. Codex merges it into the user's configuration, so
     /// this adds one `mcp_servers` entry beside the user's own servers. No tool gets an
     /// `approval_mode` of Yardlet's: whether Codex asks before a call follows the task's own
-    /// approval setting and the tool's annotations, as for any server (2026-10-22 user decision:
-    /// "권한 우회는 각 하네스 설정에 맞게").
+    /// approval setting and the tool's annotations, as for any server (decision of 2026-10-22:
+    /// whether approval is skipped follows each harness's own setting).
     var codexConfig: JSONValue {
         .object(["mcp_servers": .object([name: .object([
             "command": .string(command),

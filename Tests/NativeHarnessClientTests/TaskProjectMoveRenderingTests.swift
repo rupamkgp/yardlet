@@ -4,7 +4,7 @@ import XCTest
 @testable import NativeHarnessClient
 
 /// Renders the sidebar offscreen into `.build/move-project-qa`, light and dark, before and after a
-/// chat moves into a project (the Codex app thread the person had moved to `13주`). The repository
+/// chat moves into a project (the Codex app thread the person had moved to a project of theirs). The repository
 /// renders no context menus, so the sidebar shows the move. No provider, app launch, or window
 /// server interaction.
 @MainActor
@@ -14,7 +14,7 @@ final class TaskProjectMoveRenderingTests: XCTestCase {
         let thirteen = URL(filePath: "/tmp/move-project-qa/13weeks", directoryHint: .isDirectory)
         let sandbox = URL(filePath: "/tmp/move-project-qa/yardlet-sandbox", directoryHint: .isDirectory)
         let projects = ProjectStore(chatWorkspaceHome: home)
-        let thirteenProject = projects.ensureProject(forRoot: thirteen, name: "13주")
+        let thirteenProject = projects.ensureProject(forRoot: thirteen, name: "13 Weeks")
         _ = projects.ensureProject(forRoot: sandbox)
         let now = Date()
         func task(_ title: String, _ harness: HarnessKind, in folder: URL, minutesAgo: Double,
@@ -25,13 +25,13 @@ final class TaskProjectMoveRenderingTests: XCTestCase {
                           updatedAt: now.addingTimeInterval(-minutesAgo * 60), hasUnreadUpdate: unread,
                           completionState: unread ? .completed : .none, projectID: projectID)
         }
-        let game = task("OpenAI Game 2026 웹게임 완성", .codex,
+        let game = task("Finish the OpenAI Game 2026 web game", .codex,
                         in: home.appending(path: "Documents/Codex/2026-08-25/new-chat", directoryHint: .isDirectory),
                         minutesAgo: 2)
         let trip = task("Plan the weekend trip", .claudeCode,
                         in: home.appending(path: "Library/Application Support/Claude/scratch-workspaces/a/b/scratch-1",
                                            directoryHint: .isDirectory), minutesAgo: 4)
-        let weekly = task("주차별 학습 계획 정리", .codex, in: thirteen, minutesAgo: 30, projectID: thirteenProject.id,
+        let weekly = task("Organize the weekly study plan", .codex, in: thirteen, minutesAgo: 30, projectID: thirteenProject.id,
                           unread: true)
         let sandboxTask = task("Nest task rows under their project", .claudeCode, in: sandbox, minutesAgo: 8,
                                status: .running)
@@ -73,7 +73,7 @@ final class TaskProjectMoveRenderingTests: XCTestCase {
             }
         }
 
-        // What the sidebar exposes after the move: the chat is under 13주, below Projects, and Chats
+        // What the sidebar exposes after the move: the chat is under its project, below Projects, and Chats
         // holds only the other chat.
         let host = WindowlessRender.Host(
             sidebar(after).frame(width: size.width, height: size.height, alignment: .top), size: size)
@@ -88,10 +88,10 @@ final class TaskProjectMoveRenderingTests: XCTestCase {
         }
         let chatsTitle = try index(of: L10n.string("Chats"))
         let projectsTitle = try index(of: L10n.string("Projects"))
-        let movedRow = try index(of: "OpenAI Game 2026 웹게임 완성, Codex")
+        let movedRow = try index(of: "Finish the OpenAI Game 2026 web game, Codex")
         XCTAssertTrue((chatsTitle..<projectsTitle).contains(try index(of: "Plan the weekend trip, Claude Code")))
         XCTAssertGreaterThan(movedRow, projectsTitle)
-        XCTAssertGreaterThan(movedRow, try index(where: { $0.label.contains("13주") }, "13주"))
+        XCTAssertGreaterThan(movedRow, try index(where: { $0.label.contains("13 Weeks") }, "13 Weeks"))
         XCTAssertLessThan(movedRow, try index(where: { $0.label.contains("yardlet-sandbox") }, "yardlet-sandbox"))
     }
 }

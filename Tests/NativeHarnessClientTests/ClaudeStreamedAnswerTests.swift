@@ -32,12 +32,12 @@ final class ClaudeStreamedAnswerTests: XCTestCase {
         }
     }
 
-    private static let full = "세 가지를 정리해 드리겠습니다. Claude도 계정을 모릅니다. 사용자 파일은 고치지 않습니다."
+    private static let full = "Here are three points. Claude does not know the account either. The user's files stay unchanged."
 
     func testAnAnswerStreamingBesideASubagentsBackgroundWorkShowsOnceAndWhole() throws {
         var projection = ClaudeSessionProjection()
         var builder = TranscriptBuilder()
-        builder.appendUser("정리해 줘")
+        builder.appendUser("Sum it up")
         func apply(_ json: String) throws {
             for payload in projection.payloads(from: try decode(json)) { builder.apply(payload) }
         }
@@ -50,9 +50,9 @@ final class ClaudeStreamedAnswerTests: XCTestCase {
         ] { try apply(json) }
         // The answer streams; the subagent and its own background command report between deltas.
         try apply(#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[]}}}"#)
-        try apply(delta("세 가지를 "))
+        try apply(delta("Here are "))
         try apply(#"{"type":"system","subtype":"task_progress","task_id":"sub","tool_use_id":"agent","description":"Research","last_tool_name":"Bash","usage":{"total_tokens":900,"tool_uses":3,"duration_ms":4000}}"#)
-        try apply(delta("정리해 드리겠습니다. Claude도 계정을"))
+        try apply(delta("three points. Claude does not know the"))
         try apply(#"{"type":"system","subtype":"task_started","task_id":"sub-bash","owned_by_subagent":true,"tool_use_id":"sub-bash-tool","description":"Build tests with send experiment","is_backgrounded":true,"parent_task_id":"sub","task_type":"local_bash"}"#)
         // While it runs, the subagent's command is a row of the line above the composer, under
         // its subagent, and the answer is still one entry.
@@ -61,12 +61,12 @@ final class ClaudeStreamedAnswerTests: XCTestCase {
         XCTAssertEqual(bar.rows.map(\.depth), [0, 1])
         XCTAssertEqual(bar.rows.map(\.showsHarnessModel), [true, false], "a shell has no model")
         XCTAssertEqual(bar.rows[0].activity.subtask?.model, "claude-opus-5-5")
-        XCTAssertEqual(answers(in: builder), ["세 가지를 정리해 드리겠습니다. Claude도 계정을"])
-        try apply(delta(" 모릅니다. 사용"))
+        XCTAssertEqual(answers(in: builder), ["Here are three points. Claude does not know the"])
+        try apply(delta(" account either. The us"))
         try apply(#"{"type":"system","subtype":"task_progress","task_id":"sub-bash","tool_use_id":"sub-bash-tool","description":"Build tests with send experiment","usage":{"total_tokens":0,"tool_uses":0,"duration_ms":900}}"#)
-        try apply(delta("자 파일은 "))
+        try apply(delta("er's files "))
         try apply(#"{"type":"system","subtype":"task_notification","task_id":"sub-bash","tool_use_id":"sub-bash-tool","status":"completed","summary":"Build complete","output_file":"/tmp/out"}"#)
-        try apply(delta("고치지 않습니다."))
+        try apply(delta("stay unchanged."))
         XCTAssertEqual(answers(in: builder).count, 1, "Interleaved reports never split the answer while it streams")
         try apply(#"{"type":"system","subtype":"task_progress","task_id":"sub","tool_use_id":"agent","description":"Research","last_tool_name":"Read","usage":{"total_tokens":1200,"tool_uses":4,"duration_ms":6000}}"#)
         try apply(#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"\#(Self.full)"}]}}"#)

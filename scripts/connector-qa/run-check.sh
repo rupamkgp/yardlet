@@ -73,7 +73,7 @@ cp "$home/.yardlet/connectors.json" "$out/connectors.json"
 echo "ok   connected: $(jq -r '.connectors[0] | "\(.name) slug=\(.slug) auth=\(.authorization) tools=\(.tools | length)"' "$out/connectors.json")"
 
 python3 "$TOOLS/drive-mcp.py" "$out/launch.json" \
-    'qa_docs_echo={"text":"안녕 Yardlet"}' 'qa_docs_whoami={}' 'qa_docs_missing={}' 'browser_snapshot={}' \
+    'qa_docs_echo={"text":"Hello Yardlet"}' 'qa_docs_whoami={}' 'qa_docs_missing={}' 'browser_snapshot={}' \
     > "$out/mcp.json" || { echo "FAIL driving yardlet-mcp"; exit 1; }
 jq -r '"tools: " + ([.["tools/list"].result.tools[].name] | join(", "))' "$out/mcp.json"
 jq -r '.calls[] | "\(.tool): isError=\(.reply.result.isError) \(.reply.result.content | map(.text // .type) | join(" | ")) structured=\(.reply.result.structuredContent // "none" | tostring)"' "$out/mcp.json"

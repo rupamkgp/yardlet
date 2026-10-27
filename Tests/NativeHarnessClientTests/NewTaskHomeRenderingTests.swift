@@ -60,49 +60,49 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         var answers: [UUID: String] = [:]
 
         // yardlet: one waiting, one unread, one running with two subtasks, two finished with pull requests.
-        let approve = task("스키마 마이그레이션 승인", minutesAgo: 2, status: .waitingForApproval, in: repository)
-        var notes = task("릴리스 노트 요약", minutesAgo: 6, unread: true, in: repository)
+        let approve = task("Approve schema migration", minutesAgo: 2, status: .waitingForApproval, in: repository)
+        var notes = task("Summarize release notes", minutesAgo: 6, unread: true, in: repository)
         notes.completionState = .completed
-        answers[notes.id] = "0.9의 변경 12건을 기능·수정·내부 셋으로 나눠 정리했습니다."
-        let sidebar = task("사이드바 행 리팩터링", minutesAgo: 0.5, status: .running, in: repository)
+        answers[notes.id] = "Sorted the 12 changes in 0.9 into features, fixes and internals."
+        let sidebar = task("Refactor sidebar rows", minutesAgo: 0.5, status: .running, in: repository)
         details[sidebar.id] = TaskAttentionDetail(turnStartedAt: at(14), suggestions: [
-            TaskAttentionSuggestion(id: "task_1a2b3c4d", title: "README 배지 고치기")])
-        var child = task("선택 상태 시험 정리", minutesAgo: 1, status: .running, in: repository)
+            TaskAttentionSuggestion(id: "task_1a2b3c4d", title: "Fix the README badge")])
+        var child = task("Tidy selection state tests", minutesAgo: 1, status: .running, in: repository)
         child.parentTaskID = sidebar.id
-        var hover = task("호버 카드 렌더 확인", minutesAgo: 2, status: .running, in: repository, harness: .codex)
+        var hover = task("Check the hover card render", minutesAgo: 2, status: .running, in: repository, harness: .codex)
         hover.parentTaskID = sidebar.id
-        let shipped = task("PR 배지 내보내기", minutesAgo: 90, in: repository)
-        answers[shipped.id] = "배지를 사이드바와 레일에 같은 규칙으로 붙였습니다."
-        let merged = task("커넥터 목록 정리", minutesAgo: 150, in: repository)
+        let shipped = task("Ship PR badges", minutesAgo: 90, in: repository)
+        answers[shipped.id] = "Badges now follow one rule in the sidebar and the rail."
+        let merged = task("Tidy the connector list", minutesAgo: 150, in: repository)
 
         // example-web: a question, a failure, an unread result, a running task, an approved pull request.
-        let question = task("CLI 플래그 이름 고르기", minutesAgo: 4, status: .running, in: shop, harness: .codex)
+        let question = task("Pick a CLI flag name", minutesAgo: 4, status: .running, in: shop, harness: .codex)
         details[question.id] = TaskAttentionDetail(pendingRequest: .input)
-        let flaky = task("업로드 시험이 가끔 실패하는 문제", minutesAgo: 12, status: .failed, unread: true, in: shop,
+        let flaky = task("Upload test fails now and then", minutesAgo: 12, status: .failed, unread: true, in: shop,
                          harness: .codex)
         details[flaky.id] = TaskAttentionDetail(errorMessage: "Overloaded")
-        let blog = task("블로그 목록 첫 화면 속도", minutesAgo: 25, unread: true, in: shop, harness: .codex)
-        answers[blog.id] = "목록 첫 화면이 1.8초에서 0.6초로 빨라졌습니다. 이미지 지연 로드와 쿼리 캐시를 넣었고 시험 14개가 통과합니다."
-        let webhook = task("결제 웹훅 재시도", minutesAgo: 1, status: .running, in: shop, harness: .codex)
+        let blog = task("Blog list first-load speed", minutesAgo: 25, unread: true, in: shop, harness: .codex)
+        answers[blog.id] = "The list's first screen now loads in 0.6 s, down from 1.8 s. Added lazy images and a query cache; 14 tests pass."
+        let webhook = task("Retry payment webhooks", minutesAgo: 1, status: .running, in: shop, harness: .codex)
         details[webhook.id] = TaskAttentionDetail(turnStartedAt: at(3))
-        let checkout = task("결제 페이지 접근성", minutesAgo: 200, in: shop)
+        let checkout = task("Checkout page accessibility", minutesAgo: 200, in: shop)
 
         // design-kit: a plan limit and an unread result.
-        let weekly = task("주간 리포트 정리", minutesAgo: 41, status: .completed, unread: true, in: designKit)
+        let weekly = task("Tidy the weekly report", minutesAgo: 41, status: .completed, unread: true, in: designKit)
         details[weekly.id] = TaskAttentionDetail(usageLimit: HarnessRateLimit(
             status: .rejected, window: .session, resetsAt: Calendar.current.date(byAdding: .hour, value: 2, to: now)))
-        let copy = task("온보딩 문구 다듬기", minutesAgo: 70, unread: true, in: designKit)
-        answers[copy.id] = "세 군데를 고쳤습니다: 첫 화면 제목, 계정 연결 안내, 빈 목록 문구."
+        let copy = task("Polish the onboarding copy", minutesAgo: 70, unread: true, in: designKit)
+        answers[copy.id] = "Fixed three places: the first screen's title, the account hint, the empty list."
 
         // web-app: quiet, its latest conversations from yesterday.
-        let pricing = task("차량 요금표 API 정리", minutesAgo: 60 * 20, in: rental)
-        answers[pricing.id] = "요금 계산을 서버 한 곳으로 모으고 화면은 결과만 받게 바꿨습니다."
-        let seo = task("블로그 상세 메타 태그", minutesAgo: 60 * 26, in: rental, harness: .codex)
-        answers[seo.id] = "언어별 canonical과 og 태그를 넣고 미리보기 3개로 확인했습니다."
+        let pricing = task("Tidy the vehicle rates API", minutesAgo: 60 * 20, in: rental)
+        answers[pricing.id] = "Moved the rate math to one place on the server; screens only get results."
+        let seo = task("Blog post meta tags", minutesAgo: 60 * 26, in: rental, harness: .codex)
+        answers[seo.id] = "Added canonical and og tags per language and checked three previews."
 
         // A chat with no project.
-        let contract = task("계약서 조항 비교", minutesAgo: 180, in: chatFolder)
-        answers[contract.id] = "두 계약서의 해지 조항이 통지 기간에서만 다릅니다(30일과 60일)."
+        let contract = task("Compare contract clauses", minutesAgo: 180, in: chatFolder)
+        answers[contract.id] = "The two termination clauses differ only in notice period (30 and 60 days)."
 
         // Left alone for a while, with work left: files and worktrees (ledger-app, four days), an open
         // pull request and a commit not pushed (field-notes, twelve days). Old-notes left nothing.
@@ -112,9 +112,9 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         let ledgerProject = Project(name: "ledger-app", primaryRoot: ledger)
         let fieldProject = Project(name: "field-notes", primaryRoot: fieldNotes)
         let oldProject = Project(name: "old-notes", primaryRoot: oldNotes)
-        let reconcile = task("월말 정산 대사 화면", minutesAgo: 60 * 24 * 4, in: ledger)
-        let sync = task("오프라인 동기화 충돌 처리", minutesAgo: 60 * 24 * 12, in: fieldNotes, harness: .codex)
-        let archive = task("보관함 정리", minutesAgo: 60 * 24 * 30, in: oldNotes)
+        let reconcile = task("Month-end reconciliation screen", minutesAgo: 60 * 24 * 4, in: ledger)
+        let sync = task("Handle offline sync conflicts", minutesAgo: 60 * 24 * 12, in: fieldNotes, harness: .codex)
+        let archive = task("Clean up the archive", minutesAgo: 60 * 24 * 30, in: oldNotes)
 
         let sessions = [approve, notes, sidebar, child, hover, shipped, merged, question, flaky, blog, webhook, checkout,
                         weekly, copy, pricing, seo, reconcile, sync, archive]
@@ -122,38 +122,38 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         // What the waiting tasks and an unread result said, for the composer's place.
         var conversations: [UUID: [TranscriptEntry]] = [:]
         conversations[approve.id] = [
-            TranscriptEntry(content: .user(text: "세션 색인에 provider_scope 열을 더해 줘")),
-            TranscriptEntry(content: .assistant(text: "마이그레이션을 만들었습니다. 기존 행은 계정 폴더에서 읽어 채웁니다.",
+            TranscriptEntry(content: .user(text: "Add a provider_scope column to the session index")),
+            TranscriptEntry(content: .assistant(text: "I wrote the migration. Existing rows are filled from the account folders.",
                                                 isStreaming: false)),
             TranscriptEntry(content: .permission(PermissionRequest(
-                id: "migrate", title: "Bash", detail: "세션 색인에 provider_scope 열을 더하고 기존 행을 채웁니다.",
+                id: "migrate", title: "Bash", detail: "Adds provider_scope to the session index and fills the existing rows.",
                 command: "swift run yardlet-index migrate --apply", toolCallID: "toolu_migrate"), state: .pending))
         ]
         conversations[question.id] = [
-            TranscriptEntry(content: .user(text: "재시도 플래그를 하나로 정리해 줘")),
-            TranscriptEntry(content: .assistant(text: "지금 코드에는 --retry와 --retries가 섞여 있습니다.", isStreaming: false)),
+            TranscriptEntry(content: .user(text: "Settle on one retry flag")),
+            TranscriptEntry(content: .assistant(text: "The code mixes --retry and --retries today.", isStreaming: false)),
             TranscriptEntry(content: .permission(PermissionRequest(
                 id: "flag", title: "Codex asks", detail: nil, command: nil,
                 structured: .questions([PermissionQuestion(
-                    question: "재시도 횟수를 정하는 플래그 이름을 무엇으로 할까요?", header: "플래그",
+                    question: "What should the flag that sets the retry count be called?", header: "Flag",
                     options: [
-                        PermissionQuestionOption(label: "--max-retries", description: "상한이라는 뜻이 분명합니다"),
-                        PermissionQuestionOption(label: "--retries", description: "짧고 기존 --timeout과 어울립니다"),
-                        PermissionQuestionOption(label: "--retry-count", description: "설정 파일의 retryCount와 같습니다")
+                        PermissionQuestionOption(label: "--max-retries", description: "Clearly reads as a ceiling"),
+                        PermissionQuestionOption(label: "--retries", description: "Short, and fits the existing --timeout"),
+                        PermissionQuestionOption(label: "--retry-count", description: "Matches retryCount in the config file")
                     ],
                     allowsMultipleSelections: false)]),
                 toolCallID: "flag-tool"), state: .pending))
         ]
         conversations[notes.id] = [
-            TranscriptEntry(content: .user(text: "0.9 릴리스 노트를 정리해 줘")),
+            TranscriptEntry(content: .user(text: "Write up the 0.9 release notes")),
             TranscriptEntry(content: .assistant(text: """
-                0.9의 변경 12건을 기능·수정·내부 셋으로 나눠 정리했습니다.
+                Sorted the 12 changes in 0.9 into features, fixes and internals.
 
-                - **기능:** 홈의 프로젝트 칸, 내장 인증 앱, 휴대폰 원격 v2
-                - **수정:** 결제 화면의 카드 저장 말풍선, Google 쿠키 복사
-                - **내부:** 세션 색인 정리, 시험 시간 단축
+                - **Features:** project cells on Home, built-in authenticator, phone remote v2
+                - **Fixes:** the card-saving bubble at checkout, Google cookie copy
+                - **Internal:** session index cleanup, faster tests
 
-                `docs/RELEASE_NOTES.md`에 넣어 두었습니다. 커밋하고 PR을 올릴까요?
+                It is in `docs/RELEASE_NOTES.md`. Shall I commit it and open a PR?
                 """, isStreaming: false))
         ]
 
@@ -173,9 +173,9 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         func destination(_ harness: HarnessKind, _ folder: URL?) -> ScheduleDestination {
             ScheduleDestination(harness: harness, workspacePath: folder?.path(percentEncoded: false))
         }
-        let briefing = ScheduledTask(name: "아침 브리핑", prompt: "", trigger: .daily(ScheduleTime(hour: 9, minute: 0)),
+        let briefing = ScheduledTask(name: "Morning briefing", prompt: "", trigger: .daily(ScheduleTime(hour: 9, minute: 0)),
                                      destination: destination(.claudeCode, nil))
-        let audit = ScheduledTask(name: "의존성 점검", prompt: "", trigger: .daily(ScheduleTime(hour: 15, minute: 0)),
+        let audit = ScheduledTask(name: "Dependency audit", prompt: "", trigger: .daily(ScheduleTime(hour: 15, minute: 0)),
                                   destination: destination(.codex, repository))
         let names = [ProjectSidebarPresentation.normalizedPath(for: repository): "yardlet",
                      ProjectSidebarPresentation.normalizedPath(for: shop): "example-web",
@@ -227,7 +227,7 @@ final class NewTaskHomeRenderingTests: XCTestCase {
             break
         case .quiet:
             // A quiet morning: nothing waits or runs; yesterday's conversations and one schedule.
-            let quietTitles: Set<String> = ["차량 요금표 API 정리", "블로그 상세 메타 태그", "PR 배지 내보내기"]
+            let quietTitles: Set<String> = ["Tidy the vehicle rates API", "Blog post meta tags", "Ship PR badges"]
             activity.groups = activity.groups.map {
                 WorkspaceGroup(workspaceURL: $0.workspaceURL,
                                sessions: $0.sessions.filter { quietTitles.contains($0.title) }, project: $0.project)
@@ -330,14 +330,14 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         XCTAssertTrue((elements["home-wide"] ?? []).contains {
             $0.label.hasPrefix("yardlet,") && $0.value == L10n.string("New tasks start here")
         }, "The chosen project says so")
-        XCTAssertTrue(shows("home-wide", "0.9의 변경 12건을 기능·수정·내부 셋으로 나눠 정리했습니다."), "An unread result's first line")
+        XCTAssertTrue(shows("home-wide", "Sorted the 12 changes in 0.9 into features, fixes and internals."), "An unread result's first line")
         XCTAssertTrue(shows("home-wide", L10n.format("%lld subtasks", 2)), "Running children counted on their parent")
         XCTAssertTrue(shows("home-wide", "fix/upload-retry"), "Each project's branch, read for its own folder")
         XCTAssertTrue(shows("home-wide", L10n.format("%@ %@ %@ left", "jordan", L10n.string("Weekly"), "8%")))
         XCTAssertTrue(shows("home-wide", L10n.string("Another session is running here")), "The folder's rows over the composer")
         XCTAssertTrue(shows("home-wide", L10n.format("Fix the failing checks on %@", "feature/home")))
         XCTAssertFalse(shows("home-wide", L10n.format("Continue on %@", "feature/home")), "Two of the folder's rows")
-        XCTAssertFalse(shows("home-wide", L10n.format("%@ is waiting on you", "스키마 마이그레이션 승인")),
+        XCTAssertFalse(shows("home-wide", L10n.format("%@ is waiting on you", "Approve schema migration")),
                        "A waiting task is its project's line, not a folder row too")
         XCTAssertTrue(shows("home-wide", L10n.format("What should we build in %@?", "yardlet")))
 
@@ -355,8 +355,8 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         XCTAssertTrue(shows("home-narrow-short", L10n.format("Show %lld more", 2)))
 
         // Quiet: the latest conversations with their answers, and a schedule.
-        XCTAssertTrue(shows("home-quiet", "요금 계산을 서버 한 곳으로 모으고 화면은 결과만 받게 바꿨습니다."), report["home-quiet"]!)
-        XCTAssertTrue(shows("home-quiet", "의존성 점검"))
+        XCTAssertTrue(shows("home-quiet", "Moved the rate math to one place on the server; screens only get results."), report["home-quiet"]!)
+        XCTAssertTrue(shows("home-quiet", "Dependency audit"))
 
         // A chat chosen: the chats say new tasks start there.
         XCTAssertTrue((elements["home-chat"] ?? []).contains {
@@ -398,8 +398,8 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         XCTAssertEqual(headerNames(in: host).first, "yardlet", "The projects keep their places")
 
         // A click on a line opens its task.
-        try click(XCTUnwrap(controls(in: host).first { $0.label.contains("릴리스 노트 요약") }), in: host)
-        XCTAssertEqual(opened, ["릴리스 노트 요약"])
+        try click(XCTUnwrap(controls(in: host).first { $0.label.contains("Summarize release notes") }), in: host)
+        XCTAssertEqual(opened, ["Summarize release notes"])
 
         // A project left alone for a while: a click starts the new task there, a double-click opens the
         // task it was left at.
@@ -409,7 +409,7 @@ final class NewTaskHomeRenderingTests: XCTestCase {
             $0.label.contains(L10n.format("What should we work on in %@?", "ledger-app"))
         }, "The title names it")
         try doubleClick(line("field-notes", in: host), in: host)
-        XCTAssertEqual(opened.last, "오프라인 동기화 충돌 처리")
+        XCTAssertEqual(opened.last, "Handle offline sync conflicts")
 
         // Tab from the composer to the first project's name; Return chooses it and gives the composer back.
         let field = try XCTUnwrap(views(NSTextField.self, in: host.hosting).first { $0.isEditable })
@@ -425,7 +425,7 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         try press("\t", keyCode: 48, in: host)
         try press(down, keyCode: 125, in: host)
         try press("\r", keyCode: 36, in: host)
-        XCTAssertEqual(opened.last, "스키마 마이그레이션 승인")
+        XCTAssertEqual(opened.last, "Approve schema migration")
 
         // ↓ past every project reaches the folder's rows over the composer; the last fills the draft.
         XCTAssertTrue(host.window.makeFirstResponder(field))
@@ -457,11 +457,11 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         let runtimes = try runtimes()
         let wide = NSSize(width: 1240, height: 860), narrow = NSSize(width: 640, height: 860)
         let scenes: [(name: String, line: String, size: NSSize, dark: Bool)] = [
-            ("home-reply-question-wide", "CLI 플래그 이름 고르기", wide, true),
-            ("home-reply-approval-wide", "스키마 마이그레이션 승인", wide, true),
-            ("home-reply-result-wide", "릴리스 노트 요약", wide, false),
-            ("home-reply-question-narrow", "CLI 플래그 이름 고르기", narrow, true),
-            ("home-reply-approval-narrow", "스키마 마이그레이션 승인", narrow, true),
+            ("home-reply-question-wide", "Pick a CLI flag name", wide, true),
+            ("home-reply-approval-wide", "Approve schema migration", wide, true),
+            ("home-reply-result-wide", "Summarize release notes", wide, false),
+            ("home-reply-question-narrow", "Pick a CLI flag name", narrow, true),
+            ("home-reply-approval-narrow", "Approve schema migration", narrow, true),
         ]
         var elements: [String: [WindowlessRender.AccessibilityElement]] = [:]
         for scene in scenes {
@@ -494,7 +494,7 @@ final class NewTaskHomeRenderingTests: XCTestCase {
             XCTAssertFalse(shows(scene, L10n.string("Another session is running here")), "\(scene): no folder rows")
         }
         // The task's own request cards, as its conversation draws them.
-        XCTAssertTrue(shows("home-reply-question-wide", "재시도 횟수를 정하는 플래그 이름을 무엇으로 할까요?"),
+        XCTAssertTrue(shows("home-reply-question-wide", "What should the flag that sets the retry count be called?"),
                       report["home-reply-question-wide"]!)
         XCTAssertTrue(shows("home-reply-question-wide", "--max-retries"))
         XCTAssertTrue(shows("home-reply-approval-wide", L10n.string("Approval required")), report["home-reply-approval-wide"]!)
@@ -505,7 +505,7 @@ final class NewTaskHomeRenderingTests: XCTestCase {
     func testAWaitingOrUnreadLineIsAnsweredWhereTheComposerIs() throws {
         let runtimes = try runtimes()
         let draft = NewTaskDraft()
-        draft.text = "새 작업 초안"
+        draft.text = "New task draft"
         let replies = ReplyFixture()
         var opened: [String] = []
         var read: [UUID] = []
@@ -526,7 +526,7 @@ final class NewTaskHomeRenderingTests: XCTestCase {
 
         // A click on an unread result answers it here: its conversation and composer, which takes the
         // keyboard, under the line naming it. Nothing opens.
-        try click(line("릴리스 노트 요약", in: host), in: host)
+        try click(line("Summarize release notes", in: host), in: host)
         XCTAssertEqual(opened, [])
         XCTAssertTrue(shows(L10n.string("Conversation preview")))
         XCTAssertFalse(shows(L10n.format("What should we build in %@?", "yardlet")))
@@ -534,27 +534,27 @@ final class NewTaskHomeRenderingTests: XCTestCase {
 
         // Sent from there, with the task's own draft: the next task needing attention, as ⌥⌘A picks it
         // (the approval), takes its place, and the result it left reads as read.
-        let notes = try task("릴리스 노트 요약"), approve = try task("스키마 마이그레이션 승인")
-        replies.draft(notes.id).text = "ㄱㄱ"
+        let notes = try task("Summarize release notes"), approve = try task("Approve schema migration")
+        replies.draft(notes.id).text = "Go ahead"
         host.settle(passes: 2)
         try press("\r", keyCode: 36, in: host, passes: 10)
         XCTAssertEqual(replies.sent.map(\.task), [notes.id])
-        XCTAssertEqual(replies.sent.map(\.text), ["ㄱㄱ"])
+        XCTAssertEqual(replies.sent.map(\.text), ["Go ahead"])
         XCTAssertEqual(read, [notes.id])
         XCTAssertTrue(shows("swift run yardlet-index migrate --apply"), "The approval's card in its place")
         XCTAssertTrue(host.window.firstResponder is NSTextView, "Its composer has the keyboard")
-        XCTAssertEqual(draft.text, "새 작업 초안", "The new task's draft stays as it was")
+        XCTAssertEqual(draft.text, "New task draft", "The new task's draft stays as it was")
 
         // Answering its card goes on to the next as well: the question.
         try click(XCTUnwrap(controls(in: host).first { $0.label == L10n.string("Allow") }), in: host)
         XCTAssertEqual(replies.answered, ["migrate"])
-        XCTAssertTrue(shows("재시도 횟수를 정하는 플래그 이름을 무엇으로 할까요?"), "The question's card in its place")
+        XCTAssertTrue(shows("What should the flag that sets the retry count be called?"), "The question's card in its place")
 
         // Tab goes to the lines at the answered task's own; Return there opens it.
         try press("\t", keyCode: 48, in: host)
         XCTAssertFalse(host.window.firstResponder is NSTextView, "Tab moves to the lines")
         try press("\r", keyCode: 36, in: host)
-        XCTAssertEqual(opened, ["CLI 플래그 이름 고르기"])
+        XCTAssertEqual(opened, ["Pick a CLI flag name"])
         XCTAssertTrue(shows(L10n.format("What should we build in %@?", "yardlet")), "The new task's composer is back")
 
         // Tab, ↓, Return answers the first project's waiting task; Escape in its composer gives the new
@@ -567,24 +567,24 @@ final class NewTaskHomeRenderingTests: XCTestCase {
         try press("\r", keyCode: 36, in: host)
         XCTAssertEqual(opened.count, 1, "Return answers it rather than opening it")
         XCTAssertTrue(shows(L10n.string("Approval required")))
-        replies.draft(approve.id).text = "나중에 이어 쓸 답"
+        replies.draft(approve.id).text = "A reply to finish later"
         try press("\u{1b}", keyCode: 53, in: host)
         XCTAssertTrue(shows(L10n.format("What should we build in %@?", "yardlet")))
-        XCTAssertEqual((host.window.firstResponder as? NSTextView)?.string, "새 작업 초안")
-        XCTAssertEqual(replies.draft(approve.id).text, "나중에 이어 쓸 답")
+        XCTAssertEqual((host.window.firstResponder as? NSTextView)?.string, "New task draft")
+        XCTAssertEqual(replies.draft(approve.id).text, "A reply to finish later")
         XCTAssertEqual(replies.sent.count, 1, "Escape sends nothing")
 
         // Choosing a project while answering is about the new task: its composer comes back there.
-        try click(line("CLI 플래그 이름 고르기", in: host), in: host)
+        try click(line("Pick a CLI flag name", in: host), in: host)
         try click(header("design-kit", in: host), in: host)
         XCTAssertTrue(shows(L10n.format("What should we work on in %@?", "design-kit")))
         XCTAssertFalse(shows(L10n.string("Conversation preview")))
 
         // A double-click opens; a running task's line opens it.
-        try doubleClick(line("블로그 목록 첫 화면 속도", in: host), in: host)
-        XCTAssertEqual(opened.last, "블로그 목록 첫 화면 속도")
-        try click(line("사이드바 행 리팩터링", in: host), in: host)
-        XCTAssertEqual(opened.last, "사이드바 행 리팩터링")
+        try doubleClick(line("Blog list first-load speed", in: host), in: host)
+        XCTAssertEqual(opened.last, "Blog list first-load speed")
+        try click(line("Refactor sidebar rows", in: host), in: host)
+        XCTAssertEqual(opened.last, "Refactor sidebar rows")
         XCTAssertFalse(NSApplication.shared.isActive, "Nothing took the person's screen")
     }
 

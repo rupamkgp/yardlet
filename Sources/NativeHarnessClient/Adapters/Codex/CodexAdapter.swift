@@ -200,7 +200,7 @@ actor CodexAdapter: HarnessAdapter, CodexCapabilityProviding, CodexPresentationP
         agentToolServerByLocalSessionID[localSessionID] = server
     }
 
-    /// Yardlet 지침 for the thread this task starts, resumes, or forks into, sent as the thread's
+    /// Yardlet instructions for the thread this task starts, resumes, or forks into, sent as the thread's
     /// `developerInstructions`.
     func setYardletInstructions(_ instructions: YardletInstructionsDelivery?, for localSessionID: UUID) {
         yardletInstructionsByLocalSessionID[localSessionID] = instructions?.text

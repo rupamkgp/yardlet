@@ -105,7 +105,7 @@ import XCTest
     /// A Codex task's composer takes the Codex app's prediction the same way.
     func testTabPutsACodexPredictionInTheComposerWithoutSendingIt() throws {
         let probe = Probe()
-        let prediction = "실패한 테스트만 다시 돌려줘"
+        let prediction = "Rerun only the failing tests"
         probe.draft.nextMessageSuggestion = prediction
         let mounted = try mount(surface(probe, harness: .codex))
         XCTAssertTrue(mounted.showsSuggestion(prediction))
@@ -127,7 +127,7 @@ import XCTest
                        NSRange(location: (Self.suggestion as NSString).length, length: 0))
     }
 
-    /// While an input method composes, SwiftUI keeps the marked "ㅎ" out of the composer's text, so
+    /// While an input method composes, SwiftUI keeps the marked letter out of the composer's text, so
     /// the draft still reads empty and the suggestion still shows. Tab then belongs to the input method
     /// (`takesSuggestion` sees the marked text): the suggestion is not put in, and the syllable the
     /// field commits is typing, which lets the suggestion go.
@@ -237,7 +237,7 @@ import XCTest
             ("claude-suggestion", Self.suggestion, .claudeCode, NSSize(width: 860, height: 200)),
             ("claude-suggestion-long", long, .claudeCode, NSSize(width: 860, height: 200)),
             ("claude-suggestion-narrow", "commit this and push it", .claudeCode, NSSize(width: 520, height: 200)),
-            ("codex-prediction", "실패한 테스트만 다시 돌려서 통과하는지 확인해줘", .codex, NSSize(width: 860, height: 200))
+            ("codex-prediction", "Rerun only the failing tests and check that they pass", .codex, NSSize(width: 860, height: 200))
         ]
         for scenario in scenarios {
             for appearance in WindowlessRender.Appearance.allCases {

@@ -5,8 +5,8 @@ import XCTest
 
 /// A turn reads in the order it happened, by one rule for every harness (`ConversationTurnLayout`,
 /// the Codex app 26.1016's `split-items-into-render-groups` and the `kk`, `Ak` and `Lk` of the block that
-/// folds its work). 2026-10-23: "응답 스트리밍을 뒤로 밀고 사이에 진행코멘터리가 나와서 시간 순서가 이상해지는 거
-/// 같은데", seen on a Codex task that asked questions while it worked and took the person's replies into
+/// folds its work). 2026-10-23: a user reported that progress commentary pushed the streamed answer back
+/// and broke the time order, seen on a Codex task that asked questions while it worked and took the person's replies into
 /// the running turn: every answer-phase message was drawn under the work, so the questions sank under
 /// the replies and notes written after them.
 ///

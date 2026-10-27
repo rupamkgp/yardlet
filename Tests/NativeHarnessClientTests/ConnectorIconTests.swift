@@ -4,7 +4,7 @@ import XCTest
 @testable import NativeHarnessClient
 @testable import YardletAgentTools
 
-/// Connector pictures (docs/CONNECTORS.md, "아이콘"): the icons a server declares about itself, then the
+/// Connector pictures (docs/CONNECTORS.md, "Icons"): the icons a server declares about itself, then the
 /// directory's icon on the service's own site, never another site's; fetched once, kept on disk,
 /// and a miss not asked for again for a day. No network: the fetches are counted fakes.
 ///

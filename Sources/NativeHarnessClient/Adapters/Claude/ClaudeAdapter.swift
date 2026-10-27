@@ -233,7 +233,7 @@ actor ClaudeAdapter:
         agentToolServerByLocalSessionID[localSessionID] = server
     }
 
-    /// Yardlet 지침 for the next launch, passed as `--append-system-prompt`.
+    /// Yardlet instructions for the next launch, passed as `--append-system-prompt`.
     func setYardletInstructions(_ instructions: YardletInstructionsDelivery?, for localSessionID: UUID) {
         yardletInstructionsByLocalSessionID[localSessionID] = instructions?.text
     }

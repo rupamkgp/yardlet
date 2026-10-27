@@ -2,11 +2,11 @@ import Foundation
 
 /// A message one task sent another with the `send_message_to_task` session tool, or the first message
 /// of a child task `create_task` started, in the words the receiving harness reads, and the reading
-/// that draws it as the sending task's message rather than the person's (docs/AGENT_BROWSER_TOOLS.md, "세션 도구").
+/// that draws it as the sending task's message rather than the person's (docs/AGENT_BROWSER_TOOLS.md, "Session tools").
 ///
 /// Every harness gets Yardlet's envelope and one sentence of fact: who sent it (`Relation`: the task
 /// the receiver was started from, its `parentTaskID`, or another task) and that the person did not
-/// type it (2026-10-24 사용자: "yardlet이 임의로 붙이는 건 다 없애 그냥 사실만 전해"). It tells the
+/// type it (decision of 2026-10-24: Yardlet adds nothing of its own beyond the facts). It tells the
 /// receiver nothing about what to do with it, as a Codex agent's own `followup_task` and
 /// `send_message` reach their target with the sender, the recipient and the text alone; what the
 /// receiver may do is its own permission setting's, which the harness enforces. After it come the

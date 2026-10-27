@@ -1,7 +1,7 @@
 import Foundation
 import YardletAgentTools
 
-// Automatic account assignment (docs/NATIVE_SESSION_STORAGE.md, "2026-09-15 추가 계정 선택"): the account a task an agent starts runs on (a
+// Automatic account assignment (docs/NATIVE_SESSION_STORAGE.md, "Choosing an additional account"): the account a task an agent starts runs on (a
 // child task, a subagent, a suggestion the person starts), and `list_accounts`, which shows the
 // agent the accounts of a harness, their limits and the one Yardlet would pick. The rule is
 // `AccountRouting`; which accounts it may use is the person's

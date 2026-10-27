@@ -175,7 +175,7 @@ final class ConversationSelectionTests: XCTestCase {
         XCTAssertTrue(marks(in: host.hosting).allSatisfy { !$0.isSelected })
     }
 
-    /// 2026-10-23 (user: "드래그해서 내용 긁을때 동작이 약간 이상한 듯"): a drag that stayed in one text drew the
+    /// 2026-10-23 (a user reported that dragging to select text behaved oddly): a drag that stayed in one text drew the
     /// text's own selection, whole lines out to the text's edge, and turned into the painted marks of a
     /// selection across texts the moment it crossed into the next one. Now it paints from the start.
     func testADragWithinOneTextPaintsAsADragAcrossTextsDoes() throws {
@@ -190,7 +190,7 @@ final class ConversationSelectionTests: XCTestCase {
         XCTAssertEqual(try copied(from: answer), "one.\n\nA second")
     }
 
-    /// 2026-10-25 (user: "아직도 드래그로 대화 복사가 안돼"): a drag selected, and a render of the view showed it,
+    /// 2026-10-25 (a user reported that dragging still did not copy the conversation): a drag selected, and a render of the view showed it,
     /// but the window showed none of it: TextKit 2 draws a text's lines in views of its own, which
     /// painting the selection left as they were drawn. The window's next display draws them again as a
     /// drag selects and as a press drops it.
@@ -224,7 +224,7 @@ final class ConversationSelectionTests: XCTestCase {
         XCTAssertTrue(copy.hasSuffix("Answer two, "), copy)
     }
 
-    /// 2026-10-24 (user: "그냥 평범하게 맥북 터치패드로 드래그하는데 드래그 안됐어"): a drag that started beside the
+    /// 2026-10-24 (a user reported that an ordinary trackpad drag selected nothing): a drag that started beside the
     /// words, left of an answer's line, in a request's bubble or between two turns, selected nothing, as
     /// nothing there followed the press. A page in both apps selects from the place nearest the
     /// pointer. A click there still selects nothing, and a click on a control in a turn is the control's.
@@ -265,7 +265,7 @@ final class ConversationSelectionTests: XCTestCase {
         XCTAssertNotEqual(lineState(), folded, "The click opened the folded line")
     }
 
-    /// 2026-10-23 (user: "질문 답변 넘어서 드래그할 때 뭔가 작동이 이상한 느낌?"): a drag past a question the agent
+    /// 2026-10-23 (a user reported that dragging past an answered question felt wrong): a drag past a question the agent
     /// asked left the card out — nothing in it tinted, nothing of it copied — as if the card were not
     /// there. The Claude app's answered card lets a page's selection take its answers.
     func testADragPastAnAnsweredQuestionTakesItsQuestionsAndAnswers() throws {
@@ -287,7 +287,7 @@ final class ConversationSelectionTests: XCTestCase {
 
     // MARK: - Presses
 
-    /// 2026-10-23 (user: "드래그 후에 다른 곳을 클릭해도 일부가 해제가 계속 안되고"): a selection that stayed in one
+    /// 2026-10-23 (a user reported that clicking elsewhere after a drag left part of the selection): a selection that stayed in one
     /// text was the text's own and went only when another view took the keyboard, so a press on what
     /// takes none (the space inside a turn, a folded line, a button) left it there.
     func testAPressAnywhereButATextDropsTheSelection() throws {

@@ -3,7 +3,7 @@ import SwiftUI
 import XCTest
 @testable import NativeHarnessClient
 
-/// Each of a task's browser tabs is a tab of its side panel, as in the Codex app (docs/BROWSER_HOST.md, "탭"):
+/// Each of a task's browser tabs is a tab of its side panel, as in the Codex app (docs/BROWSER_HOST.md, section 3, "Tabs"):
 /// the panel's rules for them, a panel saved when one Browser tab held them, the panel and the browser
 /// engine keeping the same tabs, and the panel's tab strip drawn light and dark into
 /// `.build/browser-panel-tabs-render/`.

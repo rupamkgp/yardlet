@@ -66,7 +66,7 @@ actor PiRPCAdapter: HarnessAdapter, ProviderCapabilityProviding, HarnessWorkspac
         }
     }
 
-    /// Yardlet 지침 for this session's own process, passed as Pi's `--append-system-prompt`. Oh My
+    /// Yardlet instructions for this session's own process, passed as Pi's `--append-system-prompt`. Oh My
     /// Pi is not installed here to check, so it receives nothing.
     func setYardletInstructions(_ instructions: YardletInstructionsDelivery?, for localSessionID: UUID) {
         yardletInstructionsByLocalSessionID[localSessionID] = instructions?.text

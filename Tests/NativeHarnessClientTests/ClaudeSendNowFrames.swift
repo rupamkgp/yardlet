@@ -73,14 +73,14 @@ enum SendNowFrames {
     {"output_file":"/private/tmp/claude-501/-Users-someone-Desktop-workspace-yardlet-sandbox/e02d3f46-0312-445a-a5dc-ffbc936ea60a/tasks/bm2z66s29.output","session_id":"e02d3f46-0312-445a-a5dc-ffbc936ea60a","status":"completed","subtype":"task_notification","summary":"Background command \"Run sleep 20 seconds then print done\" completed (exit code 0)","task_id":"bm2z66s29","tool_use_id":"toolu_01B7rRvVrPDB7ViGwP155jYZ","type":"system","uuid":"84c76b2b-68db-405e-92b2-3d1075eaa95f"}
     """#
 
-    static let notificationAnswerText = "명령이 완료되었습니다. `sleep 20 && echo done`이 성공적으로 실행되어 종료 코드 0으로 마쳤습니다."
+    static let notificationAnswerText = "The command finished. `sleep 20 && echo done` ran successfully and exited with code 0."
 
     static let notificationAnswer = #"""
-    {"message":{"role":"assistant","content":[{"text":"명령이 완료되었습니다. `sleep 20 && echo done`이 성공적으로 실행되어 종료 코드 0으로 마쳤습니다.","type":"text"}],"id":"msg_011Cfoo9ZQHYm8ABScGaYyDh","model":"claude-haiku-4-5-20251001","stop_reason":null},"parent_tool_use_id":null,"request_id":"req_011Cfoo9ZBPfdWgRmotxcTwr","session_id":"e02d3f46-0312-445a-a5dc-ffbc936ea60a","timestamp":"2026-10-08T00:07:57.643Z","type":"assistant","uuid":"e1810a7a-ca7c-4279-818c-8e034158a039"}
+    {"message":{"role":"assistant","content":[{"text":"The command finished. `sleep 20 && echo done` ran successfully and exited with code 0.","type":"text"}],"id":"msg_011Cfoo9ZQHYm8ABScGaYyDh","model":"claude-haiku-4-5-20251001","stop_reason":null},"parent_tool_use_id":null,"request_id":"req_011Cfoo9ZBPfdWgRmotxcTwr","session_id":"e02d3f46-0312-445a-a5dc-ffbc936ea60a","timestamp":"2026-10-08T00:07:57.643Z","type":"assistant","uuid":"e1810a7a-ca7c-4279-818c-8e034158a039"}
     """#
 
     static let notificationTurnResult = #"""
-    {"api_error_status":null,"duration_api_ms":6706,"duration_ms":2752,"is_error":false,"num_turns":1,"origin":{"kind":"task-notification","producer":"session-task"},"queued_turn_count":0,"result":"명령이 완료되었습니다. `sleep 20 && echo done`이 성공적으로 실행되어 종료 코드 0으로 마쳤습니다.","result_index":1,"session_id":"e02d3f46-0312-445a-a5dc-ffbc936ea60a","stop_reason":"end_turn","subtype":"success","terminal_reason":"completed","type":"result","uuid":"3e47d9ca-9b47-4d42-84c3-e052a831696c"}
+    {"api_error_status":null,"duration_api_ms":6706,"duration_ms":2752,"is_error":false,"num_turns":1,"origin":{"kind":"task-notification","producer":"session-task"},"queued_turn_count":0,"result":"The command finished. `sleep 20 && echo done` ran successfully and exited with code 0.","result_index":1,"session_id":"e02d3f46-0312-445a-a5dc-ffbc936ea60a","stop_reason":"end_turn","subtype":"success","terminal_reason":"completed","type":"result","uuid":"3e47d9ca-9b47-4d42-84c3-e052a831696c"}
     """#
 
     /// The lifecycle frame's shape, under the test's own message uuid.

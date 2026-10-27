@@ -2,7 +2,7 @@ import Foundation
 
 // The files a task read and edited, which the review and the files panel read back as "the tasks that
 // edited this file". Each task's touches are kept in Yardlet's own folder
-// (`FileTouchRepository`, docs/NATIVE_SESSION_STORAGE.md "파일을 다룬 작업"): a Claude Code task's are read
+// (`FileTouchRepository`, docs/NATIVE_SESSION_STORAGE.md, "Index of tasks that touched a file"): a Claude Code task's are read
 // from its transcript, which they can be read again from; any other task's are what Yardlet has read of
 // it. Nothing here writes a provider's record.
 

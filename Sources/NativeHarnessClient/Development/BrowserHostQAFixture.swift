@@ -165,6 +165,16 @@ private final class BrowserHostQARunner {
             await exerciseManyTabs()
             return await finish()
         }
+        // `--ui-fixture-browser-check-only=tooltips` runs the names the panel's header buttons show on hover alone.
+        if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "tooltips" {
+            if let controller = await openPanel(label: "tooltips", address: base), let view = controller.view {
+                _ = await waitUntil(.seconds(10)) { controller.title == "Browser QA" && !controller.isLoading }
+                await exerciseTooltips(controller, view)
+                await closePanel()
+                client.closeTabs(forSession: session)
+            }
+            return await finish()
+        }
         // `--ui-fixture-browser-check-only=resize` runs dragging the side panel's divider over pages laid out
         // for their width alone.
         if BrowserHostQAFixture.argument("ui-fixture-browser-check-only") == "resize" {
@@ -1179,6 +1189,112 @@ private final class BrowserHostQARunner {
                 + "first frame \(firstFrame), surface \(shown) for view \(expectedSize().0)x\(expectedSize().1), "
                 + "address \(controller.addressInput), title \"\(title)\"")
         await closePanel()
+    }
+
+    // MARK: Tooltips
+
+    /// A header button names itself when the pointer rests on it, as in Chrome and the Codex app. SwiftUI answers
+    /// AppKit's tooltips for its views through one tracking-area owner on the window's hosting view
+    /// (`TooltipBridge.DynamicTooltipManager`, `dynamicToolTipStringAtPoint:trackingRect:`), which this check asks at
+    /// the middle of each button of the panel's header and toolbar: beside the conversation (the header in the title
+    /// bar's row), expanded, and for Review. The window's hit test there must reach the button, not the title bar or
+    /// the page. AppKit then shows the name once the pointer has rested for its delay; macOS's own 1.5 s read as no
+    /// name at all (2026-10-27), and Yardlet registers the Codex app's 200 ms (`NSInitialToolTipDelay`). The display
+    /// itself needs the real pointer over an active app, which a QA app never has. First, a page element's `title`:
+    /// Chromium's tooltip reaches the panel's view (`BrowserHostView.toolTip`), which AppKit shows the same way.
+    private func exerciseTooltips(_ controller: BrowserHostPaneController, _ view: BrowserHostView) async {
+        guard let window = view.window, let frameView = window.contentView?.superview else { return }
+        var windowFrame = window.frame
+        windowFrame.size = NSSize(width: 1400, height: 900)
+        window.setFrame(windowFrame, display: true)
+        try? await Task.sleep(for: .seconds(1))
+        // The page's own: an element's `title` names it over the page, as in Chrome. The pointer comes onto the
+        // element's first line (`#tip` wraps at the panel's width) and rests there.
+        var pageTooltips: [String] = []
+        let pageObserver = controller.eventObserver
+        controller.eventObserver = { event in
+            if case .tooltip(_, let text) = event { pageTooltips.append(text ?? "(none)") }
+            pageObserver?(event)
+        }
+        if let tip = try? await center(controller, "#tip") {
+            move(view, to: NSPoint(x: tip.x - 40, y: tip.y))
+            try? await Task.sleep(for: .milliseconds(100))
+            move(view, to: tip)
+        }
+        _ = await waitUntil(.seconds(4)) { view.toolTip != nil }
+        let lines = (try? await evaluate(controller, "String(document.querySelector('#tip').getClientRects().length)")) ?? "?"
+        check("tooltips: an element's title names it over the page", view.toolTip == "Tooltip text",
+              "host tooltip events \(pageTooltips), panel shows \(view.toolTip ?? "none"), the element on \(lines) lines")
+        controller.eventObserver = pageObserver
+
+        typealias Lookup = @convention(c) (AnyObject, Selector, NSPoint, UnsafeMutablePointer<NSRect>) -> Unmanaged<NSString>?
+        let lookupSelector = NSSelectorFromString("dynamicToolTipStringAtPoint:trackingRect:")
+        func allViews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViews) }
+        // Each name SwiftUI gives along the rows above the page, with the middle of the area it holds and what the
+        // window hit-tests there.
+        func names(above page: NSRect, from minX: CGFloat, to maxX: CGFloat) -> [String: String] {
+            let owners = allViews(frameView).flatMap { candidate in
+                candidate.trackingAreas.compactMap { area in
+                    (area.owner as? NSObject).flatMap { $0.responds(to: lookupSelector) ? (view: candidate, manager: $0) : nil }
+                }
+            }
+            var found: [String: String] = [:]
+            for row in stride(from: page.maxY + 1, through: frameView.bounds.height - 1, by: 2) {
+                for column in stride(from: minX, through: maxX, by: 2) {
+                    let point = NSPoint(x: column, y: row)
+                    guard let owner = owners.filter({ $0.view.convert($0.view.bounds, to: nil).contains(point) })
+                        .max(by: { allViews($0.view).count > allViews($1.view).count }) else { continue }
+                    var rect = NSRect.zero
+                    let lookup = unsafeBitCast(owner.manager.method(for: lookupSelector), to: Lookup.self)
+                    guard let name = lookup(owner.manager, lookupSelector, owner.view.convert(point, from: nil), &rect)?
+                        .takeUnretainedValue() as String?, found[name] == nil, !rect.isEmpty else { continue }
+                    let middle = owner.view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+                    let hit = frameView.hitTest(middle)
+                    let reaches = hit.map { $0 === owner.view || $0.isDescendant(of: owner.view) } ?? false
+                    found[name] = reaches ? "" : "hit \(hit.map { String(describing: type(of: $0)) } ?? "nil")"
+                }
+            }
+            return found
+        }
+        func expect(_ layout: String, _ wanted: [String], in found: [String: String]) {
+            let missing = wanted.filter { found[$0] == nil }
+            let blocked = wanted.compactMap { name in found[name].flatMap { $0.isEmpty ? nil : "\(name) \($0)" } }
+            check("tooltips (\(layout)): every header button names itself where the pointer rests",
+                  missing.isEmpty && blocked.isEmpty,
+                  "missing \(missing), hit elsewhere \(blocked); found \(found.keys.sorted())")
+        }
+        let toolbar = ["Back", "Forward", "Reload", "Open", "Select an element to attach to your message"].map(L10n.string)
+        let header = ["Close tab", "Open externally", "Close panel"].map(L10n.string)
+        var page = view.convert(view.bounds, to: nil)
+        expect("beside the conversation", toolbar + header + [L10n.string("Expand panel")],
+               in: names(above: page, from: page.minX, to: page.maxX))
+        controller.workspace.layout.isExpanded = true
+        try? await Task.sleep(for: .seconds(1))
+        page = view.convert(view.bounds, to: nil)
+        expect("expanded", toolbar + header + [L10n.string("Browser settings")],
+               in: names(above: page, from: page.minX, to: page.maxX))
+        controller.workspace.layout.isExpanded = false
+        try? await Task.sleep(for: .seconds(1))
+        page = view.convert(view.bounds, to: nil)
+        controller.workspace.setPanels(TaskSurfaceNavigationProjection.showing("diff", in: controller.workspace.panels))
+        try? await Task.sleep(for: .seconds(2))
+        // Review's own header sits at the top of the panel, where the page was.
+        let panel = NSRect(x: page.minX, y: page.maxY - 60, width: page.width, height: 0)
+        expect("Review", [L10n.string("Close tab"), L10n.string("Close panel")],
+               in: names(above: panel, from: panel.minX, to: panel.maxX))
+
+        // How long AppKit waits before it shows a name (`NSToolTipManager`'s own reading of its delay).
+        typealias Delay = @convention(c) (AnyObject, Selector, UnsafeMutablePointer<Double>, UnsafeMutablePointer<ObjCBool>, NSView?) -> Void
+        let delaySelector = NSSelectorFromString("_getDisplayDelay:inQuickMode:forView:")
+        var delay = -1.0
+        var quick = ObjCBool(false)
+        if let manager = (NSClassFromString("NSToolTipManager") as AnyObject)
+            .perform(NSSelectorFromString("sharedToolTipManager"))?.takeUnretainedValue() as? NSObject,
+           manager.responds(to: delaySelector) {
+            unsafeBitCast(manager.method(for: delaySelector), to: Delay.self)(manager, delaySelector, &delay, &quick, view)
+        }
+        check("tooltips: a name shows after the Codex app's 200 ms", abs(delay - 0.2) < 0.001,
+              "AppKit's delay \(delay) s, NSInitialToolTipDelay \(UserDefaults.standard.integer(forKey: "NSInitialToolTipDelay")) ms")
     }
 
     // MARK: Resizing the panel
@@ -2229,7 +2345,7 @@ private final class BrowserHostQARunner {
         check("compat observed", true, lines.joined(separator: " | "))
     }
 
-    /// Chromium's windows belong to their tab (BROWSER_HOST section 3, "Chromium's windows"), shown with HTTP
+    /// Chromium's windows belong to their tab (BROWSER_HOST section 3, "Chromium's windows and tabs"), shown with HTTP
     /// authentication's sign-in window, a web-modal dialog of its tab as the passkey dialog is: another task's window is
     /// not in this task's results and this task's agent cannot close it; this task's tabs and the person's panel take
     /// clicks, typing and moves meanwhile, the tab under the window takes none; a window over a tab no panel shows waits
@@ -2471,7 +2587,7 @@ private final class BrowserHostQARunner {
         }
     }
 
-    /// The task's browser tabs as side-panel tabs of their own (docs/BROWSER_HOST.md, "탭"): a new tab (⌘T) is a
+    /// The task's browser tabs as side-panel tabs of their own (docs/BROWSER_HOST.md, section 3, "Tabs"): a new tab (⌘T) is a
     /// panel tab that gets the pane's frames while the old one stops getting them; a tab the agent opens
     /// behind joins the panel's tabs without taking the pane; a page's icon reaches its tab; showing the
     /// first tab again shows its page; the agent fronting a tab shows it; the agent closing it moves
@@ -3102,9 +3218,12 @@ private final class BrowserHostQARunner {
         return result["result"]?["value"]?.stringValue ?? result["result"]?["value"]?.readableText ?? ""
     }
 
+    /// The middle of an element's first box: an inline element that wraps onto a second line has a bounding box
+    /// around both lines, whose middle can be the paragraph's other words (the tooltip check's `#tip` at the panel's
+    /// width since 2026-10-26).
     private func center(_ controller: BrowserHostPaneController, _ selector: String) async throws -> NSPoint {
         let value = try await evaluate(controller, """
-            (() => { const r = document.querySelector('\(selector)').getBoundingClientRect(); return (r.x + r.width / 2) + ',' + (r.y + r.height / 2) })()
+            (() => { const r = document.querySelector('\(selector)').getClientRects()[0]; return (r.x + r.width / 2) + ',' + (r.y + r.height / 2) })()
             """)
         let parts = value.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 2 else { throw QAFailure("no element \(selector)") }

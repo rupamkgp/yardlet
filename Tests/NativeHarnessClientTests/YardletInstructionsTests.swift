@@ -2,14 +2,14 @@ import Foundation
 import XCTest
 @testable import NativeHarnessClient
 
-/// Yardlet 지침 reach each harness through its own per-process or per-session route, through the
+/// Yardlet instructions reach each harness through its own per-process or per-session route, through the
 /// YHP wrappers the app routes every harness through: the global text then the task's project's,
 /// the same bytes on every launch, and nothing at all when a switch is off or the harness has no
 /// route. No model turn runs; every transport is a fake.
 @MainActor
 final class YardletInstructionsTests: XCTestCase {
     private var root: URL!
-    private let text = "- 구현은 Opus 5.5를 우선한다.\n- 검토는 Argon."
+    private let text = "- Prefer Opus 5.5 for implementation.\n- Review with Argon."
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
@@ -69,7 +69,7 @@ final class YardletInstructionsTests: XCTestCase {
                        "--mcp-config stays last, where nothing is read as one of its values")
         XCTAssertEqual(ClaudeProcessTransport.arguments(for: resumed), resumeArguments, "Every relaunch is byte for byte the same")
 
-        let dashed = "-- 줄로 시작하는 지침"
+        let dashed = "-- An instruction that starts with dashes"
         XCTAssertEqual(YardletInstructionsLaunch.claudeArguments(dashed), ["--append-system-prompt=\(dashed)"],
                        "Text that starts with a dash stays the flag's value")
 

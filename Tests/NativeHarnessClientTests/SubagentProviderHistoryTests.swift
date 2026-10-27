@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import NativeHarnessClient
 
-/// A `run_agent` subagent leaves no history with its harness (the person's choice, 2026-10-16:
-/// "남기지 않기"); Yardlet keeps its conversation with the calling task. Each harness's own way, read
+/// A `run_agent` subagent leaves no history with its harness (decision of 2026-10-16); Yardlet
+/// keeps its conversation with the calling task. Each harness's own way, read
 /// from `--help` and the App Server schema only:
 ///
 /// - Claude Code 2.1.299: `--no-session-persistence` ("sessions will not be saved to disk and cannot

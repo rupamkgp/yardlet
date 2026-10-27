@@ -274,8 +274,8 @@ final class ClaudeSubagentTranscriptReaderTests: XCTestCase {
         XCTAssertNil(turns[1].actions.editLatest, "no edit of Claude's own notice")
     }
 
-    /// A prompt Claude Code's own schedule sent opens the turn Claude answered it in (2026-10-22: "그
-    /// 예약작업?으로 깨어나서 작업하는데 그게 진행 코멘터리 판정이라 작업 내용으로 숨겨지네"). The records
+    /// A prompt Claude Code's own schedule sent opens the turn Claude answered it in (2026-10-22: a user
+    /// reported that a task woken by a schedule had its work hidden as progress commentary). The records
     /// follow the CLI's saved shape (2.1.299): a `CronCreate` job's or `/loop` wakeup's prompt is a meta
     /// `user` record with `turnOrigin` "scheduled" and a prompt ID of its own; the CLI's note that an
     /// answer was cut off is a meta companion with that same prompt ID; a Claude app scheduled task is

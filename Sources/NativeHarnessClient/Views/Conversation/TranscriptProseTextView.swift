@@ -847,7 +847,7 @@ private struct TranscriptFullCodeButton: View {
 
 /// The conversation's items at the top of a message's menu, as the Claude and Codex apps put them
 /// there: "Copy code" over a code block; over a web link, which a click opens in the task's browser
-/// (2026-10-22 user decision: "yardlet 브라우저가 기본이 좋은데"), open it in the default browser and
+/// (decision of 2026-10-22: the Yardlet browser is the default), open it in the default browser and
 /// copy it; over a file link, open it in the task's files, show it in Finder and copy its path; and
 /// "Copy message" for the whole message.
 @MainActor

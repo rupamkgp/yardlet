@@ -59,6 +59,10 @@ brew install --cask zzunkie/tap/yardlet
 
 Either way, Yardlet then updates itself (see [Updates](#updates)).
 
+The `main` branch can be ahead of the latest release, so a feature described in this repository may
+not be in the app you installed yet. **Yardlet > About Yardlet** shows the installed version, and
+[Releases](../../releases) lists what each version contains.
+
 To build from source, see [Development](#development).
 
 ### Updates

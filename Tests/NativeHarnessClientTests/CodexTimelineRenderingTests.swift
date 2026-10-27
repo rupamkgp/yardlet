@@ -16,7 +16,7 @@ final class CodexTimelineRenderingTests: XCTestCase {
             .joined(separator: "\n") + "\n"
         let state = thread([
             turn("turn-1", status: "completed", durationMs: 41_000, items: [
-                user("u1", "테스트를 돌려 줘"),
+                user("u1", "Run the tests"),
                 command("c0", "swift test --filter Reducer", status: "completed", output: "All 30 tests passed.\n", exitCode: 0),
                 answer("a1", "All 30 tests pass.")
             ]),
@@ -67,7 +67,7 @@ final class CodexTimelineRenderingTests: XCTestCase {
         3. Cover both with focused tests.
         """
         var planTurn = turn("turn-1", status: "completed", durationMs: 95_000, items: [
-            user("u1", "중지된 턴 표시를 고치는 계획을 세워 줘"),
+            user("u1", "Plan a fix for how stopped turns read"),
             .object(["id": .string("p1"), "type": .string("plan"), "text": .string(plan)]),
             answer("a1", "This keeps the change to the timeline and its projection.")
         ])
@@ -100,20 +100,20 @@ final class CodexTimelineRenderingTests: XCTestCase {
     /// card sends the Codex app's reply message, and once the thread holds it the question turn reads
     /// as what was answered, the reply's bubble as the answer rather than its JSON.
     func testAnAsyncQuestionReadsAsItsTitleAndAnswersWithItsOptions() throws {
-        let title = "1.03GB 아카이브는 완성됐지만, Google이 다운로드 직전에 비밀번호 재확인을 요구합니다. 인증을 마치면 알려 주세요."
+        let title = "The 1.03GB archive is ready, but Google asks to confirm the password right before the download. Tell me once you have signed in."
         let message: JSONValue = .object([
             "id": .string("a1"), "type": .string("agentMessage"), "phase": .string("final_answer"),
-            "text": .string(title + "\n- 다운로드 인증 완료\n- 다운로드는 나중에"),
+            "text": .string(title + "\n- Download sign-in done\n- Download later"),
             "questions": .array([.object(["title": .string(title),
-                                          "options": .array([.string("다운로드 인증 완료"), .string("다운로드는 나중에")])])])
+                                          "options": .array([.string("Download sign-in done"), .string("Download later")])])])
         ])
         let state = thread([turn("turn-1", status: "completed", durationMs: 20_000, items: [
-            user("u1", "그럼 여기 다운받자"), message
+            user("u1", "Then let's download it here"), message
         ])])
         let presentation = CodexConversationProjection.presentation(
             state, workspaceURL: URL(filePath: "/Users/me/yardlet"), historySelection: nil)
         let latest = try XCTUnwrap(presentation.turns.last)
-        XCTAssertEqual(latest.actions.questionsToAnswer.map(\.options), [["다운로드 인증 완료", "다운로드는 나중에"]])
+        XCTAssertEqual(latest.actions.questionsToAnswer.map(\.options), [["Download sign-in done", "Download later"]])
         XCTAssertEqual(latest.actions.questionsToAnswer.map(\.itemID), [#"["request_user_input_async","a1",0]"#],
                        "The question is known by the Codex app's ID for it")
         XCTAssertNil(latest.actions.answeredQuestions)
@@ -135,24 +135,24 @@ final class CodexTimelineRenderingTests: XCTestCase {
         // The card starts on the first option and sends the Codex app's reply for the one it holds.
         var input = ConversationRequestFormInput()
         input.preselect(latest.actions.questionsToAnswer.map(ConversationQuestionStep.init))
-        input.toggle("다운로드는 나중에", for: ConversationQuestionStep(latest.actions.questionsToAnswer[0]))
+        input.toggle("Download later", for: ConversationQuestionStep(latest.actions.questionsToAnswer[0]))
         let reply = CodexQuestionOptions.reply(latest.actions.questionsToAnswer, input: input)
         XCTAssertEqual(reply, "<send_user_message_question_reply>\n"
             + #"[{"questionItemId":"[\"request_user_input_async\",\"a1\",0]","question":""# + title
-            + #"","answer":"다운로드는 나중에"}]"# + "\n</send_user_message_question_reply>")
+            + #"","answer":"Download later"}]"# + "\n</send_user_message_question_reply>")
 
         // Once the thread holds the reply, the next turn starts from it: the question turn reads as its
         // answer, and the reply's bubble as the answer, not its JSON.
         let answered = thread([
-            turn("turn-1", status: "completed", items: [user("u1", "그럼 여기 다운받자"), message]),
+            turn("turn-1", status: "completed", items: [user("u1", "Then let's download it here"), message]),
             turn("turn-2", status: "inProgress", items: [user("u2", reply)])
         ])
         let next = CodexConversationProjection.presentation(
             answered, workspaceURL: URL(filePath: "/Users/me/yardlet"), historySelection: nil)
         XCTAssertTrue(next.turns.allSatisfy { $0.actions.questionsToAnswer.isEmpty })
         let record = try XCTUnwrap(next.turns.first?.actions.answeredQuestions)
-        XCTAssertEqual(record.answers, [#"["request_user_input_async","a1",0]"#: ConversationQuestionAnswer(options: ["다운로드는 나중에"])])
-        XCTAssertEqual(next.turns.last?.prompt.compactMap(\.sentText), ["다운로드는 나중에"])
+        XCTAssertEqual(record.answers, [#"["request_user_input_async","a1",0]"#: ConversationQuestionAnswer(options: ["Download later"])])
+        XCTAssertEqual(next.turns.last?.prompt.compactMap(\.sentText), ["Download later"])
         XCTAssertNil(next.turns.last?.actions.editDraft, "A reply's JSON goes back in no composer")
         try render(TaskConversationView(
             harness: .codex, workspaceURL: URL(filePath: "/Users/me/yardlet"), entries: [], codexTaskState: answered,
@@ -162,13 +162,13 @@ final class CodexTimelineRenderingTests: XCTestCase {
         // A reply Yardlet sent before it wrote the Codex app's reads back too; any other message is no
         // answer, and the questions no longer wait.
         let legacy = CodexConversationProjection.presentation(thread([
-            turn("turn-1", status: "completed", items: [user("u1", "그럼 여기 다운받자"), message]),
-            turn("turn-2", status: "completed", items: [user("u2", "다운로드 인증 완료")])
+            turn("turn-1", status: "completed", items: [user("u1", "Then let's download it here"), message]),
+            turn("turn-2", status: "completed", items: [user("u2", "Download sign-in done")])
         ]), workspaceURL: URL(filePath: "/Users/me/yardlet"), historySelection: nil)
-        XCTAssertEqual(legacy.turns.first?.actions.answeredQuestions?.answers.values.map(\.options), [["다운로드 인증 완료"]])
+        XCTAssertEqual(legacy.turns.first?.actions.answeredQuestions?.answers.values.map(\.options), [["Download sign-in done"]])
         let movedOn = CodexConversationProjection.presentation(thread([
-            turn("turn-1", status: "completed", items: [user("u1", "그럼 여기 다운받자"), message]),
-            turn("turn-2", status: "completed", items: [user("u2", "잠깐, 다른 것부터 하자")])
+            turn("turn-1", status: "completed", items: [user("u1", "Then let's download it here"), message]),
+            turn("turn-2", status: "completed", items: [user("u2", "Wait, let's do something else first")])
         ]), workspaceURL: URL(filePath: "/Users/me/yardlet"), historySelection: nil)
         XCTAssertNil(movedOn.turns.first?.actions.answeredQuestions)
         XCTAssertTrue(movedOn.turns.allSatisfy { $0.actions.questionsToAnswer.isEmpty })

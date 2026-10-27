@@ -123,7 +123,7 @@ final class MenuBarRenderingTests: XCTestCase {
             task("Build the release bundle", yardlet, status: .running),
             task("Approve the index migration", yardlet, status: .waitingForApproval),
             task("Summarize the crash reports", yardlet, status: .completed, unread: true, harness: .codex),
-            task("메뉴 막대 상태 항목을 Codex 앱처럼 추가하고 활동 보기 단축키도 넣기", yardlet, status: .running),
+            task("Add a menu bar status item like the Codex app, plus an activity view shortcut", yardlet, status: .running),
             task("Fix the footer links", website, status: .running, harness: .codex),
             task("Regenerate the screenshots", website, status: .failed, unread: true),
             task("Release checklist", yardlet, pinned: true),

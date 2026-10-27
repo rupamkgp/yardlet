@@ -81,7 +81,7 @@ package enum AgentToolCatalog {
         valid until the next snapshot or navigation. \
         spawn_task flags out-of-scope work for a separate task: the user sees a chip in this \
         conversation and decides whether to start it. The session tools read the person's other \
-        Yardlet tasks, message one, start a child task, or run a subagent on a harness. The \
+        Yardlet tasks, message one, start a task, or run a subagent on a harness. The \
         scheduled-task tools create and change the person's Yardlet schedules, which run while Yardlet \
         is open. Other tools come from services the user connected in Yardlet, such as issue trackers \
         or documents; each name starts with its service, and each acts with the user's own account there.

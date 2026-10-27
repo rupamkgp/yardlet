@@ -3,7 +3,7 @@ import Foundation
 /// The scheduled-task tools Yardlet offers every harness that loads its MCP server, after the Claude
 /// app's `scheduled-tasks` server (desktop 2.42304.0, `index.chunk-CCw6oLL3.js`): the same six names,
 /// the same `cronExpression` and `fireAt`, and `prompt`, `enabled` and `limit` as there, answered by
-/// the app against Yardlet's own scheduler (docs/AGENT_BROWSER_TOOLS.md, "예약 도구"). The rest is Yardlet's schedule: a
+/// the app against Yardlet's own scheduler (docs/AGENT_BROWSER_TOOLS.md, "Scheduled-task tools"). The rest is Yardlet's schedule: a
 /// name, where each run goes (a new task of a harness in a project or a chat, nested under the task
 /// that made it or a top-level task, or the next message of a task), and the model and permission
 /// mode of each new task, with the choices Scheduled tasks' own editor has.

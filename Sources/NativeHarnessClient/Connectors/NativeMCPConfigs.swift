@@ -3,7 +3,7 @@ import Foundation
 /// An MCP server a harness loads from its own configuration: Claude Code's `.claude.json` and a
 /// project's `.mcp.json`, Codex's `config.toml`, Antigravity's `mcp_config.json`. Yardlet reads these
 /// files only to show what each harness has and to avoid offering a connector twice
-/// (docs/CONNECTORS.md, "하네스 자체 서버"). It keeps the name, the address without its query, and a
+/// (docs/CONNECTORS.md, "Harnesses' own servers"). It keeps the name, the address without its query, and a
 /// stdio server's program name; never a header, an environment value, or a query string, which is
 /// where such entries keep their secrets. Nothing here writes a file.
 struct NativeMCPServer: Equatable, Hashable, Sendable, Identifiable {

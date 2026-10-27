@@ -26,7 +26,7 @@ struct ClaudeLaunchConfiguration: Equatable, Sendable {
     /// The CLI saves nothing of this session (`--no-session-persistence`, print mode only): no
     /// conversation file for `--resume`, the Claude app or an import to find. For `run_agent`.
     var keepsNoHistory = false
-    /// Yardlet 지침, passed as `--append-system-prompt`. Nil leaves the launch arguments unchanged.
+    /// Yardlet instructions, passed as `--append-system-prompt`. Nil leaves the launch arguments unchanged.
     var appendSystemPrompt: String? = nil
     /// A settings document for this process alone, passed as `--settings` (the harness's own servers
     /// Yardlet's connectors stand in for). Nil leaves the launch arguments unchanged; nothing is

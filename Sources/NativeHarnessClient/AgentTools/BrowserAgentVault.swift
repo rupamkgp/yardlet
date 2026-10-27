@@ -291,7 +291,7 @@ extension BrowserAgentTools {
             throw BrowserAgentToolError("browser_fill_credential needs the ref of a field in the sign-in form.")
         }
         let element = try element(ref, on: page)
-        // The vault fills only the page's own fields: not a frame from another site (docs/BROWSER_VAULT_DESIGN.md, "채우는 방법"), as not a frame of
+        // The vault fills only the page's own fields: not a frame from another site (docs/BROWSER_VAULT_DESIGN.md, "How filling works"), as not a frame of
         // the page's own process (`ownerDocument` below).
         guard element.session == nil else {
             throw BrowserAgentToolError("\(ref) is inside a frame in the page; Yardlet fills only the page's own fields.")

@@ -4,8 +4,8 @@ import XCTest
 @testable import NativeHarnessClient
 
 /// A task opened again after a while shows no empty band between the turn before the person's latest
-/// message and that message (2026-10-23 report: "오랜만에 세션이 들어올때 마지막 내 메시지와 그 전 대화
-/// 사이 간격이 넓어").
+/// message and that message (2026-10-23: a user reported a wide gap there when coming back to a
+/// session after a while).
 ///
 /// A turn built anew (its hosting let go after four other tasks, or never made) is measured outside
 /// the window: SwiftUI asks each text in it for its size at the turn's width and at the narrowest and

@@ -1,8 +1,8 @@
 import Foundation
 
-/// The one line under a running turn that says what the provider is doing now (2026-10-16 user
-/// decision: "도구 줄이 너무 많이 쌓임", "진행 중 표시가 애매함", "현재 처리되고 있는 tool이라도 펼쳐서
-/// 보여주지 않으면 좋겠어"), as the Codex app's activity header shows only its current item
+/// The one line under a running turn that says what the provider is doing now (decision of
+/// 2026-10-16: tool lines piled up too much, the progress line was unclear, and a running call
+/// should not open), as the Codex app's activity header shows only its current item
 /// ("Running swift test", "Thinking") and the Claude app's working line its state and time
 /// ("Working… · 12s"). It tells thinking, running a call and waiting on the person apart; it counts
 /// the turn's calls and, where the turn header does not, how long the turn has run.

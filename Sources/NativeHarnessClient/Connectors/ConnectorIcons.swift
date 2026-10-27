@@ -42,7 +42,7 @@ struct MCPServerIcon: Codable, Equatable, Sendable {
 
 /// Where a connector's picture comes from, best first, for a light and a dark background.
 ///
-/// The two apps differ (docs/CONNECTORS.md, "아이콘"): Codex draws the icons an MCP server declares about
+/// The two apps differ (docs/CONNECTORS.md, "Icons"): Codex draws the icons an MCP server declares about
 /// itself (`serverInfo.icons`, https or data only, the largest for each theme) and the pictures it
 /// carries for its own connectors; the Claude app draws its directory's icon and, for a server
 /// without one, the server domain's favicon through a third-party service. Yardlet takes the
@@ -115,7 +115,7 @@ enum ConnectorIconSite {
 
 extension ConnectorPreset {
     /// Each service's icon on its own site, linked from its own home page, checked 2026-10-22 with an
-    /// unauthenticated GET (docs/CONNECTORS.md, "아이콘"). Services with only a 16 px icon (monday.com), that
+    /// unauthenticated GET (docs/CONNECTORS.md, "Icons"). Services with only a 16 px icon (monday.com), that
     /// refused the request (Gamma, DeepWiki), or with icons only on another company's host (Jam) keep
     /// their symbol. Google's product icons are on Google's own `gstatic.com`.
     static let iconAddresses: [String: String] = [

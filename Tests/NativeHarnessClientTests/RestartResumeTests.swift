@@ -5,7 +5,7 @@ import XCTest
 @testable import NativeHarnessClient
 
 /// Continuing the turns a quit or an update cut off. Claude Code and Codex tasks follow the Claude
-/// app's rules (any quit, a day, four at once), the person's choice for Codex ("Claude처럼 항상")
+/// app's rules (any quit, a day, four at once), the choice for Codex (always, as the Claude app does)
 /// over the Codex app's update-only 15 minutes, and Yardlet's adjustments of 2026-10-23: the rest
 /// continue in turn rather than when opened, and a quit writes down an unseen continuation again a
 /// few times. Each provider is still asked the way its own app asks it. What the quit writes down,
@@ -1255,17 +1255,17 @@ final class RestartResumeTests: XCTestCase {
         // refusal written as it quit would draw.
         let start = Date(timeIntervalSince1970: 1_792_000_000)
         let entries = [
-            TranscriptEntry(createdAt: start, content: .user(text: "설정 화면을 두 앱과 대조해 줘", images: nil)),
+            TranscriptEntry(createdAt: start, content: .user(text: "Compare the settings screen with the two apps", images: nil)),
             TranscriptEntry(createdAt: start.addingTimeInterval(240), content: .assistant(
-                text: "점검과 시안을 마쳤습니다. 문제는 여섯 가지이고, 하나씩 고치겠습니다.", isStreaming: false)),
+                text: "I've finished the review and the mock. There are six problems; I'll fix them one at a time.", isStreaming: false)),
             TranscriptEntry(createdAt: start.addingTimeInterval(244), content: .activity(HarnessActivity(
                 id: "toolu_ask", kind: ClaudeAnswerableTool.askUserQuestion, title: "AskUserQuestion",
                 outcome: .failed, output: "The user doesn't want to proceed with this tool use."), state: .failed)),
         ]
         let question = PermissionRequest(id: "perm-ask", title: "Claude has questions", detail: nil, command: nil,
-            structured: .questions([PermissionQuestion(question: "첫 번째로 무엇을 고칠까요?", header: "첫 수정", options: [
-                .init(label: "1번 메뉴 사용량 줄 (Recommended)", description: "제목은 전체 주소, 부제는 하네스와 남은 양"),
-                .init(label: "2·3번 같은 계정 두 폴더", description: "연결 줄과 사용량 묶음에 폴더 이름")],
+            structured: .questions([PermissionQuestion(question: "What should I fix first?", header: "First fix", options: [
+                .init(label: "1. Menu usage line (Recommended)", description: "Full address as the title, harness and amount left below"),
+                .init(label: "2 and 3. One account, two folders", description: "Folder names on the connection line and usage group")],
                 allowsCustomAnswer: true)]), toolCallID: "toolu_ask")
         let card = TranscriptConversationProjection.conversationRequest(
             question, state: .pending, entry: TranscriptEntry(content: .permission(question, state: .pending)))
@@ -1278,8 +1278,8 @@ final class RestartResumeTests: XCTestCase {
             try WindowlessRender.writePNG(drawing.capture.bitmap,
                                           to: directory.appending(path: "question-again-\(appearance.suffix).png"))
             let texts = drawing.elements.map(\.description).joined(separator: "\n")
-            XCTAssertTrue(texts.contains("첫 번째로 무엇을 고칠까요?"), texts)
-            XCTAssertTrue(texts.contains("1번 메뉴 사용량 줄 (Recommended)"), texts)
+            XCTAssertTrue(texts.contains("What should I fix first?"), texts)
+            XCTAssertTrue(texts.contains("1. Menu usage line (Recommended)"), texts)
             XCTAssertFalse(texts.contains("doesn't want to proceed"), "The cut-off call reads as its question:\n\(texts)")
         }
         // Answered in the window as any question card is: its route carries the picks to the app model,
@@ -1297,7 +1297,7 @@ final class RestartResumeTests: XCTestCase {
         window.settle()
         XCTAssertEqual(answered.map(\.0), [card.id])
         XCTAssertEqual(answered.first?.1, .questions([PermissionQuestionAnswer(
-            question: "첫 번째로 무엇을 고칠까요?", selectedLabels: ["1번 메뉴 사용량 줄 (Recommended)"])]))
+            question: "What should I fix first?", selectedLabels: ["1. Menu usage line (Recommended)"])]))
 
         // A Codex question the quit cut off: its own card again, in place of the expired one the
         // stopped runtime left, and answered by the Codex card's route.
@@ -1308,15 +1308,15 @@ final class RestartResumeTests: XCTestCase {
                 "id": .string("asking"), "status": .string("interrupted"), "itemsView": .string("full"),
                 "items": .array([
                     .object(["id": .string("request"), "type": .string("userMessage"),
-                             "content": .array([.object(["type": .string("text"), "text": .string("릴리스 브랜치를 정리해 줘")])])]),
+                             "content": .array([.object(["type": .string("text"), "text": .string("Clean up the release branches")])])]),
                     .object(["id": .string("said"), "type": .string("agentMessage"),
-                             "text": .string("정리할 브랜치가 둘입니다. 어느 쪽에 합칠지 정해 주세요.")])])])])]), to: &codex)
+                             "text": .string("There are two branches to clean up. Choose which one to merge into.")])])])])]), to: &codex)
         reducer.applyServerRequest(id: .string("input-1"), method: "item/tool/requestUserInput", params: .object([
             "threadId": .string("thread"), "turnId": .string("asking"), "itemId": .string("item-ask"),
-            "questions": .array([.object(["id": .string("q1"), "header": .string("브랜치"), "isOther": .bool(true),
-                "question": .string("어느 브랜치에 합칠까요?"),
-                "options": .array([.object(["label": .string("main"), "description": .string("바로 배포")]),
-                                   .object(["label": .string("release"), "description": .string("다음 배포에")])])])])]),
+            "questions": .array([.object(["id": .string("q1"), "header": .string("Branch"), "isOther": .bool(true),
+                "question": .string("Which branch should I merge into?"),
+                "options": .array([.object(["label": .string("main"), "description": .string("Ship right away")]),
+                                   .object(["label": .string("release"), "description": .string("In the next release")])])])])]),
             sequence: 1, to: &codex)
         let codexCard = CodexRequestResponseProjection.request(try XCTUnwrap(codex.serverRequestsByID["s:input-1"]))
         reducer.endRuntime(in: &codex)
@@ -1329,7 +1329,7 @@ final class RestartResumeTests: XCTestCase {
             try WindowlessRender.writePNG(drawing.capture.bitmap,
                                           to: directory.appending(path: "question-again-codex-\(appearance.suffix).png"))
             let texts = drawing.elements.map(\.description).joined(separator: "\n")
-            XCTAssertTrue(texts.contains("어느 브랜치에 합칠까요?"), texts)
+            XCTAssertTrue(texts.contains("Which branch should I merge into?"), texts)
             XCTAssertFalse(texts.contains(expired), "The expired card gives way to the question:\n\(texts)")
         }
         var codexAnswers: [(String, CodexServerRequestResponse)] = []

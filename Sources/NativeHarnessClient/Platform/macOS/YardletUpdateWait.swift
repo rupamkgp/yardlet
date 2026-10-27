@@ -3,7 +3,7 @@ import Foundation
 import Observation
 
 /// Install Update… › "Restart When Tasks Finish", the Claude app's wait for running work before it
-/// restarts for an update ("Claude가 완료될 때까지 대기 중입니다. 앱이 자동으로 재시작됩니다."). Yardlet
+/// restarts for an update (it says it is waiting for Claude to finish and will restart on its own). Yardlet
 /// installs once no task has run for a few seconds and the staged build is still the one the person
 /// chose. The install goes through the ordinary quit, which still refuses while a task runs. Sparkle's
 /// Install and Relaunch waits the same way (`YardletSparkle`).

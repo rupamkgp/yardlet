@@ -185,7 +185,7 @@ final class GmailSetupRenderingTests: XCTestCase {
                                         toolCallID: "toolu_send")
         let start = Date(timeIntervalSince1970: 1_792_220_400)
         let entries = [
-            TranscriptEntry(createdAt: start, content: .user(text: "Bob한테 Q3 숫자 메일 보내줘")),
+            TranscriptEntry(createdAt: start, content: .user(text: "Email Bob the Q3 numbers")),
             TranscriptEntry(createdAt: start.addingTimeInterval(4),
                             content: .assistant(text: "I'll send it from your work account.", isStreaming: false)),
             TranscriptEntry(createdAt: start.addingTimeInterval(6), content: .activity(HarnessActivity(

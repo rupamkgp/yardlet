@@ -73,7 +73,7 @@ final class BrowserHostProtocolTests: XCTestCase {
         XCTAssertEqual(external.tab, 3)
         XCTAssertEqual(try decoder.decode(BrowserHostEvent.self, from: Data(#"{"newDocument":{"tab":3,"url":"https://a.test/"}}"#.utf8)),
                        .newDocument(tab: 3, url: "https://a.test/"))
-        // Chromium's own windows over their tabs (BROWSER_HOST section 3, "Chromium's windows").
+        // Chromium's own windows over their tabs (BROWSER_HOST section 3, "Chromium's windows and tabs").
         XCTAssertEqual(try json(BrowserHostCommand.presentChromiumWindows(placements: [
             BrowserChromiumWindowPlacement(window: 7, frame: BrowserRect(x: 10, y: 20, width: 300, height: 200), above: 3),
             BrowserChromiumWindowPlacement(window: 8, above: 3)

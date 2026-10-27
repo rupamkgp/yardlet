@@ -1178,7 +1178,7 @@ final class ConnectorCenter: ConnectorToolProviding {
     /// address, where the harness can leave a server out of one process (Claude Code) and the
     /// connector is connected now. One sign-in, Yardlet's, then serves every account and folder:
     /// Claude Code keeps MCP sign-ins per config directory, so each account would need its own and
-    /// one without it holds the server back in the others (docs/CONNECTORS.md, "하네스 자체 서버"). A connector
+    /// one without it holds the server back in the others (docs/CONNECTORS.md, "Harnesses' own servers"). A connector
     /// that is not connected, or needs a new sign-in, leaves the harness's server in place; a
     /// change applies from the task's next start.
     func withYardletStandIns(_ scope: ConnectorTaskScope) -> ConnectorTaskScope {

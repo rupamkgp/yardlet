@@ -77,8 +77,8 @@ final class ProviderSessionTitleResolverTests: XCTestCase {
                 paths: fixture.paths
             )
         }
-        let generated = #"{"type":"ai-title","aiTitle":"test_calc.py 실패 테스트 수정","sessionId":"claude-session"}"#
-        let prompt = #"{"type":"user","message":{"role":"user","content":"test_calc.py를 실행해서 고쳐줘"},"sessionId":"claude-session"}"#
+        let generated = #"{"type":"ai-title","aiTitle":"Fix the failing test_calc.py test","sessionId":"claude-session"}"#
+        let prompt = #"{"type":"user","message":{"role":"user","content":"Run test_calc.py and fix it"},"sessionId":"claude-session"}"#
 
         // Claude re-appends the generated title as it writes; the latest record is the title.
         XCTAssertEqual(try resolve([
@@ -86,7 +86,7 @@ final class ProviderSessionTitleResolverTests: XCTestCase {
             prompt,
             #"{"type":"ai-title","aiTitle":"Other session","sessionId":"other"}"#,
             generated
-        ]), "test_calc.py 실패 테스트 수정")
+        ]), "Fix the failing test_calc.py test")
         // A name the person set comes first, even before a later generated title.
         XCTAssertEqual(try resolve([
             prompt,
@@ -98,7 +98,7 @@ final class ProviderSessionTitleResolverTests: XCTestCase {
             #"{"type":"custom-title","customTitle":"Old name","sessionId":"claude-session"}"#,
             generated,
             #"{"type":"custom-title","customTitle":"","sessionId":"claude-session"}"#
-        ]), "test_calc.py 실패 테스트 수정")
+        ]), "Fix the failing test_calc.py test")
         XCTAssertNil(try resolve([prompt]))
 
         // An account folder whose `projects` links to the shared one, as Session Switch makes it,
@@ -110,7 +110,7 @@ final class ProviderSessionTitleResolverTests: XCTestCase {
         var linked = fixture.session(harness: .claudeCode, providerID: "claude-session")
         linked.connection = ProviderConnection(id: "account", name: "Account", harness: .claudeCode, providerID: nil,
                                                homePath: account.path(percentEncoded: false), credentialSelector: nil)
-        XCTAssertEqual(ProviderSessionTitleResolver.title(for: linked, paths: fixture.paths), "test_calc.py 실패 테스트 수정")
+        XCTAssertEqual(ProviderSessionTitleResolver.title(for: linked, paths: fixture.paths), "Fix the failing test_calc.py test")
     }
 
     func testReadsOpenCodeTitleFromDatabaseByExactID() throws {

@@ -2,7 +2,7 @@ import Foundation
 
 // A file's related tasks: the tasks that edited it or read it, shown where Yardlet shows a file (the
 // review's file, the files panel), each opening its conversation where it touched the file
-// (docs/NATIVE_SESSION_STORAGE.md, "파일을 다룬 작업의 색인").
+// (docs/NATIVE_SESSION_STORAGE.md, "Index of tasks that touched a file").
 
 /// A file's related tasks, as the review and the files panel list them.
 struct FileTasks: Equatable, Sendable {

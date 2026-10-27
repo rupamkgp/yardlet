@@ -67,20 +67,20 @@ final class SidePanelQATests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let cli = URL(filePath: "/usr/bin/true")
         let plainTask = SessionRecord(harness: .claudeCode, workspaceURL: plain, runtimeExecutableURL: cli,
-                                      title: "랜딩 페이지 문구 다듬기")
+                                      title: "Polish the landing page copy")
         let dirtyTask = SessionRecord(harness: .codex, workspaceURL: dirty, runtimeExecutableURL: cli,
-                                      title: "세션 색인 이전 고치기")
+                                      title: "Fix the session index migration")
         let cleanTask = SessionRecord(harness: .claudeCode, workspaceURL: clean, runtimeExecutableURL: cli,
-                                      title: "릴리스 노트 정리", status: cleanIsRunning ? .running : .ready)
+                                      title: "Tidy the release notes", status: cleanIsRunning ? .running : .ready)
         let sessions = [plainTask, dirtyTask, cleanTask]
         let transcripts = FileTranscriptRepository(directoryURL: root.appending(path: "transcripts"))
         transcripts.save([
-            TranscriptEntry(content: .user(text: "첫 화면 제목을 더 짧게 써 줘.")),
-            TranscriptEntry(content: .assistant(text: "제목을 \"오늘 할 일을 한 곳에서\"로 줄였습니다.", isStreaming: false))
+            TranscriptEntry(content: .user(text: "Make the first screen's title shorter.")),
+            TranscriptEntry(content: .assistant(text: "I shortened the title to \"Today's work in one place\".", isStreaming: false))
         ], for: plainTask.id)
         transcripts.save([
-            TranscriptEntry(content: .user(text: "이번 릴리스에서 바뀐 것을 세 줄로 정리해 줘.")),
-            TranscriptEntry(content: .assistant(text: "1. 오른쪽 패널이 새 탭 화면으로 열립니다.\n2. 다른 작업의 대화를 패널 탭으로 엽니다.\n3. Git이 아닌 폴더의 검토가 조용해졌습니다.", isStreaming: false))
+            TranscriptEntry(content: .user(text: "Sum up this release's changes in three lines.")),
+            TranscriptEntry(content: .assistant(text: "1. The side panel opens on a new tab screen.\n2. Another task's conversation opens as a panel tab.\n3. Review stays quiet in folders that aren't Git.", isStreaming: false))
         ], for: cleanTask.id)
         let model = AppModel(
             store: SessionStore(sessions: sessions, repository: InMemorySessionRepository(sessions: sessions)),
@@ -249,7 +249,7 @@ final class SidePanelQATests: XCTestCase {
         let owner = fixture.plain, other = fixture.clean
         let tab = TaskSurfaceNavigationProjection.taskTabID(other.id)
         let toggle = TaskSurfaceNavigationProjection.sidePanelToggleID
-        let reply = "세 번째 줄을 더 짧게 써 줘."
+        let reply = "Make the third line shorter."
         for appearance in WindowlessRender.Appearance.allCases {
             let light = appearance == .light
             model.splits.activate(.session(owner.id))

@@ -73,9 +73,9 @@ final class BrowserPanelTabsQATests: XCTestCase {
         try Data("#!/bin/sh\n".utf8).write(to: cli)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cli.path(percentEncoded: false))
         let task = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
-                                 title: "로그인 화면 고치기")
+                                 title: "Fix the sign-in screen")
         let legacy = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
-                                   title: "이전 빌드에서 연 브라우저 탭")
+                                   title: "Browser tab from an earlier build")
         let sessions = [task, legacy]
         // A task saved by a build before side-panel browser tabs: one Browser tab holding three.
         defaults.set(Data(#"""
@@ -237,9 +237,9 @@ final class BrowserPanelTabsQATests: XCTestCase {
         guard recordsReport else { return }
         report.append("## \(state)")
         report.append("")
-        report.append(contentsOf: controls.isEmpty ? ["- (버튼 없음)"]
-                      : controls.map { "- \($0.label.isEmpty ? "(이름 없음)" : $0.label) [\($0.role)]" })
-        for note in notes { report.append("- 확인: \(note)") }
+        report.append(contentsOf: controls.isEmpty ? ["- (no buttons)"]
+                      : controls.map { "- \($0.label.isEmpty ? "(no name)" : $0.label) [\($0.role)]" })
+        for note in notes { report.append("- Check: \(note)") }
         report.append("")
     }
 
@@ -258,7 +258,7 @@ final class BrowserPanelTabsQATests: XCTestCase {
             try browserTabs(appearance)
         }
         let directory = try WindowlessRender.directory(Self.folder)
-        try (["# 오른쪽 패널의 브라우저 탭", ""] + report).joined(separator: "\n")
+        try (["# Browser tabs in the right panel", ""] + report).joined(separator: "\n")
             .write(to: directory.appending(path: "report.md"), atomically: true, encoding: .utf8)
     }
 
@@ -282,7 +282,7 @@ final class BrowserPanelTabsQATests: XCTestCase {
             XCTAssertTrue(waitUntil(host) { client.tab(key: key, forSession: task.id) != nil })
             let tab = try XCTUnwrap(client.tab(key: key, forSession: task.id))
             let standIn = try XCTUnwrap(fixture.host())
-            standIn.load(tab.id, "http://localhost:3100/erp/review", title: "ERPNext 검토")
+            standIn.load(tab.id, "http://localhost:3100/erp/review", title: "ERPNext review")
             host.settle(passes: 8, interval: 0.03)
 
             // The page keeps its size through a load, a notice and the bar: each resize lays it out again.
@@ -322,7 +322,7 @@ final class BrowserPanelTabsQATests: XCTestCase {
             XCTAssertEqual(standIn.opened.last?.url, "http://localhost:3100/erp/review")
             XCTAssertEqual(workspace.panels.trailingSurfaceID, Navigation.browserTabID(key), "the same side-panel tab")
             XCTAssertNil(barButton(L10n.string("Wait")))
-            standIn.load(replacement.id, "http://localhost:3100/erp/review", title: "ERPNext 검토")
+            standIn.load(replacement.id, "http://localhost:3100/erp/review", title: "ERPNext review")
             host.settle(passes: 8, interval: 0.03)
             try draw(host, "page-reloaded", appearance)
         }
@@ -353,8 +353,8 @@ final class BrowserPanelTabsQATests: XCTestCase {
         let standIn = try XCTUnwrap(fixture.host())
         XCTAssertEqual(standIn.opened.last?.url, "about:blank")
         try draw(host, "new-tab", appearance)
-        describe("런처의 브라우저 → 새 탭", strip(in: host), notes: [
-            "패널 탭 \(workspace.panels.trailingTabs.count)개, 보이는 탭 = 새 브라우저 탭, 엔진 탭 about:blank"
+        describe("Launcher's Browser → new tab", strip(in: host), notes: [
+            "\(workspace.panels.trailingTabs.count) panel tabs, shown tab = the new browser tab, engine tab about:blank"
         ])
         standIn.load(firstTab.id, "http://localhost:3000/", title: "Login — Dev")
         host.settle(passes: 10, interval: 0.03)
@@ -378,9 +378,9 @@ final class BrowserPanelTabsQATests: XCTestCase {
         XCTAssertTrue(threeTabs.contains { $0.label == "Login — Dev" }, "\(threeTabs.map(\.label))")
         XCTAssertTrue(threeTabs.contains { $0.label == "Status" })
         try draw(host, "three-tabs", appearance)
-        describe("브라우저 탭 셋(⌘T로 하나, 에이전트가 뒤에 하나)", threeTabs, notes: [
-            "패널 탭: \(Navigation.browserKeys(in: workspace.panels).map { TaskSidePanelTabs.browserTab($0, in: workspace.browserTabs).title })",
-            "보이는 탭 Docs(파비콘 파랑), 에이전트 탭 Status(파비콘 초록)는 뒤에, 브라우저 칸 안 탭 줄 없음"
+        describe("Three browser tabs (one from ⌘T, one the agent opened behind)", threeTabs, notes: [
+            "Panel tabs: \(Navigation.browserKeys(in: workspace.panels).map { TaskSidePanelTabs.browserTab($0, in: workspace.browserTabs).title })",
+            "Shown tab Docs (blue favicon), agent tab Status (green favicon) behind, no tab strip inside the browser pane"
         ])
 
         // A background tab pressed in the strip shows; the engine fronts it for the agent's tools.
@@ -388,8 +388,8 @@ final class BrowserPanelTabsQATests: XCTestCase {
         XCTAssertEqual(workspace.panels.trailingSurfaceID, Navigation.browserTabID(first))
         XCTAssertTrue(client.tab(forSession: task.id) === firstTab)
         try draw(host, "background-tab-pressed", appearance)
-        describe("배경 탭 'Login — Dev' 누름", strip(in: host), notes: [
-            "보이는 탭 = Login — Dev, 엔진의 앞 탭도 같은 탭(에이전트 도구의 기본 탭)"
+        describe("Background tab 'Login — Dev' pressed", strip(in: host), notes: [
+            "Shown tab = Login — Dev, and the engine's front tab is the same (the agent tools' default tab)"
         ])
 
         // ⌃Tab and ⌃⇧Tab on the page go to the next and previous browser tab, ⌘9 to the last. (⌘1–⌘4
@@ -433,8 +433,8 @@ final class BrowserPanelTabsQATests: XCTestCase {
         XCTAssertEqual(workspace.panels.trailingSurfaceID, "diff", "the panel stays with Review")
         XCTAssertTrue(client.tabs(forSession: task.id).isEmpty, "each tab's page closed with it")
         try draw(host, "browser-tabs-closed", appearance)
-        describe("브라우저 탭을 모두 닫음(검토 남음)", strip(in: host), notes: [
-            "패널은 숨지 않고 검토를 보임, 엔진 탭 0개, 닫은 엔진 탭 \(standIn.closed.count)개"
+        describe("All browser tabs closed (Review remains)", strip(in: host), notes: [
+            "The panel stays and shows Review, 0 engine tabs, \(standIn.closed.count) engine tabs closed"
         ])
 
         // A task a build before saved with one Browser tab of three: three tabs, the front one shown; it
@@ -450,8 +450,8 @@ final class BrowserPanelTabsQATests: XCTestCase {
         XCTAssertEqual(client.tab(forSession: fixture.legacy.id)?.key, legacyKeys[1])
         let legacyStrip = strip(in: host)
         try draw(host, "migrated", appearance)
-        describe("이전 빌드의 '브라우저' 탭 하나(브라우저 탭 셋)", legacyStrip, notes: [
-            "패널 탭 셋으로, 앞 탭(localhost:3000)이 보임, 셋이 같은 키로 함께 열림"
+        describe("One 'Browser' tab from an earlier build (three browser tabs)", legacyStrip, notes: [
+            "Three panel tabs, the front tab (localhost:3000) shown, all three open together under the same keys"
         ])
     }
 
@@ -474,8 +474,8 @@ final class BrowserPanelTabsQATests: XCTestCase {
         XCTAssertTrue(waitUntil(host) { client.tab(key: first, forSession: task.id) != nil })
         let standIn = try XCTUnwrap(fixture.host())
         let titles = ["GitHub - anthropics/claude-code: Claude Code is an agentic coding tool",
-                      "Pull requests · acme/acme-platform-web", "브라우저 패널 반응형 확인 메모 — Notion",
-                      "Yardlet 대시보드 · 로컬 개발 서버"]
+                      "Pull requests · acme/acme-platform-web", "Browser panel responsive layout check notes — Notion",
+                      "Yardlet dashboard · local development server"]
         var tabs = [try XCTUnwrap(client.tab(key: first, forSession: task.id))]
         for _ in titles.dropFirst() {
             tabs.append(try client.newTab(forSession: task.id, url: "about:blank", viewport: .offscreenDefault, select: false))
@@ -492,8 +492,8 @@ final class BrowserPanelTabsQATests: XCTestCase {
             try draw(host, "long-titles-\(name)", .light)
             let shown = strip(in: host).filter { titles.contains($0.label) }
             widths[name] = shown.map(\.frame.width)
-            describe("긴 제목 탭 넷, 패널 \(name)", shown, notes: [
-                "다른 탭 폭 \(shown.map { Int($0.frame.width) }), 모두 패널 안 \(shown.allSatisfy { $0.frame.maxX <= Self.size.width })"
+            describe("Four long-titled tabs, panel \(name)", shown, notes: [
+                "Other tab widths \(shown.map { Int($0.frame.width) }), all inside the panel \(shown.allSatisfy { $0.frame.maxX <= Self.size.width })"
             ])
             XCTAssertTrue(shown.allSatisfy { $0.frame.maxX <= Self.size.width }, "\(name): \(shown.map(\.frame))")
         }
@@ -503,7 +503,7 @@ final class BrowserPanelTabsQATests: XCTestCase {
         XCTAssertTrue(wide.allSatisfy { $0 >= PanelTabMetrics.titledWidth }, "wide: \(wide)")
         XCTAssertLessThanOrEqual((wide.max() ?? 0) - (wide.min() ?? 0), 1, "wide: \(wide)")
         workspace.layout.panelWidthRatio = nil
-        try (["# 긴 제목의 브라우저 탭", ""] + report).joined(separator: "\n")
+        try (["# Browser tabs with long titles", ""] + report).joined(separator: "\n")
             .write(to: try WindowlessRender.directory(Self.folder).appending(path: "long-titles.md"), atomically: true, encoding: .utf8)
     }
 

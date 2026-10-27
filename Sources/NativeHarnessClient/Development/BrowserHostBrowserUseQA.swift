@@ -4,7 +4,7 @@ import Foundation
 import IOSurface
 import YardletAgentTools
 
-/// QA for how well an agent uses the browser, against the real browser host (docs/AGENT_BROWSER_TOOLS.md, "QA(모델 턴 없이)"), run by
+/// QA for how well an agent uses the browser, against the real browser host (docs/AGENT_BROWSER_TOOLS.md, "QA (without a model turn)"), run by
 /// `run-check.sh … --ui-fixture-browser-check-only=browser-use`: screen sizes (the agent's browser_resize and
 /// the panel drawing a size larger than itself), reading and acting across frames and shadow roots, and
 /// handing a tab to the person and waiting. The agent's calls go through the Yardlet MCP broker as a

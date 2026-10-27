@@ -18,7 +18,8 @@ final class BrowserAgentOnce {
 }
 
 /// Files the agent may hand to a page's file chooser: only inside the task's project folders,
-/// after `..` and symbolic links are resolved, so an upload cannot reach the rest of the disk.
+/// after `..` and symbolic links are resolved, so an upload cannot reach the rest of the disk. The same
+/// reading tells which `file:` pages the agent opens are in those folders (`BrowserAgentTools`).
 enum BrowserAgentWorkspaceFile {
     static func resolve(_ path: String, roots: [URL], mode: BrowserFileDialog.Mode) throws -> String {
         guard let primary = roots.first else {
@@ -51,6 +52,35 @@ enum BrowserAgentWorkspaceFile {
             }
         }
         return resolved.path(percentEncoded: false)
+    }
+
+    /// The file a `file:` address opens, as a real path: read as Chromium reads it (tabs and line breaks dropped,
+    /// "\" as "/", no host, query or fragment, escapes decoded, `..` taken out), with symbolic links resolved as
+    /// far as the path exists. Nil for an address of another scheme.
+    static func realPath(ofFileAddress address: String) -> String? {
+        let value = address.trimmingCharacters(in: .whitespacesAndNewlines).filter { !"\t\n\r".contains($0) }
+        guard BrowserURLPolicy.scheme(of: value) == "file" else { return nil }
+        var rest = Substring(value.dropFirst("file:".count).replacingOccurrences(of: "\\", with: "/"))
+        if rest.hasPrefix("//") {
+            rest = rest.dropFirst(2)
+            rest = rest[(rest.firstIndex(of: "/") ?? rest.endIndex)...]
+        }
+        let encoded = String(rest.prefix { $0 != "?" && $0 != "#" })
+        let path = encoded.removingPercentEncoding ?? encoded
+        let url = URL(filePath: path.hasPrefix("/") ? path : "/" + path).standardizedFileURL
+        // A path that does not exist yet still resolves through the folders it names.
+        var existing = url, missing: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path(percentEncoded: false)), existing.pathComponents.count > 1 {
+            missing.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        return missing.reduce(existing.resolvingSymlinksInPath()) { $0.appending(path: $1) }.path(percentEncoded: false)
+    }
+
+    /// Whether a real path is in one of the task's folders, as `resolve` reads them.
+    static func isInside(_ path: String, roots: [URL]) -> Bool {
+        let candidate = URL(filePath: path)
+        return roots.contains { contains($0.standardizedFileURL.resolvingSymlinksInPath(), candidate) }
     }
 
     /// Compares whole path components, so `/work/app` does not contain `/work/application`.

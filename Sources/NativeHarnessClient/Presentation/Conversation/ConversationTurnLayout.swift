@@ -2,8 +2,8 @@ import Foundation
 
 /// How every harness lays out a turn and folds its work: the Codex app 26.1016's rules
 /// (`split-items-into-render-groups`, and `kk`, `Ak` and `Lk` of the block that folds its work),
-/// one rule for every harness (2026-10-23 user decisions: "codex 앱처럼 제대로 ㄱㄱ", and one rule
-/// rather than one per harness: "앱이 너무 누더기처럼 될까봐").
+/// one rule for every harness (decisions of 2026-10-23: follow the Codex app properly, and use one
+/// rule rather than one per harness so the app does not become a patchwork).
 ///
 /// - Everything after the turn's request stays where it happened. Only the answer that closes the
 ///   turn is drawn under the work (`arrange`), as are proposed plans.

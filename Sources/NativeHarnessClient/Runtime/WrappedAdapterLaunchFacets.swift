@@ -2,7 +2,7 @@ import Foundation
 
 /// The launch settings a YHP wrapper hands straight to the adapter it wraps (B16). The wrapped
 /// adapter still owns the process it launches and the session request it sends, so a launch flag,
-/// a project's extra roots, the Yardlet MCP server and Yardlet 지침 have to reach it before the session starts,
+/// a project's extra roots, the Yardlet MCP server and Yardlet instructions have to reach it before the session starts,
 /// earlier than any session-scoped YHP request. Only the wrapped adapter also learns which
 /// instruction files the provider actually loaded. A facet the wrapped adapter lacks is skipped.
 struct WrappedAdapterLaunchFacets: Sendable {

@@ -68,8 +68,8 @@ final class CodexProcessTransportTests: XCTestCase {
             let error = CodexRPCRequestFailure(requestID: 1, payload: payload)
             XCTAssertEqual(error.localizedDescription, L10n.format("%@ could not complete the request", "Codex"))
         }
-        XCTAssertEqual(CodexRPCRequestFailure(requestID: 1, payload: .string("  다시 시도해 주세요.  "))
-            .localizedDescription, "다시 시도해 주세요.")
+        XCTAssertEqual(CodexRPCRequestFailure(requestID: 1, payload: .string("  Please try again.  "))
+            .localizedDescription, "Please try again.")
     }
 
     // MARK: - A send that ends says why

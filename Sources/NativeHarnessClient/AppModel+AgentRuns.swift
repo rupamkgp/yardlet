@@ -1,7 +1,7 @@
 import Foundation
 import YardletAgentTools
 
-// `run_agent` (docs/AGENT_BROWSER_TOOLS.md, "세션 도구"): a prompt run as a subagent on a harness, inside the calling
+// `run_agent` (docs/AGENT_BROWSER_TOOLS.md, "Session tools"): a prompt run as a subagent on a harness, inside the calling
 // turn, as Claude Code's Agent tool or Codex's `spawn_agent` runs one on its own harness. Yardlet
 // starts one harness session headless through the same adapters its tasks use — the account
 // automatic assignment picks or the call names, its default permission mode or read only when the caller is read only (never
@@ -200,7 +200,7 @@ extension AppModel {
         if let history = adapter as? any HarnessHistoryFreeSessionConfiguring {
             run.keepsNoProviderHistory = await history.keepNoHistory(for: run.id)
         }
-        // A subagent is a launch Yardlet makes, so it carries Yardlet 지침 by its harness's route too:
+        // A subagent is a launch Yardlet makes, so it carries Yardlet instructions by its harness's route too:
         // those of the project its folder belongs to, else of the task it works for.
         // A judge gets none: the routing it judges must not steer it.
         if !run.isEvaluationJudge {

@@ -185,7 +185,7 @@ import XCTest
         XCTAssertEqual(AccountFreshnessProjection.text(checkedAt: fiveMinutes, status: .checkFailed, isChecking: true,
             now: now), L10n.format("Updated %@", formatter.localizedString(for: fiveMinutes, relativeTo: now)),
             "While a new check runs the line shows the time, not the last failure")
-        // The Claude app's usage wording: "방금 업데이트됨", "{minutes}분 전에 업데이트됨".
+        // The Claude app's Korean usage wording for "Updated just now" and "Updated {minutes} min ago".
         XCTAssertEqual(L10n.string("Updated %@", languageCode: "ko"), "%@에 업데이트됨")
         XCTAssertEqual(L10n.string("Updated just now", languageCode: "ko"), "방금 업데이트됨")
 

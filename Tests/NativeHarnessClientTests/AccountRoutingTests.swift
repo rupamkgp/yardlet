@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import NativeHarnessClient
 
-/// Automatic account assignment (docs/NATIVE_SESSION_STORAGE.md, "2026-09-15 추가 계정 선택"): which accounts it may use by default and after
+/// Automatic account assignment (docs/NATIVE_SESSION_STORAGE.md, "Choosing an additional account"): which accounts it may use by default and after
 /// the person's answer, and the rule that picks one of them from the plan limits, their resets and
 /// the tasks already running.
 @MainActor final class AccountRoutingTests: XCTestCase {

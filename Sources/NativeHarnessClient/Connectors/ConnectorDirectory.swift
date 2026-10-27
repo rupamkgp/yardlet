@@ -2,7 +2,7 @@ import Foundation
 import YardletAgentTools
 
 /// A service Yardlet knows how to connect, checked against the service's live endpoint with
-/// unauthenticated requests only (docs/CONNECTORS.md, "디렉터리"). How it signs in decides what
+/// unauthenticated requests only (docs/CONNECTORS.md, "Directory"). How it signs in decides what
 /// the user is asked for: nothing (dynamic client registration or no sign-in), an OAuth client
 /// they register with the service, or a token they paste.
 struct ConnectorPreset: Identifiable, Equatable, Sendable {
@@ -145,7 +145,7 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         signIn: .oauth, symbol: "ladybug",
                         claudeAINames: ["claude.ai Sentry"], codexPlugins: ["sentry"]),
         // The services' own remote servers, each answering an unauthenticated `initialize` with 401
-        // and OAuth metadata that has a registration endpoint (2026-10-21, docs/CONNECTORS.md, "디렉터리").
+        // and OAuth metadata that has a registration endpoint (2026-10-21, docs/CONNECTORS.md, "Directory").
         // Left out: Vercel and Canva admit only clients they approved; Box, HubSpot, and Asana's
         // V2 server have no registration (an app of the person's own).
         // Work and planning
@@ -214,7 +214,7 @@ struct ConnectorPreset: Identifiable, Equatable, Sendable {
                         signIn: .oauth, symbol: "square.grid.2x2"),
         // Mercury's own server (docs.mercury.com/docs/connecting-mercury-mcp), read only: Yardlet asks
         // for `read` and `offline_access` alone, so payment and transfer requests, categories, and
-        // transaction notes stay out (docs/CONNECTORS.md, "디렉터리").
+        // transaction notes stay out (docs/CONNECTORS.md, "Directory").
         ConnectorPreset(id: "mercury", name: "Mercury", serverURL: URL(string: "https://mcp.mercury.com/mcp")!,
                         signIn: .oauth, scope: "read offline_access", symbol: "building.columns",
                         claudeAINames: ["claude.ai Mercury"]),

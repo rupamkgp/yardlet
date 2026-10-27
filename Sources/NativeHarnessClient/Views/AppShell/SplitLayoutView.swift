@@ -122,6 +122,14 @@ private struct SplitBranchView: View {
                         dragStart = nil
                     }
             )
+            // A double click gives the two panes beside the line equal room, as a split view's divider
+            // does in Xcode and VS Code; the side panel's line returns to its default width the same way.
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                guard fractions.indices.contains(index + 1) else { return }
+                let even = (fractions[index] + fractions[index + 1]) / 2
+                onCommit(Self.moving(fractions, boundary: index, by: even - fractions[index],
+                                     available: available, isHorizontal: isHorizontal))
+            })
             .accessibilityElement()
             .accessibilityLabel(L10n.string("Resize panes"))
             .accessibilityAdjustableAction { direction in

@@ -1,7 +1,7 @@
 import Foundation
 import YardletAgentTools
 
-// `list_projects`, `hide_project` and `show_project` (docs/AGENT_BROWSER_TOOLS.md, "세션 도구"): an agent reads the person's
+// `list_projects`, `hide_project` and `show_project` (docs/AGENT_BROWSER_TOOLS.md, "Session tools"): an agent reads the person's
 // projects, hidden ones included, and hides or shows one in the sidebar through the same store the
 // sidebar's Remove project uses (`ProjectStore.hide`, `reveal`). Nothing else changes: the folder, the
 // tasks, their schedules and what the window shows stay, so showing it again undoes it. The running app

@@ -60,7 +60,7 @@ enum CodexProtocol {
     /// entry). Codex merges it into the user's configuration for this thread only; nil sends the
     /// request exactly as before. `ephemeral` threads are never written to disk (App Server
     /// `Thread.ephemeral`: "should not be materialized on disk"), so they are in no thread list.
-    /// `developerInstructions` carries Yardlet 지침, with the configuration's own developer
+    /// `developerInstructions` carries Yardlet instructions, with the configuration's own developer
     /// instructions ahead of it; nil leaves the field out.
     static func startThread(
         id: Int64,

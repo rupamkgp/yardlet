@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// What setting up a directory service asks of the person, beyond pressing Connect: the steps on
-/// the service's side and where to take them (docs/CONNECTORS.md, "화면").
+/// the service's side and where to take them (docs/CONNECTORS.md, "UI").
 struct ConnectorSetupGuide: Equatable {
     struct Link: Equatable {
         let title: String

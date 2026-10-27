@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Yardlet 지침: text the person writes once in Settings (and, for a project, in its edit sheet)
+/// Yardlet instructions: text the person writes once in Settings (and, for a project, in its edit sheet)
 /// that Yardlet hands to every agent it starts or resumes, through each harness's own per-process
 /// or per-session route. Nothing is written to a harness's files (`~/.codex/AGENTS.md`, `CLAUDE.md`,
 /// `GEMINI.md`, `APPEND_SYSTEM.md`, an account's settings); turned off, the next launch carries
@@ -55,7 +55,7 @@ enum YardletInstructionsRoute: String, CaseIterable, Sendable {
     }
 }
 
-/// An adapter whose harness takes Yardlet 지침 per process or per session. It is handed the text
+/// An adapter whose harness takes Yardlet instructions per process or per session. It is handed the text
 /// before a session starts, resumes or forks; nil leaves that launch as it always was.
 protocol HarnessYardletInstructionsConfiguring: Actor {
     func setYardletInstructions(_ instructions: YardletInstructionsDelivery?, for localSessionID: UUID) async

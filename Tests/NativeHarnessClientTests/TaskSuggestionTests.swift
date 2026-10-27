@@ -3,7 +3,7 @@ import XCTest
 @testable import NativeHarnessClient
 @testable import YardletAgentTools
 
-/// Suggested tasks (`spawn_task`, docs/AGENT_BROWSER_TOOLS.md, "작업 제안 도구"): the tools as the Yardlet MCP server lists them
+/// Suggested tasks (`spawn_task`, docs/AGENT_BROWSER_TOOLS.md, "Task suggestion tools"): the tools as the Yardlet MCP server lists them
 /// and forwards them, the app's answers, the chip each harness's call becomes, where its Start starts
 /// the task, what Do it here sends, the draft its Options opens and the task that draft starts, and
 /// what the task keeps of each chip. No harness runs and no
@@ -511,7 +511,7 @@ final class TaskSuggestionTests: XCTestCase {
         let caller = try await model.store.createSession(
             harness: .openCode, workspaceURL: root, runtimeExecutableURL: URL(filePath: "/tmp/opencode"), title: "Caller")
         let open = try await model.store.createSession(
-            harness: .openCode, workspaceURL: root, runtimeExecutableURL: URL(filePath: "/tmp/opencode"), title: "CS 응대")
+            harness: .openCode, workspaceURL: root, runtimeExecutableURL: URL(filePath: "/tmp/opencode"), title: "CS replies")
         let archived = try await model.store.createSession(
             harness: .openCode, workspaceURL: root, runtimeExecutableURL: URL(filePath: "/tmp/opencode"), title: "Old")
         try await model.store.archiveSession(id: archived.id)
@@ -538,7 +538,7 @@ final class TaskSuggestionTests: XCTestCase {
         XCTAssertTrue(folder.text.contains("one click starts it as a new task in \(root.path(percentEncoded: false))"), folder.text)
         XCTAssertNotNil(TaskSuggestionToolCatalog.taskID(inResult: folder.text), "Still Yardlet's answer, so a chip")
         let underTask = try await call(["parent_task_id": open.id.uuidString])
-        XCTAssertTrue(underTask.text.contains("nested under task \(open.id.uuidString) (CS 응대)"), underTask.text)
+        XCTAssertTrue(underTask.text.contains("nested under task \(open.id.uuidString) (CS replies)"), underTask.text)
         await model.shutdown()
     }
 
@@ -558,13 +558,13 @@ final class TaskSuggestionTests: XCTestCase {
         let options = ["model": "opus", "effort": "low"]
         let parent = try await model.store.createSession(
             harness: .openCode, workspaceURL: there, runtimeExecutableURL: URL(filePath: "/tmp/opencode"),
-            title: "CS 응대", providerOptions: options, projectID: thereProject.id)
+            title: "CS replies", providerOptions: options, projectID: thereProject.id)
         var chip = suggestion(startsInNewWorktree: false)
         chip.parentTaskID = parent.id
 
         let start = try XCTUnwrap(try? model.suggestedTaskStart(for: chip, from: source).get())
         XCTAssertEqual(model.suggestedTaskPlaceLabel(for: chip, start: start, from: source),
-                       L10n.format("As a subtask of ‘%@’", "CS 응대"))
+                       L10n.format("As a subtask of ‘%@’", "CS replies"))
         await model.startTaskSuggestion(chip, from: source.id)
 
         let resolution = try XCTUnwrap(model.taskSuggestions.resolution(of: chip.id, in: source.id),

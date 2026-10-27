@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// What the home needs from the window to answer a task in its composer's place
-/// ("답하는 입력창"): the task's own conversation and composer, drawn as a side-panel tab draws them, so
+/// ("the reply composer"): the task's own conversation and composer, drawn as a side-panel tab draws them, so
 /// its request cards, queue, steering and draft are the ones its own view has.
 struct NewTaskHomeReplyServices {
     /// The task's conversation and composer (`MainWindow.taskContent`, conversation only), with the

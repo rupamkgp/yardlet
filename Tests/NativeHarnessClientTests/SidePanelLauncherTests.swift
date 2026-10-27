@@ -21,20 +21,20 @@ final class SidePanelLauncherTests: XCTestCase {
 
     func testTheLauncherListsRecentTasksAndFindsOthersByTitleOrProject() {
         let tasks = (0..<9).map { index in
-            WorkSurfaceTab(id: "task:\(index)", title: index == 7 ? "릴리스 노트 정리" : "작업 \(index)",
+            WorkSurfaceTab(id: "task:\(index)", title: index == 7 ? "Tidy the release notes" : "Task \(index)",
                            systemName: "text.bubble", detail: index == 8 ? "yardlet" : "landing")
         }
         XCTAssertEqual(SidePanelLauncher.shown(tasks, query: "").map(\.id), (0..<6).map { "task:\($0)" })
-        XCTAssertEqual(SidePanelLauncher.shown(tasks, query: " 릴리스 ").map(\.id), ["task:7"])
+        XCTAssertEqual(SidePanelLauncher.shown(tasks, query: " release ").map(\.id), ["task:7"])
         XCTAssertEqual(SidePanelLauncher.shown(tasks, query: "YARD").map(\.id), ["task:8"])
-        XCTAssertEqual(SidePanelLauncher.shown(tasks, query: "없는 작업"), [])
+        XCTAssertEqual(SidePanelLauncher.shown(tasks, query: "missing task"), [])
     }
 
     func testATaskTabNamesItsTaskWithItsHarnessAndProject() {
         let older = SessionRecord(harness: .codex, workspaceURL: URL(filePath: "/tmp/index"),
-                                  runtimeExecutableURL: URL(filePath: "/usr/bin/true"), title: "세션 색인 이전 고치기")
+                                  runtimeExecutableURL: URL(filePath: "/usr/bin/true"), title: "Fix the session index migration")
         let newer = SessionRecord(harness: .claudeCode, workspaceURL: URL(filePath: "/tmp/notes"),
-                                  runtimeExecutableURL: URL(filePath: "/usr/bin/true"), title: "릴리스 노트 정리")
+                                  runtimeExecutableURL: URL(filePath: "/usr/bin/true"), title: "Tidy the release notes")
         let services = SidePanelTaskServices(
             record: { id in [older, newer].first { $0.id == id } },
             choices: { [newer, older] },
@@ -42,7 +42,7 @@ final class SidePanelLauncherTests: XCTestCase {
             tab: { _, _ in AnyView(EmptyView()) })
         let tabs = services.choiceTabs()
         XCTAssertEqual(tabs.map(\.id), [newer, older].map { TaskSurfaceNavigationProjection.taskTabID($0.id) })
-        XCTAssertEqual(tabs.map(\.title), ["릴리스 노트 정리", "세션 색인 이전 고치기"])
+        XCTAssertEqual(tabs.map(\.title), ["Tidy the release notes", "Fix the session index migration"])
         XCTAssertEqual(tabs.map(\.harness), [.claudeCode, .codex])
         XCTAssertEqual(tabs.map(\.detail), ["notes", "index"])
         XCTAssertEqual(services.choiceTabs(limit: 1).count, 1)

@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yardlet 휴대폰 시안</title>
+<title>Yardlet phone mockups</title>
 <style>
   :root {
     --bg: #ffffff; --surface: #f2f2f4; --surface2: #e9e9ec; --text: #111214; --text2: #5f626a; --text3: #95989f;
@@ -155,9 +155,9 @@
 </head>
 <body>
 <div class="intro">
-  <h1>Yardlet 휴대폰 앱 v2 시안</h1>
-  <p>설계: docs/REMOTE_V2_DESIGN.md 8절. 위 줄은 밝게, 아래 줄은 어둡게. 기다리는 요청은 입력창 바로 위에 붙고, 새 작업은 홈 아래 입력 막대에서 시작한다.
-  상태 점은 Mac 사이드바와 같다: 초록 승인, 주황 질문, 회색 실행 중, 파랑 읽지 않음, 빨강 실패.</p>
+  <h1>Yardlet phone app v2 mockups</h1>
+  <p>Design: docs/REMOTE_V2_DESIGN.md section 8. The top row is light, the bottom row dark. A waiting request sits right above the composer, and a new task starts from the input bar at the bottom of home.
+  Status dots match the Mac sidebar: green approval, orange question, gray running, blue unread, red failed.</p>
 </div>
 
 <!-- Shared SVG symbols -->
@@ -198,21 +198,21 @@ const dot = (c, extra = '') => `<span class="dot ${extra}" style="background:var
 
 const home = `
   <div class="top"><div class="mac"><div class="name">MacBook Pro ${icon('chev-down')}</div>
-    <div class="conn">${dot('green')}연결됨</div></div>
+    <div class="conn">${dot('green')}Connected</div></div>
     <div class="iconbtn">${icon('search')}</div></div>
   <div class="list">
-    <div class="section">기다리는 작업</div>
-    ${task('claude-code', 'Approve the index migration', 'Bash: swift test --filter Migration', dot('green'), '2분', true)}
-    ${task('claude-code', 'Pick the release name', '질문: Which release name should we use?', dot('orange'), '7분')}
+    <div class="section">Waiting for you</div>
+    ${task('claude-code', 'Approve the index migration', 'Bash: swift test --filter Migration', dot('green'), '2m', true)}
+    ${task('claude-code', 'Pick the release name', 'Question: Which release name should we use?', dot('orange'), '7m')}
     <div class="section">Yardlet</div>
-    ${task('codex', 'Build the release bundle', 'Codex · 실행 중', dot('gray', 'pulse'), '방금')}
-    ${task('claude-code', 'Fix the footer links', 'Claude Code', '', '16분')}
-    ${task('claude-code', 'Check the footer on mobile', '↳ Fix the footer links', '', '18분')}
+    ${task('codex', 'Build the release bundle', 'Codex · Running', dot('gray', 'pulse'), 'just now')}
+    ${task('claude-code', 'Fix the footer links', 'Claude Code', '', '16m')}
+    ${task('claude-code', 'Check the footer on mobile', '↳ Fix the footer links', '', '18m')}
     <div class="section">Website</div>
-    ${task('codex', 'Summarize the crash reports', 'Codex · 끝남', dot('blue'), '10분')}
-    ${task('claude-code', 'Regenerate the screenshots', 'Claude Code · 실패', '<span class="warn"></span>', '24분')}
+    ${task('codex', 'Summarize the crash reports', 'Codex · Finished', dot('blue'), '10m')}
+    ${task('claude-code', 'Regenerate the screenshots', 'Claude Code · Failed', '<span class="warn"></span>', '24m')}
   </div>
-  <div class="newbar"><span class="ph">새 작업</span><span class="chip">Yardlet ${icon('chev-down', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</span>
+  <div class="newbar"><span class="ph">New task</span><span class="chip">Yardlet ${icon('chev-down', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</span>
     <span class="send off">${icon('up')}</span></div>`;
 
 const convHead = (title, sub) => `
@@ -222,65 +222,65 @@ const approval = `
   ${convHead('Approve the index migration', 'Claude Code · Yardlet')}
   <div class="conv">
     <div class="bubble">Migrate the index to the new schema and run the migration tests</div>
-    <div class="worked">2분 38초 동안 작업함 · 단계 4개 ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
+    <div class="worked">Worked for 2m 38s · 4 steps ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
     <div class="answer">The migration is written. I'll run <code>swift test --filter Migration</code> to check it.</div>
     <div class="step">${icon('pencil', 'ic', 'width:16px;height:16px;stroke:var(--text2)')} Edited SessionRepository.swift <span class="add">+4</span> <span class="del">−2</span></div>
   </div>
   <div class="dock">
-    <div class="kind">${dot('green')}승인 요청 · Bash</div>
+    <div class="kind">${dot('green')}Approval requested · Bash</div>
     <div class="cmd">swift test --filter Migration</div>
     <div class="desc">Run the migration tests</div>
-    <div class="btns"><div class="btn line">거부</div><div class="btn fill">한 번만 허용</div></div>
-    <div class="more">다른 선택지는 Mac에서 고를 수 있습니다</div>
+    <div class="btns"><div class="btn line">Deny</div><div class="btn fill">Allow once</div></div>
+    <div class="more">More choices are on your Mac</div>
   </div>
-  <div class="composer"><div class="field">메시지 보내기</div><div class="stop"><i></i></div></div>`;
+  <div class="composer"><div class="field">Message</div><div class="stop"><i></i></div></div>`;
 
 const question = `
   ${convHead('Pick the release name', 'Claude Code · Yardlet')}
   <div class="conv">
     <div class="bubble">Name the 0.2 release</div>
-    <div class="worked">12초 동안 작업함 · 단계 1개 ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
+    <div class="worked">Worked for 12s · 1 step ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
   </div>
   <div class="dock">
-    <div class="kind">${dot('orange')}질문 · 1/2</div>
+    <div class="kind">${dot('orange')}Question · 1/2</div>
     <h3>Which release name should we use?</h3>
     <div class="opt"><span class="radio on"></span><div><b>Juniper</b><span>Short and easy to say</span></div></div>
     <div class="opt"><span class="radio"></span><div><b>Larch</b><span>Keeps the tree names</span></div></div>
     <div class="opt"><span class="radio"></span><div><b>Hornbeam</b></div></div>
-    <div class="own">직접 입력</div>
-    <div class="btns"><div class="btn quiet">건너뛰기</div><div class="btn fill">다음</div></div>
+    <div class="own">Your own answer</div>
+    <div class="btns"><div class="btn quiet">Skip</div><div class="btn fill">Next</div></div>
   </div>
-  <div class="composer"><div class="field">메시지 보내기</div><div class="stop"><i></i></div></div>`;
+  <div class="composer"><div class="field">Message</div><div class="stop"><i></i></div></div>`;
 
 const plan = `
   ${convHead('Plan the cache rewrite', 'Claude Code · Yardlet')}
   <div class="conv">
     <div class="bubble">Plan how to replace the session cache</div>
-    <div class="worked">1분 5초 동안 작업함 · 단계 6개 ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
+    <div class="worked">Worked for 1m 5s · 6 steps ${icon('right', 'ic', 'width:14px;height:14px;stroke:var(--text2)')}</div>
   </div>
   <div class="dock">
-    <div class="kind">${dot('green')}계획 검토</div>
+    <div class="kind">${dot('green')}Plan review</div>
     <div class="answer" style="font-size:14px">
       <b>Replace the session cache</b><br>
       1. Move reads behind <code>SessionStore.read</code><br>
       2. Write through to SQLite, drop the JSON mirror<br>
       3. Migrate on first launch, keep a backup<br>
-      <span style="color:var(--text2)">… 전체 보기</span>
+      <span style="color:var(--text2)">… Show all</span>
     </div>
-    <div class="btns" style="margin-top:12px"><div class="btn line">계속 계획</div><div class="btn fill">계획 승인</div></div>
+    <div class="btns" style="margin-top:12px"><div class="btn line">Keep planning</div><div class="btn fill">Approve plan</div></div>
   </div>
-  <div class="composer"><div class="field">메시지 보내기</div><div class="stop"><i></i></div></div>`;
+  <div class="composer"><div class="field">Message</div><div class="stop"><i></i></div></div>`;
 
 const newTask = `
   ${home}
   <div class="scrim"></div>
   <div class="sheet">
     <div class="handle"></div>
-    <h2>새 작업</h2>
-    <div class="rowline"><span class="grow">프로젝트</span><span style="color:var(--text2)">Yardlet</span>${icon('chev-down', 'ic', 'width:16px;height:16px;stroke:var(--text2)')}</div>
+    <h2>New task</h2>
+    <div class="rowline"><span class="grow">Project</span><span style="color:var(--text2)">Yardlet</span>${icon('chev-down', 'ic', 'width:16px;height:16px;stroke:var(--text2)')}</div>
     <div class="field2" style="min-height:120px;margin-top:12px">Add a dark mode toggle to Settings › General and follow the system appearance by default</div>
-    <div style="font-size:13px;color:var(--text2);margin:10px 2px 14px">Mac의 새 작업 설정으로 시작 · Claude Code</div>
-    <div class="btn fill" style="width:100%">시작</div>
+    <div style="font-size:13px;color:var(--text2);margin:10px 2px 14px">Starts with your Mac’s new-task settings · Claude Code</div>
+    <div class="btn fill" style="width:100%">Start</div>
   </div>`;
 
 const macSheet = `
@@ -289,55 +289,55 @@ const macSheet = `
   <div class="sheet">
     <div class="handle"></div>
     <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('wifi')}</div>
-      <div class="grow"><b style="font-weight:620">MacBook Pro</b><small>같은 Wi-Fi로 연결됨</small></div></div>
+      <div class="grow"><b style="font-weight:620">MacBook Pro</b><small>Connected over the same Wi-Fi</small></div></div>
     <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('cloud', 'ic', 'stroke:var(--text3)')}</div>
-      <div class="grow">Mac Studio<small>마지막 연결 3일 전</small></div></div>
-    <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('plus')}</div><div class="grow">다른 Mac 연결</div></div>
+      <div class="grow">Mac Studio<small>Last connected 3 days ago</small></div></div>
+    <div class="rowline"><div class="logo" style="background:transparent;display:grid;place-items:center">${icon('plus')}</div><div class="grow">Add another Mac</div></div>
     <div style="height:10px"></div>
-    <div class="rowline"><div class="grow">알림<small>승인·질문과 끝난 작업</small></div><span class="switch on"></span></div>
-    <div class="rowline"><div class="grow">화면 모드</div><span style="color:var(--text2)">시스템 설정</span></div>
-    <div class="rowline danger">이 Mac 연결 해제</div>
+    <div class="rowline"><div class="grow">Notifications<small>Approvals, questions and finished tasks</small></div><span class="switch on"></span></div>
+    <div class="rowline"><div class="grow">Appearance</div><span style="color:var(--text2)">System</span></div>
+    <div class="rowline danger">Disconnect this Mac</div>
   </div>`;
 
 const pairing = `
   <div class="pair"><div class="mid">
     <div class="appicon"><svg width="48" height="48"><use href="#yardlet"/></svg></div>
-    <h2>Mac과 연결</h2>
-    <p>Mac의 Yardlet에서 설정 › 원격 연결을 켜고<br>“휴대폰 연결”을 누른 뒤 QR 코드를 찍으세요.</p>
+    <h2>Connect to your Mac</h2>
+    <p>In Yardlet on your Mac, turn on Settings › Remote,<br>choose “Pair a phone”, then scan the QR code.</p>
   </div>
-  <div class="btn fill" style="flex:none;gap:8px;display:flex;justify-content:center;align-items:center">${icon('qr', 'ic', 'stroke:var(--onprimary)')} QR 코드 스캔</div>
-  <div class="foot">같은 Wi-Fi, Tailscale, Yardlet 서버 가운데 닿는 길로 연결합니다.<br>내용은 Mac과 이 휴대폰만 읽을 수 있습니다.</div></div>`;
+  <div class="btn fill" style="flex:none;gap:8px;display:flex;justify-content:center;align-items:center">${icon('qr', 'ic', 'stroke:var(--onprimary)')} Scan QR code</div>
+  <div class="foot">Connects over the same Wi-Fi, Tailscale or the Yardlet server, whichever reaches your Mac.<br>Only your Mac and this phone can read what is sent.</div></div>`;
 
 const offline = `
   <div class="top"><div class="mac"><div class="name">MacBook Pro ${icon('chev-down')}</div>
-    <div class="conn">${dot('orange')}Mac에 닿지 않습니다 · 다시 연결하는 중</div></div>
+    <div class="conn">${dot('orange')}Can’t reach your Mac · reconnecting</div></div>
     <div class="iconbtn">${icon('search')}</div></div>
   <div class="list" style="opacity:.55">
-    <div class="section">기다리는 작업</div>
-    ${task('claude-code', 'Approve the index migration', 'Bash: swift test --filter Migration', dot('green'), '2분', true)}
+    <div class="section">Waiting for you</div>
+    ${task('claude-code', 'Approve the index migration', 'Bash: swift test --filter Migration', dot('green'), '2m', true)}
     <div class="section">Yardlet</div>
-    ${task('codex', 'Build the release bundle', 'Codex', '', '1시간')}
-    ${task('claude-code', 'Fix the footer links', 'Claude Code', '', '2시간')}
+    ${task('codex', 'Build the release bundle', 'Codex', '', '1h')}
+    ${task('claude-code', 'Fix the footer links', 'Claude Code', '', '2h')}
   </div>
-  <div style="padding:14px 18px 18px;font-size:13px;color:var(--text2);line-height:1.5">Mac이 잠자고 있거나 Yardlet이 꺼져 있을 수 있습니다. 마지막으로 받은 목록입니다.</div>`;
+  <div style="padding:14px 18px 18px;font-size:13px;color:var(--text2);line-height:1.5">Your Mac may be asleep or Yardlet may be closed. This is the last list it sent.</div>`;
 
 const lock = `
-  <div class="clock">9:41</div><div class="date">10월 24일 금요일</div>
-  <div class="notif"><div class="app"><i></i>Yardlet · 지금</div><b>승인 요청</b><span>잠금을 풀면 내용을 볼 수 있습니다</span></div>
-  <div class="notif" style="margin-top:10px"><div class="app"><i></i>Yardlet · 3분 전</div><b>작업이 끝났습니다</b><span>잠금을 풀면 내용을 볼 수 있습니다</span></div>`;
+  <div class="clock">9:41</div><div class="date">Friday, October 24</div>
+  <div class="notif"><div class="app"><i></i>Yardlet · now</div><b>Approval requested</b><span>Unlock to see the details</span></div>
+  <div class="notif" style="margin-top:10px"><div class="app"><i></i>Yardlet · 3m ago</div><b>A task finished</b><span>Unlock to see the details</span></div>`;
 
 const unlocked = `
   <div class="clock" style="font-size:44px;margin-top:24px">9:41</div>
-  <div class="notif"><div class="app"><i></i>Yardlet · MacBook Pro · 지금</div><b>Approve the index migration</b><span>승인 요청 · Bash: swift test --filter Migration</span></div>
-  <div class="notif" style="margin-top:10px"><div class="app"><i></i>Yardlet · MacBook Pro · 3분 전</div><b>Summarize the crash reports</b><span>끝났습니다</span></div>`;
+  <div class="notif"><div class="app"><i></i>Yardlet · MacBook Pro · now</div><b>Approve the index migration</b><span>Approval requested · Bash: swift test --filter Migration</span></div>
+  <div class="notif" style="margin-top:10px"><div class="app"><i></i>Yardlet · MacBook Pro · 3m ago</div><b>Summarize the crash reports</b><span>Finished</span></div>`;
 
 document.getElementById('light').innerHTML = [
-  phone('1 연결 전', pairing), phone('2 작업(홈)', home), phone('3 승인', approval), phone('4 질문', question),
-  phone('5 계획 검토', plan), phone('6 새 작업', newTask), phone('7 Mac 시트', macSheet), phone('8 Mac에 닿지 않을 때', offline)
+  phone('1 Before connecting', pairing), phone('2 Tasks (home)', home), phone('3 Approval', approval), phone('4 Question', question),
+  phone('5 Plan review', plan), phone('6 New task', newTask), phone('7 Mac sheet', macSheet), phone('8 Mac out of reach', offline)
 ].join('');
 document.getElementById('dark').innerHTML = [
-  phone('9 작업(어둡게)', home, 'dark'), phone('10 승인(어둡게)', approval, 'dark'), phone('11 질문(어둡게)', question, 'dark'),
-  phone('12 새 작업(어둡게)', newTask, 'dark'), phone('13 잠금 화면 알림', lock, 'lock dark'), phone('14 잠금을 푼 뒤 알림', unlocked, 'lock dark')
+  phone('9 Tasks (dark)', home, 'dark'), phone('10 Approval (dark)', approval, 'dark'), phone('11 Question (dark)', question, 'dark'),
+  phone('12 New task (dark)', newTask, 'dark'), phone('13 Lock screen notifications', lock, 'lock dark'), phone('14 Notifications after unlocking', unlocked, 'lock dark')
 ].join('');
 
 const mi = (id) => `<span class="mi"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#${id}"/></svg></span>`;
@@ -346,23 +346,23 @@ const qrCells = (() => { let s = ''; let seed = 7; for (let y = 0; y < 25; y++) 
   const on = finder ? ((x % 18 === 0 || x % 18 === 6 || y % 18 === 0 || y % 18 === 6 || ((x % 18) > 1 && (x % 18) < 5 && (y % 18) > 1 && (y % 18) < 5))) : seed / 233280 > .52;
   if (on) s += `<rect x="${x}" y="${y}" width="1" height="1"/>`; } return s; })();
 document.getElementById('extra').innerHTML = `
-  <div><p class="label">15 Mac 설정 › 원격 연결</p>
-  <div class="macwin"><div class="tb"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span style="margin-left:8px">원격 연결</span></div>
+  <div><p class="label">15 Mac Settings › Remote</p>
+  <div class="macwin"><div class="tb"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span style="margin-left:8px">Remote</span></div>
   <div class="pane">
     <div class="card">
-      <div class="mrow">${mi('phone')}<div class="grow"><b>원격 연결 허용</b><small>휴대폰의 Yardlet으로 이 Mac의 작업을 보고 조작합니다.</small></div><span class="mswitch"></span></div>
-      <div class="mrow">${mi('cloud')}<div class="grow"><b>밖에서도 연결</b><small>Yardlet 서버를 거칩니다. 내용은 종단 간 암호화되어 서버가 읽을 수 없습니다.</small></div><span class="mswitch"></span></div>
-      <div class="mrow">${mi('net')}<div class="grow"><b>연결</b><small>같은 Wi-Fi · Tailscale · Yardlet 서버 <span class="ok">●</span></small></div></div>
+      <div class="mrow">${mi('phone')}<div class="grow"><b>Allow remote connections</b><small>Follow and drive this Mac's tasks from Yardlet on your phone.</small></div><span class="mswitch"></span></div>
+      <div class="mrow">${mi('cloud')}<div class="grow"><b>Connect from outside</b><small>Through the Yardlet server. It is end-to-end encrypted, so the server can't read it.</small></div><span class="mswitch"></span></div>
+      <div class="mrow">${mi('net')}<div class="grow"><b>Connections</b><small>Same Wi-Fi · Tailscale · Yardlet server <span class="ok">●</span></small></div></div>
     </div>
     <div class="card"><div class="mrow" style="align-items:flex-start;gap:18px;padding:14px 0">
       <svg class="qr" viewBox="0 0 25 25" shape-rendering="crispEdges" fill="#111">${qrCells}</svg>
-      <div class="grow"><b style="font-size:13px">휴대폰의 Yardlet으로 이 QR 코드를 찍으세요.</b>
-        <small style="margin-top:8px">5분 동안 한 번 쓸 수 있습니다 · 4:51 남음</small>
-        <div style="margin-top:12px"><span class="mbtn">취소</span></div></div></div></div>
+      <div class="grow"><b style="font-size:13px">Scan this code with Yardlet on your phone.</b>
+        <small style="margin-top:8px">Works once for 5 minutes · 4:51 left</small>
+        <div style="margin-top:12px"><span class="mbtn">Cancel</span></div></div></div></div>
     <div class="card">
-      <div class="mrow" style="font-weight:600">연결된 휴대폰</div>
-      <div class="mrow">${mi('phone')}<div class="grow">Pixel 9<small>연결됨 · 같은 Wi-Fi</small></div><span class="mbtn" style="color:#d33">제거</span></div>
-      <div class="mrow">${mi('phone')}<div class="grow">Galaxy S23+<small>이전 앱 · 마지막 연결 10월 16일</small></div><span class="mbtn" style="color:#d33">제거</span></div>
+      <div class="mrow" style="font-weight:600">Paired phones</div>
+      <div class="mrow">${mi('phone')}<div class="grow">Pixel 9<small>Connected · Same Wi-Fi</small></div><span class="mbtn" style="color:#d33">Remove</span></div>
+      <div class="mrow">${mi('phone')}<div class="grow">Galaxy S23+<small>Earlier app · Last connected October 16</small></div><span class="mbtn" style="color:#d33">Remove</span></div>
     </div>
   </div></div></div>`;
 const only = new URLSearchParams(location.search).get('only');

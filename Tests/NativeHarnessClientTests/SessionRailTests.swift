@@ -270,8 +270,8 @@ final class SessionRailTests: XCTestCase {
         XCTAssertEqual(rail.environment.branch, "feature/rail")
         XCTAssertEqual(rail.rollup(.context), "60%")
         XCTAssertEqual(rail.meter(.context) ?? 0, 0.6, accuracy: 0.001)
-        // Folded, the usage card says both windows the account has (2026-10-22: "5시간/주간이 다 있는
-        // 경우에는 접어도 둘 다 보이는 게 맞을 듯"), and its single meter steps aside.
+        // Folded, the usage card says both windows the account has (2026-10-22: with both a 5-hour
+        // and a weekly limit, both show when folded), and its single meter steps aside.
         XCTAssertEqual(rail.rollup(.usage), "5 hour 64% · 7 day 80%")
         XCTAssertNil(rail.meter(.usage))
         XCTAssertEqual(SessionRailContent.shortWindowName("5시간 한도"), "5시간")

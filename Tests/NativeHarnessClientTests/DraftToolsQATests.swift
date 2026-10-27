@@ -42,7 +42,7 @@ final class DraftToolsQATests: XCTestCase {
         try Data("#!/bin/sh\n".utf8).write(to: cli)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cli.path(percentEncoded: false))
         let other = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
-                                  title: "릴리스 노트 정리")
+                                  title: "Tidy the release notes")
         let sessions = [other]
         let model = AppModel(
             store: SessionStore(sessions: sessions, repository: InMemorySessionRepository(sessions: sessions)),
@@ -231,9 +231,9 @@ final class DraftToolsQATests: XCTestCase {
         guard recordsReport else { return }
         report.append("## \(state)")
         report.append("")
-        let lines = controls.map { "- \($0.label.isEmpty ? "(이름 없음)" : $0.label) [\($0.role)]" }
-        report.append(contentsOf: lines.isEmpty ? ["- (버튼 없음)"] : lines)
-        for note in notes { report.append("- 확인: \(note)") }
+        let lines = controls.map { "- \($0.label.isEmpty ? "(no name)" : $0.label) [\($0.role)]" }
+        report.append(contentsOf: lines.isEmpty ? ["- (no buttons)"] : lines)
+        for note in notes { report.append("- Check: \(note)") }
         report.append("")
     }
 
@@ -246,7 +246,7 @@ final class DraftToolsQATests: XCTestCase {
 
     private func writeReport() throws {
         let directory = try WindowlessRender.directory(Self.folder)
-        try (["# 새 작업 화면의 머리 버튼과 패널", ""] + report).joined(separator: "\n")
+        try (["# Title bar buttons and panels on the new-task screen", ""] + report).joined(separator: "\n")
             .write(to: directory.appending(path: "report.md"), atomically: true, encoding: .utf8)
     }
 
@@ -275,7 +275,7 @@ final class DraftToolsQATests: XCTestCase {
             host.settle(passes: 20, interval: 0.03)
             try draw(host, "home", appearance)
             let titleBar = titleBarControls(in: host)
-            describe("새 작업 화면 (1280×760)", titleBar)
+            describe("New-task screen (1280×760)", titleBar)
             XCTAssertTrue(titleBar.contains { $0.label == showTerminal }, "\(titleBar.map(\.label))")
             XCTAssertTrue(titleBar.contains { $0.label == showSidePanel })
             XCTAssertFalse(titleBar.contains { $0.label == L10n.string("Show session rail") }, "no task for a rail")
@@ -290,8 +290,8 @@ final class DraftToolsQATests: XCTestCase {
             XCTAssertFalse(launcher.contains(L10n.string("Side chat")), "a side chat needs a task")
             XCTAssertTrue(launcher.contains(fixture.other.title), "another task's conversation can open here")
             try draw(host, "home-launcher", appearance)
-            describe("오른쪽 패널(런처)", [], notes: ["런처 줄: " + TaskSidePanelTabs.draftChoices.map(\.title).joined(separator: "·")
-                + ", 작업 목록에 '\(fixture.other.title)', 검토·사이드 채팅 없음"])
+            describe("Right panel (launcher)", [], notes: ["Launcher row: " + TaskSidePanelTabs.draftChoices.map(\.title).joined(separator: "·")
+                + ", '\(fixture.other.title)' in the task list, no Review or side chat"])
 
             // Files in the draft's folder, from the launcher.
             XCTAssertTrue(press(L10n.string("Files"), in: host))
@@ -314,10 +314,10 @@ final class DraftToolsQATests: XCTestCase {
             XCTAssertTrue(afterThree.isTerminalPresented, "⌘3 opens the terminal")
             XCTAssertNotNil(TaskSurfaceNavigationProjection.browserKey(inTab: afterFour.trailingSurfaceID),
                             "⌘4 opens a browser tab")
-            describe("새 작업 화면 키", [], notes: [
-                "⌘1 처리 \(one) → 터미널 \(afterOne.isTerminalPresented ? "열림" : "닫힘"), 오른쪽 패널 \(afterOne.trailingSurfaceID ?? "닫힘")",
-                "⌘3 처리 \(three) → 터미널 \(afterThree.isTerminalPresented ? "열림" : "닫힘")",
-                "⌘4 처리 \(four) → 오른쪽 패널 \(afterFour.trailingSurfaceID ?? "닫힘")"
+            describe("New-task screen keys", [], notes: [
+                "⌘1 handled \(one) → terminal \(afterOne.isTerminalPresented ? "open" : "closed"), right panel \(afterOne.trailingSurfaceID ?? "closed")",
+                "⌘3 handled \(three) → terminal \(afterThree.isTerminalPresented ? "open" : "closed")",
+                "⌘4 handled \(four) → right panel \(afterFour.trailingSurfaceID ?? "closed")"
             ])
 
             // A shell in the draft's folder.
@@ -342,9 +342,9 @@ final class DraftToolsQATests: XCTestCase {
             XCTAssertTrue(press(L10n.string("Dismiss"), in: host))
             let dismissed = !controls(in: host).contains { $0.label == restartLabel }
             XCTAssertTrue(dismissed)
-            describe("터미널을 연 뒤 폴더를 바꿈", [], notes: [
-                "안내 '\(notice)'·'\(restartLabel)' \(noticeShown ? "보임" : "안 보임"), 셸 pid 그대로",
-                "닫기 → 안내 \(dismissed ? "사라짐" : "남음")"
+            describe("Folder changed after the terminal opened", [], notes: [
+                "Notice '\(notice)' and '\(restartLabel)' \(noticeShown ? "shown" : "not shown"), shell pid unchanged",
+                "Dismiss → notice \(dismissed ? "gone" : "still there")"
             ])
             model.composerDrafts.home.workspaceURL = fixture.folder
             model.composerDrafts.home.projectID = model.projects.project(containingRoot: fixture.folder)?.id
@@ -355,7 +355,7 @@ final class DraftToolsQATests: XCTestCase {
             let files = draftWorkspace.files
             let panelsBefore = draftWorkspace.panels
             let draft = model.composerDrafts.home
-            draft.text = "로그인 화면 고치기"
+            draft.text = "Fix the sign-in screen"
             var submission = try XCTUnwrap(draft.beginSubmission(runtimeURL: fixture.cli))
             submission.takesDraftWorkspace = true
             let result = try perform(in: host) { try await model.createTask(submission) }
@@ -376,9 +376,9 @@ final class DraftToolsQATests: XCTestCase {
             XCTAssertEqual(draftWorkspace.panels, .init(), "the new-task screen starts over")
             let taskTitleBar = titleBarControls(in: host)
             try draw(host, "task-after-handoff", appearance)
-            describe("작업을 만든 뒤 (같은 탭이 작업으로)", taskTitleBar, notes: [
-                "패널 \(task.panels == panelsBefore ? "같음" : "다름"), 셸 pid \(shellPID) → \(taskShell.map(String.init) ?? "없음"), 변수·스크롤백 이어짐",
-                "브라우저 모델·파일 상태 같은 객체, 새 작업 화면 패널은 빔"
+            describe("After the task is created (the same tab becomes the task)", taskTitleBar, notes: [
+                "Panels \(task.panels == panelsBefore ? "same" : "different"), shell pid \(shellPID) → \(taskShell.map(String.init) ?? "none"), variables and scrollback carried over",
+                "Browser model and file state are the same objects, the new-task screen's panels are empty"
             ])
 
             // Back on the new-task screen: empty; its next shell is a new one, and leaving ends it.
@@ -406,10 +406,10 @@ final class DraftToolsQATests: XCTestCase {
             host.settle(passes: 20, interval: 0.03)
             let waits = controls(in: host).contains { $0.label == L10n.string("Start terminal") }
             XCTAssertTrue(waits, "back on the screen, the terminal waits for Start terminal")
-            describe("새 작업 화면을 떠났다 돌아옴", [], notes: [
-                "새 탭을 열어 작업이 화면을 떠나면 작업 셸 \(shellPID) \(taskShellEnded ? "끝남" : "남음")(기존 규칙)",
-                "다음 초안의 셸 pid \(nextPID) → 작업 탭으로 가면 \(draftShellEnded ? "끝남" : "남음")",
-                "돌아오면 터미널은 '터미널 시작' \(waits ? "보임" : "안 보임")"
+            describe("Left the new-task screen and came back", [], notes: [
+                "When a new tab takes the task off the screen, the task shell \(shellPID) \(taskShellEnded ? "ended" : "remains") (existing rule)",
+                "Next draft's shell pid \(nextPID) → on going to the task tab \(draftShellEnded ? "ended" : "remains")",
+                "Back on the screen, the terminal shows 'Start terminal' \(waits ? "shown" : "not shown")"
             ])
             try draw(host, "home-returned", appearance)
             host.close()

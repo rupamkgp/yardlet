@@ -3,7 +3,7 @@ import SwiftUI
 import XCTest
 @testable import NativeHarnessClient
 
-/// Commands start folded (2026-10-16 user decision, "명령 실행시에 기본 상태가 접힘이면 좋겠고";
+/// Commands start folded (decision of 2026-10-16;
 /// `ConversationWorkDisclosure`): a command's line and a summary of commands only start
 /// folded while they run and after, the line marking that it runs; a failed command, a summary with a
 /// failed call and a waiting request stay in view; what the person opened or folded stays so. Claude
@@ -35,8 +35,8 @@ final class CommandDisclosureTests: XCTestCase {
         XCTAssertFalse(opens(command, .completed))
         XCTAssertFalse(opens(command, .stopped))
         XCTAssertTrue(opens(command, .failed), "a failed command opens on what went wrong")
-        // Every other call, and the thinking, too (2026-10-16: "현재 처리되고 있는 tool이라도 펼쳐서
-        // 보여주지 않으면 좋겠어"): folded while it runs and after, open when it fails.
+        // Every other call, and the thinking, too (2026-10-16: not even a running call opens):
+        // folded while it runs and after, open when it fails.
         for kind in [tool, edit, thinking] {
             XCTAssertFalse(opens(kind, .running), "\(kind)")
             XCTAssertFalse(opens(kind, .completed), "\(kind)")
@@ -409,7 +409,7 @@ private enum ClaudeTurn {
                             subtask: task.map { HarnessSubtaskReference(taskID: $0, toolUseID: id, taskType: "local_bash") })
         }
         let contents: [TranscriptEntryContent] = [
-            .user(text: "Yardlet CPU 사용량이 왜 높은지 봐 줘"),
+            .user(text: "Look into why Yardlet's CPU usage is high"),
             .activity(bash("toolu_check", "git status --short && ps -o %cpu= -p $(pgrep -x Yardlet)", checked,
                            output: " M Sources/App.swift\n 142.0"), state: .completed),
             .assistant(text: "Yardlet is at 142% CPU. Sampling its threads.", isStreaming: false),

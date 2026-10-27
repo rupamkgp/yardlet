@@ -71,6 +71,9 @@ final class BrowserAgentToolsTests: XCTestCase {
 
     /// Host commands the page sent (dialog and file chooser answers).
     private var hostCommands: [BrowserHostCommand] = []
+    /// The files outside the task's folders the tools asked about, and the answer they get.
+    private var askedFiles: [String] = []
+    private var allowsFiles = false
 
     override func setUp() async throws {
         cdp = ScriptedCDP()
@@ -128,7 +131,8 @@ final class BrowserAgentToolsTests: XCTestCase {
         let result = await run(AgentToolCatalog.navigate, ["url": .string("example.com")])
         XCTAssertFalse(result.isError, result.text)
         XCTAssertEqual(result.text, "Loaded https://example.com/\nTitle: Example Domain")
-        XCTAssertEqual(Array(cdp.methods.prefix(4)), ["Page.enable", "Runtime.enable", "Log.enable", "Page.navigate"])
+        XCTAssertEqual(Array(cdp.methods.prefix(5)),
+                       ["Page.enable", "Runtime.enable", "Log.enable", "Page.getFrameTree", "Page.navigate"])
         XCTAssertEqual(cdp.params(of: "Page.navigate").first?["url"], .string("https://example.com"))
     }
 
@@ -147,6 +151,72 @@ final class BrowserAgentToolsTests: XCTestCase {
         cdp.responders["Page.navigate"] = { _ in .object(["frameId": .string("F")]) }
         _ = await run(AgentToolCatalog.navigate, ["url": .string("localhost:3000/app")])
         XCTAssertEqual(cdp.params(of: "Page.navigate").last?["url"], .string("http://localhost:3000/app"))
+    }
+
+    /// A file outside the task's folders, read after `..`, escapes and symbolic links, opens only when the app
+    /// says so: at once for a task that runs without asking, on the person's answer otherwise
+    /// (`AppModel.allowsBrowserFile`). A file the page brings in itself (a link, a script, an iframe) is asked
+    /// about before the next tool reads the page, and one the task was let open is not asked about again.
+    func testAFileOutsideTheTasksFoldersOpensOnlyWhenAllowed() async throws {
+        let base = FileManager.default.temporaryDirectory.appending(path: "agent-files-\(UUID().uuidString)")
+        let root = base.appending(path: "work"), secret = base.appending(path: "secret")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secret, withIntermediateDirectories: true)
+        try Data("<p>hi</p>".utf8).write(to: root.appending(path: "page.html"))
+        try Data("key".utf8).write(to: secret.appending(path: "key.txt"))
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "link"), withDestinationURL: secret)
+        defer { try? FileManager.default.removeItem(at: base) }
+        tools.workspaceRoots = { _ in [root] }
+        tools.allowsFileOutsideFolders = { [unowned self] _, path in
+            askedFiles.append(path)
+            return allowsFiles
+        }
+        let task = UUID()
+        func run(_ tool: String, _ arguments: [String: JSONValue] = [:]) async -> AgentToolResult {
+            await tools.run(tool: tool, arguments: .object(arguments), sessionID: task)
+        }
+        cdp.responders["Page.navigate"] = { _ in .object(["frameId": .string("F")]) }
+        let rootPath = root.path(percentEncoded: false)
+        let key = secret.appending(path: "key.txt").resolvingSymlinksInPath().path(percentEncoded: false)
+
+        let inside = await run(AgentToolCatalog.navigate, ["url": .string(root.appending(path: "page.html").absoluteString)])
+        XCTAssertFalse(inside.isError, inside.text)
+        XCTAssertTrue(askedFiles.isEmpty, "A file in the task's folders opens without asking")
+
+        for escape in [rootPath + "/../secret/key.txt", root.appending(path: "link/key.txt").absoluteString,
+                       "file://" + rootPath + "/%2e%2e/secret/key.txt", "file://" + rootPath + "/..\\secret/key.txt"] {
+            let refused = await run(AgentToolCatalog.navigate, ["url": .string(escape)])
+            XCTAssertEqual(refused.text, "The person did not allow opening \(key).", escape)
+        }
+        XCTAssertEqual(askedFiles, [key, key, key, key])
+        XCTAssertEqual(cdp.params(of: "Page.navigate").count, 1, "A refused file is not opened")
+
+        allowsFiles = true
+        let allowed = await run(AgentToolCatalog.navigate, ["url": .string(root.appending(path: "link/key.txt").absoluteString)])
+        XCTAssertFalse(allowed.isError, allowed.text)
+        XCTAssertEqual(cdp.params(of: "Page.navigate").count, 2)
+        // The page shows that file now; reading it asks no more.
+        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object(["id": .string("F"), "url": .string("file://" + key)])])))
+        let console = await run(AgentToolCatalog.consoleMessages)
+        XCTAssertFalse(console.isError, console.text)
+        XCTAssertEqual(askedFiles.count, 5)
+
+        allowsFiles = false
+        let other = secret.resolvingSymlinksInPath().appending(path: "other.txt").path(percentEncoded: false)
+        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object([
+            "id": .string("C"), "parentId": .string("F"), "url": .string(URL(filePath: other).absoluteString)
+        ])])))
+        let read = await run(AgentToolCatalog.snapshot)
+        XCTAssertEqual(read.text, "The page shows \(other), a file outside this task's folders, and the person did not allow opening it.")
+        XCTAssertFalse(cdp.methods.contains("Accessibility.getFullAXTree"), "Nothing of the page is read")
+        XCTAssertEqual(askedFiles.last, other)
+
+        // Once the page moves on, its files go with it.
+        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object(["id": .string("F"), "url": .string("https://example.com/")])])))
+        let moved = await run(AgentToolCatalog.consoleMessages)
+        XCTAssertFalse(moved.isError, moved.text)
+        XCTAssertEqual(askedFiles.count, 6)
+        XCTAssertNil(BrowserAgentWorkspaceFile.realPath(ofFileAddress: "https://example.com/"))
     }
 
     /// The host checks every navigation, the agent's included, and says so with an event.

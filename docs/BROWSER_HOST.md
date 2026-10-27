@@ -1,447 +1,553 @@
-# 창 안 브라우저 (macOS 브라우저 호스트)
+# In-window browser (macOS browser host)
 
-작성: 2026-09-28. Windows 설계는 [WINDOWS_BROWSER_HOST](WINDOWS_BROWSER_HOST.md)다. 이 문서는 macOS 제품 구현의 운영 문서다.
+Written: 2026-09-28. The Windows design is [WINDOWS_BROWSER_HOST](WINDOWS_BROWSER_HOST.md). This document is the
+operating document for the macOS product implementation.
 
-## 1. 한눈에
+## 1. Overview
 
-- 작업(세션)마다 브라우저 탭이 최대 9개다(2026-10-22 전에는 하나). 브라우저 탭 하나하나가 오른쪽 패널의 탭이고(2026-10-23, 그 전에는
-  패널 탭 "브라우저" 하나 안의 탭 줄), 패널이 보이는 브라우저 탭이 앞 탭이다. 에이전트는 CDP로 같은 탭들을 조종하며, `tabId`를 주지 않으면
-  앞 탭을 쓴다(3절 "탭", 6절).
-- Chromium(CEF)은 Yardlet 밖의 **브라우저 호스트 프로세스**에서 돈다. Yardlet 실행 파일에는 CEF가 없다. 호스트는 창 없이
-  그리고(off-screen rendering), 프레임을 IOSurface로 Yardlet에 넘기며, Yardlet 패널이 입력을 호스트로 보낸다.
-- 호스트가 끝나면 Chromium의 모든 프로세스와 메모리가 사라진다(Chromium의 사본 정리 Helper만 수십 ms 더 남아 임시 사본을 지운다,
-  3절 "종료"). 작업의 탭은 그 작업을 보관·삭제할 때까지 남고(Codex 앱이
-  스레드를 보관할 때 브라우저 페이지를 정리하는 것과 같다), 열린 탭이 하나도 없게 된 뒤 60초 지나면 호스트가 끝난다.
-- VoiceOver와 접근성 앱은 패널 안의 페이지를 요소 단위로 읽고 조작한다. 페이지의 접근성 트리는 누가 물을 때만 켠다(5절).
-- CEF 없이 빌드한 Yardlet(`swift build`, `swift run`, `swift test`)에서는 브라우저 패널이 기존 WebKit 미리보기로 대체된다.
+- Each task (session) has up to 9 browser tabs (one before 2026-10-22). Each browser tab is a tab of the side panel on
+  the right (2026-10-23; before that, a tab strip inside the single panel tab "Browser"), and the browser tab the panel
+  shows is the front tab. The agent drives the same tabs through CDP and uses the front tab when it gives no `tabId`
+  (section 3, "Tabs", and section 6).
+- Chromium (CEF) runs in a **browser host process** outside Yardlet. The Yardlet executable has no CEF. The host draws
+  without a window (off-screen rendering) and hands frames to Yardlet as IOSurfaces, and the Yardlet panel sends input
+  to the host.
+- When the host ends, all of Chromium's processes and memory go away (only Chromium's copy-cleanup Helper stays a few
+  tens of ms longer to delete the temporary copy; section 3, "Shutdown"). A task's tabs stay until the task is archived
+  or deleted (as the Codex app cleans up browser pages when it archives a thread), and the host ends 60 seconds after no
+  tab is left open.
+- VoiceOver and accessibility apps read and operate the page in the panel element by element. The page's accessibility
+  tree is turned on only when something asks for it (section 5).
+- In Yardlet built without CEF (`swift build`, `swift run`, `swift test`), the browser panel falls back to the existing
+  WebKit preview.
 
-## 2. 구조
+## 2. Structure
 
 ```text
 Yardlet.app
-├── Contents/MacOS/Yardlet                                패널·전송·수명 관리 (CEF 없음)
-└── Contents/Frameworks/Yardlet Browser Host.app          CEF의 main bundle, LSUIElement
-    ├── Contents/MacOS/Yardlet Browser Host               Swift + CEF C API, NSApplication 하위 클래스
+├── Contents/MacOS/Yardlet                                panel, transport, lifetime management (no CEF)
+└── Contents/Frameworks/Yardlet Browser Host.app          CEF's main bundle, LSUIElement
+    ├── Contents/MacOS/Yardlet Browser Host               Swift + CEF C API, NSApplication subclass
     └── Contents/Frameworks/
-        ├── Chromium Embedded Framework.framework         Versions/A 구조, 로캘 en·ko만
-        └── Yardlet Helper{, (Alerts), (GPU), (Plugin), (Renderer)}.app   LSUIElement, 샌드박스
+        ├── Chromium Embedded Framework.framework         Versions/A layout, locales en and ko only
+        └── Yardlet Helper{, (Alerts), (GPU), (Plugin), (Renderer)}.app   LSUIElement, sandbox
 ```
 
-| 층 | 위치 | 내용 |
+| Layer | Location | Contents |
 |---|---|---|
-| 엔진(플랫폼 공통, Foundation만) | `Sources/NativeHarnessClient/BrowserHost/` | `BrowserHostProtocol`(명령·이벤트), `BrowserHostFraming`, `BrowserHostClient`(수명·탭·보임), `BrowserTab`, `BrowserDevToolsClient`(CDP), `BrowserURLPolicy`, `BrowserAccessibilityTree`(접근성 트리), `BrowserFrameSurfaceCache`(받은 프레임 표면을 언제까지 쥐는지) |
-| macOS 층 | `Sources/NativeHarnessClient/Platform/macOS/BrowserHost/` | `CEFBrowserHostProcess`(프로세스·파이프·IOSurface 수신), `MacBrowserHost`(앱의 클라이언트 하나), `BrowserHostView`(층·입력·IME·끌어 놓기·메뉴), `BrowserSecureInput`(비밀번호 칸의 보안 입력·입력 소스 제한), `BrowserHostPane`(SwiftUI 패널), `BrowserKeyCodes`, `BrowserAccessibilityBridge`·`BrowserAccessibilityElement`(VoiceOver) |
-| Mach 교환 | `Sources/YardletSurfacePort/` | bootstrap check-in/look-up, IOSurface 포트 송수신, audit token 검사(C) |
-| CEF 접근성 가공 | `Sources/YardletCEFAccessibility/` | `CEFAccessibilityReducer`: CEF 접근성 값 → 계약의 작은 모양. Foundation만이라 CEF 없이도 검사한다 |
-| 호스트 | `Sources/YardletBrowserHost/`, `Sources/YardletCEFBridge/`, `Sources/YardletCEFHelper/` | CEF 초기화와 처리기, 프레임 복사, 명령 처리, 접근성 전달(`AccessibilityForwarder`), 렌더러의 비밀번호 칸 알림(`FocusedField.c`). `YARDLET_CEF_DIR`가 있을 때만 컴파일 |
+| Engine (shared across platforms, Foundation only) | `Sources/NativeHarnessClient/BrowserHost/` | `BrowserHostProtocol` (commands and events), `BrowserHostFraming`, `BrowserHostClient` (lifetime, tabs, visibility), `BrowserTab`, `BrowserDevToolsClient` (CDP), `BrowserURLPolicy`, `BrowserAccessibilityTree` (accessibility tree), `BrowserFrameSurfaceCache` (how long received frame surfaces are held) |
+| macOS layer | `Sources/NativeHarnessClient/Platform/macOS/BrowserHost/` | `CEFBrowserHostProcess` (process, pipes, IOSurface receiving), `MacBrowserHost` (the app's single client), `BrowserHostView` (layers, input, IME, drag and drop, menus), `BrowserSecureInput` (secure input and input source limits for password fields), `BrowserHostPane` (SwiftUI panel), `BrowserKeyCodes`, `BrowserAccessibilityBridge` and `BrowserAccessibilityElement` (VoiceOver) |
+| Mach exchange | `Sources/YardletSurfacePort/` | bootstrap check-in/look-up, sending and receiving IOSurface ports, audit token checks (C) |
+| CEF accessibility processing | `Sources/YardletCEFAccessibility/` | `CEFAccessibilityReducer`: CEF accessibility values → the contract's small shape. It uses only Foundation, so it is tested without CEF |
+| Host | `Sources/YardletBrowserHost/`, `Sources/YardletCEFBridge/`, `Sources/YardletCEFHelper/` | CEF initialization and handlers, frame copying, command handling, accessibility forwarding (`AccessibilityForwarder`), the renderer's password field notices (`FocusedField.c`). Compiled only when `YARDLET_CEF_DIR` is set |
 
-전송은 호스트 표준 입력(명령)과 표준 출력(이벤트)의 4바이트 길이 + JSON이다. JSON은 Swift Codable 기본형
-`{"<case>": {<필드>}}`이고 `BrowserHostProtocolTests`가 모양을 고정한다. 호스트는 시작하자마자 표준 출력을 표준 오류로
-돌려 Chromium이 찍는 글자가 이벤트 흐름을 깨지 못하게 한다. Yardlet이 죽어 표준 입력이 끝나면 호스트도 끝난다.
-Yardlet은 이벤트의 틀 나누기와 JSON 해석을 파이프의 직렬 큐에서 하고, 메인 스레드에는 해석한 이벤트만 순서대로 넘긴다.
+Transport is a 4-byte length + JSON over the host's standard input (commands) and standard output (events). The JSON is
+Swift Codable's default form `{"<case>": {<fields>}}`, and `BrowserHostProtocolTests` pins its shape. As soon as it
+starts, the host redirects standard output to standard error so that text Chromium prints cannot break the event stream.
+When Yardlet dies and standard input ends, the host ends too. Yardlet does event framing and JSON decoding on the pipe's
+serial queue and hands only the decoded events, in order, to the main thread.
 
-**프레임 표시는 메인 스레드를 거치지 않는다(2026-10-22).** 같은 파이프 큐가 프레임 이벤트의 IOSurface를 Mach 포트에서
-꺼내(`BrowserSurfaceReceiver`), 그 탭을 보여 주는 패널의 층(`BrowserFrameDisplay`, 패널 뷰의 `contentLayer`)에 명시적
-`CATransaction`으로 바로 넣는다. 어느 패널이 어느 탭을 보여 주는지는 `BrowserFrameRouter`(잠금 하나)가 들고, 패널이 탭을
-붙이고 뗄 때 메인 스레드가 바꾼다(`MacBrowserHost.showFrames(of:in:)`·`stopShowingFrames`). 메인 스레드는 여전히 프레임
-이벤트를 받지만(에이전트 도구의 관찰자 등), 이미 화면에 놓인 것이라 메인이 바쁜 동안 같은 탭의 더 새 프레임이 앞 것을
-대신한다(`BrowserMainThreadEvents`: 탭마다 한 차례에 프레임 하나, 다른 이벤트 순서는 그대로). 팝업 층(`<select>` 목록)과
-아직 화면에 없는 프레임만 메인 스레드가 놓는다. 그 전에는 프레임마다 메인 스레드 차례를 기다려 SwiftUI 창 갱신(흐르는
-작업이 있으면 창마다 초당 28번, 한 번 약 17 ms) 뒤에 줄을 섰다. 입력은 AppKit이 메인 스레드로 주므로 여전히 메인을 거친다.
+**Frame display does not go through the main thread (2026-10-22).** The same pipe queue takes the frame event's
+IOSurface from the Mach port (`BrowserSurfaceReceiver`) and puts it straight into the layer of the panel showing that
+tab (`BrowserFrameDisplay`, the panel view's `contentLayer`) in an explicit `CATransaction`. `BrowserFrameRouter` (one
+lock) holds which panel shows which tab, and the main thread changes it when a panel attaches or detaches a tab
+(`MacBrowserHost.showFrames(of:in:)` and `stopShowingFrames`). The main thread still receives frame events (for the
+agent tools' observers and others), but they are already on screen, so while the main thread is busy a newer frame of
+the same tab replaces the earlier one (`BrowserMainThreadEvents`: one frame per tab per delivery, the order of other
+events unchanged). The main thread places only the popup layer (`<select>` lists) and frames not yet on screen. Before
+this, each frame waited for its turn on the main thread and queued behind SwiftUI window updates (28 times a second per
+window while a task streams, about 17 ms each). Input still goes through the main thread, because AppKit delivers it
+there.
 
-**세션 레일의 미리보기(2026-10-22).** 라우터는 탭마다 패널 하나에 더해 미리보기 하나
-(`setPreview`)를 들고, 같은 파이프 큐에서 같은 프레임을 그 층에도 넣는다(`route`). 미리보기 층은 크기를 바꾸지 않고 `contentsGravity`로
-프레임을 맞춘다(`BrowserFrameDisplay(sizesLayer: false)`, `BrowserFramePreviewView`). 늦게 붙은 미리보기가 바로 보이도록 라우터가 탭의 마지막
-프레임을 들고(`latestFrame`), 호스트의 `hidden`·`closed`에 놓는다 — 숨겨진 탭의 표면을 라우터가 붙잡지 않는다. 미리보기는 엔진에 탭을 보이게
-하지 않는다: 에이전트가 쓰는 동안(`agentVisibleWindow`) 그리는 프레임만 그리고, 그 뒤에는 마지막 프레임이 미리보기 층에 남는다(카드는 턴이
-끝나면 사라진다). 어느 탭을 미리 보일지는 에이전트가 쓴 탭(`BrowserHostClient.onAgentActivity` → `BrowserAgentUse`)이고, 턴 끝·탭 닫힘
-(`onTabClosed`)·호스트 종료에 지운다.
+**Previews in the session rail (2026-10-22).** For each tab the router holds one preview (`setPreview`) besides the one
+panel, and puts the same frame into that layer too, on the same pipe queue (`route`). The preview layer does not change
+size; it fits the frame with `contentsGravity` (`BrowserFrameDisplay(sizesLayer: false)`, `BrowserFramePreviewView`). So
+that a preview attached late shows at once, the router holds the tab's last frame (`latestFrame`) and lets it go on the
+host's `hidden` and `closed`: the router does not hold on to a hidden tab's surface. A preview does not make the tab
+visible to the engine: it draws only the frames drawn while the agent uses the tab (`agentVisibleWindow`), and after
+that the last frame stays in the preview layer (the card goes away when the turn ends). The tab to preview is the one
+the agent used (`BrowserHostClient.onAgentActivity` → `BrowserAgentUse`), cleared at the end of the turn, when the tab
+closes (`onTabClosed`) and when the host ends.
 
-호스트는 CEF 공유 텍스처(`on_accelerated_paint`, IOSurface)를 받는다(`.ready`의 `acceleratedPaint: true`). 통계 줄의
-`copies`는 CPU 복사가 아니라 그 텍스처를 호스트의 IOSurface 고리로 옮기는 Metal blit(GPU)이다. CEF 계약상 그 텍스처는 풀에서
-오고 콜백이 끝나면 풀로 돌아가므로("cannot be cached and cannot be accessed outside of this callback") 넘기기 전에 복사해야 한다.
+The host receives CEF shared textures (`on_accelerated_paint`, IOSurface) (`acceleratedPaint: true` in `.ready`).
+`copies` in the stats line is not a CPU copy but a Metal blit (GPU) that moves that texture into the host's IOSurface
+ring. Under CEF's contract the texture comes from a pool and goes back to it when the callback ends ("cannot be cached
+and cannot be accessed outside of this callback"), so it has to be copied before it is handed on.
 
-## 3. 결정
+## 3. Decisions
 
-| 항목 | 결정 |
+| Item | Decision |
 |---|---|
-| 호스트 수명 | 세션 탭은 패널이 닫히거나 에이전트가 멈춰도 닫지 않고, 작업을 보관·삭제해 그 작업의 탭을 닫을 때까지 둔다(Codex 앱은 `thread/archived`에서 브라우저 대화를 정리하고, 보이지 않는 페이지는 백그라운드 절전만 한다). 보이지 않는 탭은 엔진에 숨김으로 알려 그리기를 멈춘다. 마지막 탭이 닫히면 60초(`idleGrace`) 뒤 호스트를 끝낸다. 패널을 다시 열면 같은 탭(페이지 상태 그대로)이 보인다. 호스트가 죽은 뒤면 작업의 탭들이 마지막으로 보인 주소(`rememberedTabs(forSession:)`, 순서와 앞 탭 포함)로 함께 다시 열리고(`restoreTabs`), 에이전트 도구도 같은 탭들을 다시 연다. 그것도 없으면 작업에 저장된 주소(탭이 여럿이면 그 목록, `BrowserPreviewPreferences.tabs`·`selectedTab` — 앱을 다시 켠 뒤)로 연다. 작업의 탭들을 닫으면(`closeTabs(forSession:)`) 주소를 잊는다. 2026-10-22 전에는 패널 없이 5분(`agentKeepAlive`) + 60초 뒤 탭을 닫아, 에이전트가 연 페이지가 사용자가 패널을 열기 전에 빈 탭이 됐다 |
-| 종료 | 2026-10-24. 입력 끝(Yardlet이 끝남)·`shutdown` 명령·SIGTERM 모두 CEF가 권하는 순서로 끝난다: 열린 브라우저를 모두 `close_browser(force)`로 닫고, 마지막 `on_before_close` 뒤(3초 안에 오지 않으면 그때) 메시지 루프를 끝내고, `CefShutdown` 뒤 `exit(0)`(`BrowserHost.shutdown`). CEF의 신호 처리기는 끈 채(`disable_signal_handlers`) 호스트가 SIGTERM을 잡아 이 순서를 밟는다. 처리기는 SIG_IGN이 아닌 빈 함수다: 무시한 신호는 Chromium 하위 프로세스에 물려지는데, Chromium은 하위 프로세스를 SIGTERM으로 끝낸다. SIGPIPE는 무시해 Yardlet이 끝난 뒤의 이벤트 쓰기가 EPIPE로 실패하게 한다. 10초(`shutdownDeadline`) 안에 끝나지 않으면 호스트는 자기 프로세스 그룹을 SIGKILL로 끝낸다(`Process`가 띄운 호스트는 자기 그룹의 우두머리이고 Chromium 하위 프로세스는 같은 그룹이다). Yardlet은 앱을 끝낼 때(`terminateHost`) `shutdown`을 보내고 호스트가 끝나기를 최대 5초(`shutdownTimeout`) 기다리며, 넘으면 SIGKILL로 끝낸다(`terminate()`). 유예 시간 뒤의 종료(`shutdownHost`)도 5초 뒤에는 같다. `CefShutdown`은 Chromium의 code-sign clone 정리 Helper(`--type=code-sign-clone-cleanup`)를 새 프로세스 그룹으로 띄우고, 그 Helper는 호스트가 끝나기를 기다렸다가(`getppid() == 1`) 호스트가 시작할 때 만든 번들 사본(8절)을 지운다. CEF는 이 Helper에 `--framework-dir-path`·`--main-bundle-path`를 붙이지 않으므로, Helper 실행 파일(`YardletCEFHelper/main.c`)이 빠진 스위치를 호스트 번들 경로로 채운다. 채우지 않으면 CEF가 실행 파일 경로의 가장 바깥 `.app`(Yardlet.app)을 주 번들로 보아 프레임워크를 찾지 못하고 CHECK(SIGTRAP)로 끝나, 질서 있게 끝날 때마다 충돌 보고서가 남고 사본이 쌓였다. 2026-10-24 전에는 앱 종료와 QA 끝이 `shutdown` 직후 SIGTERM을 보내 호스트가 `CefShutdown` 없이 끝났고, Yardlet이 갑자기 끝나면 호스트가 SIGPIPE로 죽었다. 호스트가 SIGKILL로 끝나면 하위 프로세스는 IPC가 끊겨 스스로 끝나고(QA에서 남은 것 0), 그 호스트의 사본만 남는다. 호스트가 끝나며 탭마다 보내는 `closed`는 페이지가 닫은 것이 아니다: Yardlet이 `shutdown`을 보낸 뒤(`isHostEnding`) 오는 `closed`는 받지 않고, 탭은 `terminated`에서 호스트와 함께 잃은 탭으로 남는다(`rememberedTabs`, 패널 탭과 저장도 그대로). 2026-10-24 위 변경부터 2026-10-25 수정 전까지는 이 `closed`를 페이지가 닫은 것으로 받아, 앱을 끝낼 때 엔진에 열려 있던 탭이 패널과 작업 저장에서 빠졌다(다시 켜면 그 작업의 브라우저 탭이 없고, 그 탭만 있던 패널은 닫혀 있었다). 전에는 SIGTERM이 호스트를 바로 끝내 `closed`가 거의 오지 않았다 |
-| 전체 페이지 스크린숏 | 2026-10-24. Chromium은 `Page.captureScreenshot`의 `captureBeyondViewport`를 뷰를 캡처 크기로 잠깐 늘려(`PageHandler::CaptureScreenshot`이 뷰의 `SetSize`를 부름) 처리하는데, CEF의 창 없는 뷰는 `SetSize`·`SetBounds`가 빈 함수라(`render_widget_host_view_osr.cc`) 표면이 패널 크기에 머물고, 이미지에는 첫 화면이 그 높이마다 되풀이됐다(QA로 재현, 800 px마다). 그래서 `browser_screenshot`의 `fullPage`는 캡처하는 동안 그 탭을 캡처 크기로 그린다(`BrowserAgentTools.drawn`): `Emulation.setDeviceMetricsOverride`로 페이지의 레이아웃 뷰포트를 지금 크기(뷰의 정수 포인트)에 고정하고, 탭을 캡처 크기로 `resize`하고, 찍은 뒤 탭의 크기를 먼저 되돌리고 고정을 푼다. 명령은 같은 파이프로 차례대로 가므로 기다릴 것은 없다. 그동안 100vh와 `innerHeight`는 그대로이고, 페이지의 `resize` 이벤트는 Chromium의 캡처 자체가 내는 한 번뿐이다. 표면은 GPU 텍스처라 한 변이 장치 픽셀 16,384를 넘으면 GPU 프로세스가 `Invalid size=2560x20352, max_texture…`로 죽기를 거듭하고 호스트가 `GPU process isn't usable. Goodbye.`로 끝나 모든 탭을 잃었다(2배에서 10,176 CSS px 페이지로 확인). 그래서 그 안에서 잘라 위쪽을 찍는다(2배에서 8,190 CSS px). 패널이 그 탭을 보이고 있으면 그 사이의 큰 프레임이 패널에 오므로 패널 뷰는 자기 경계로 자른다(`clipsToBounds`). 요소(`ref`) 스크린숏은 지금처럼 뷰 안에서만 찍는다 |
-| 화면 크기 흉내 | 2026-10-26. 사람(패널 ⋯ 메뉴의 뷰포트)과 에이전트(`browser_resize`)가 탭의 페이지를 375×812 휴대폰, 768×1024 태블릿, 1280 × 800, 1024 × 768이나 사용자 지정 크기로 본다(Claude 앱 Browser 창과 같은 프리셋·규칙). `BrowserTab.emulate`가 `Emulation.setDeviceMetricsOverride`(배율 1, 폭 768 미만은 mobile·deviceScaleFactor 2), `setTouchEmulationEnabled`, `setUserAgentOverride`를 보내고, 탭 자체를 그 크기로 그린다: 패널이 보여 주면 패널 뷰가 흉내 크기를 `resize`로 보내고(`BrowserHostView.emulatedSize`), 패널이 없으면 탭이 보내며 흉내를 풀면 전의 크기로 돌아간다. 패널은 그 프레임을 담은 층(`pageLayer`)을 두 변이 들어가게 줄여 가로 가운데·위에 놓는다(`BrowserViewportEmulation.pageFrame`), 바깥은 `underPageBackgroundColor`와 1포인트 구분선. Chromium의 `scale`로 줄이지 않는 것은, 그 배율이 CDP `Input.dispatchMouseEvent` 좌표에 반영되지 않아 에이전트의 클릭이 어긋나기 때문이다(headless Chrome 155에서 0.5배일 때 페이지가 받은 좌표가 두 배). DevTools 세션이 흉내를 지녀 새 로드에도 남는다. 상태는 탭에만 있어 호스트가 다시 뜨면 반응형이다. 에이전트가 정한 것은 그 턴이 끝날 때(`endAgentEmulation`) 지운다 |
-| 다른 사이트 프레임 | 2026-10-26. 사이트 격리로 다른 렌더러에 있는 iframe은 탭의 DevTools 세션에 붙은 자기 세션으로만 읽힌다. 에이전트 도구가 처음 탭을 쓸 때 `BrowserDevToolsClient.attachFrames()`가 `Target.setAutoAttach`(flatten, `filter` iframe만, `waitForDebuggerOnStart` false)를 보내고, 붙은 프레임마다 같은 요청을 보내 중첩도 붙인다. `frameSessions`는 `Target.attachedToTarget`·`detachedFromTarget`을 따라가고(떨어진 프레임의 하위도 함께 뺀다), 프레임 세션의 이벤트는 탭의 이벤트 기록과 관찰자에 넣지 않으며, 그 호출의 시간 초과는 탭의 응답 없음으로 세지 않는다 |
-| 그리기(전력) | 세션 탭은 **화면에 보이는** 패널이 보여 줄 때와 에이전트가 쓴 뒤(또는 연 뒤) 60초(`agentVisibleWindow`) 동안만 엔진에 "보임"이다. 그 밖에는 `was_hidden`으로 숨겨 프레임을 멈추고 페이지 타이머를 늦춘다(QA: 애니메이션 페이지 63 fps → 2초 동안 0). 패널이 붙어 있어도 창이 최소화·다른 창에 완전히 가림·다른 Space·앱 숨김(⌘H)이면(`NSWindow.occlusionState`에 `.visible` 없음, `BrowserHostView.isOccluded`) 패널은 "가려짐"으로 보고하고(`setPanelOccluded`) 탭은 숨겨진다. 탭은 그대로 붙어 있고(수명은 패널 수가 정함), 다시 보이면 `invalidate`로 새 프레임을 받는다(2026-10-22 QA: 최소화한 창에서 60 fps·CPU 합 약 40% → 0 fps·약 2%). 탭을 연 뒤 60초 동안 보이게 두는 규칙은 패널 없이 연 탭(에이전트의 탭)에만 쓴다. 패널이 한 번이라도 보여 준 탭은 에이전트가 쓴 뒤에만 보이므로, 패널이 연 탭은 창을 가리자마자 숨는다(이 규칙이 열린 지 60초 안의 탭을 가려도 그리게 두던 것을 2026-10-22 고침). 패널을 붙이거나 에이전트가 다시 쓰면 다음 명령보다 먼저 보이게 한다 |
-| 프레임 속도 | 패널은 자기 창이 놓인 디스플레이의 주사율(`NSScreen.maximumFramesPerSecond`)을 뷰포트의 `framesPerSecond`로 보내고(크기·배율·디스플레이가 바뀔 때마다), 호스트는 `set_windowless_frame_rate`로 맞춘다 — 내장 ProMotion 120, 외장 LG 60. 패널 없는 탭(`offscreenDefault`)은 기본 60. requestAnimationFrame 애니메이션은 120 Hz 화면에서 120 fps가 된다(QA). 휠·키 스크롤은 입력 속도와 무관하게 60 fps에 머무는데, Chromium 쪽 스크롤 프레임 제한으로 보이며 원인은 아직 찾지 못했다(10절) |
-| 프레임 표면 수명 | 호스트는 탭의 층(view·popup)마다 같은 크기의 IOSurface 최대 4개를 돌려 쓴다(`SurfaceRing`). 크기가 바뀌면 새 링을 만들고, 탭이 숨겨지면(`visibility` isHidden) 링을 버린 뒤 `hidden` 이벤트를 보내고, 닫히면 버린다. 포트로 보냈는지는 링 안의 표면마다 기억한다(이전의 전역 ID 집합은 ID가 재사용될 때 포트를 다시 보내지 않아 Yardlet이 200 ms씩 기다리며 프레임을 잃었다 — 2026-10-22 QA에서 크기 변경 40회 중 26회가 새 크기 프레임을 600 ms 안에 받지 못함 → 0회). Yardlet은 이벤트 파이프 큐에서 이벤트 순서대로(`BrowserSurfaceReceiver` 안의 `BrowserFrameSurfaceCache`) 같은 탭·층에서 크기가 다른 표면과 링 용량(4)을 넘는 오래된 표면을 프레임이 올 때 버리고, `hidden`·`closed`·팝업 닫힘 이벤트에 그 탭(층)의 표면을 모두 버린다. 그래서 숨겨진 탭은 표면 메모리가 0이다(QA: 크기 변경 40회 뒤 호스트 footprint +81 MiB → +9 MiB, 숨긴 뒤 220 → 75 MiB). 프레임이 이름 붙인 표면의 포트가 없으면 기다리지 않고 그 프레임을 버린다. 호스트는 포트를 보낸 뒤에 프레임 이벤트를 쓰므로, 이벤트를 읽을 때 포트가 없으면 오지 않는 것이다(전에는 200 ms씩 기다림) |
-| 크기를 바꾸는 중의 프레임 | 2026-10-27. 패널 폭을 끄는 동안 페이지가 새 폭을 따라오지 않고 줄었다 늘었다 했다. Chromium 캡처(`FrameSinkVideoCapturer`)는 프레임 크기를 페이지가 새 크기로 그린 뒤에야 바꾸는데(CEF `OnRenderFrameMetadataChangedAfterActivation` → `SizeChanged`), 캡처 원본인 뷰의 루트는 `was_resized` 즉시 새 크기가 된다. 그 사이의 프레임은 새 크기의 원본을 옛 크기 안에 비율을 지켜 넣고 남은 곳을 검은 띠로 채운다(`content_rect`가 프레임보다 작음, 좁힐 때 좌우 8 px, 넓힐 때 위아래 17 px 안팎). 끌기 QA에서 크기 변경 202번에 이런 프레임이 136개 왔다. 브리지(`is_resize_letterbox`)는 크기나 배율이 바뀐 뒤 1초 안의 이런 화면 프레임을 보내지 않고, 패널은 앞 프레임을 그대로 둔다. 1초가 지나도 남는 차이(에이전트의 전체 페이지 스크린숏처럼 페이지를 뷰와 다른 크기로 붙잡을 때)는 전처럼 보인다. 소프트웨어 그리기(`--paint software`)에는 CEF가 `content_rect`를 주지 않아 거르지 않는다 |
-| 탭 | 작업마다 탭이 줄 순서대로 최대 9개(`maxTabsPerSession`)이고 하나가 앞 탭이다(Claude 앱 3.1623.3 Browser 창: 탭이 8개를 넘으면 "Tab limit reached", ⌘1…⌘9). 2026-10-23부터 탭 하나하나가 오른쪽 패널의 탭(`browser:<키>`)이다(Codex 앱 26.1016). 탭마다 패널의 키(`BrowserTab.key`)가 있고, 탭이 다른 작업으로 옮겨 가거나 호스트가 죽거나 Yardlet을 다시 켜도 같은 키로 다시 열린다. 패널과 엔진은 이 키로 같은 탭을 가리킨다(`TaskWorkspaceState.syncBrowserTabs`): 엔진이 연 탭(에이전트·페이지)은 패널 탭이 되어 엔진에서 바로 앞인 탭 뒤에 놓이고, 호스트가 도는 동안 엔진이 닫은 탭은 패널에서도 빠진다(호스트가 끝나며 닫은 탭은 빠지지 않는다, 위 "종료"). 패널이 보이는 브라우저 탭이 앞 탭이고(`frontShownBrowserTab`), 엔진이 앞 탭을 바꾸면(에이전트의 선택, 앞에 여는 새 창) 브라우저 탭을 보이던 패널이 그 탭을 보인다. 새 패널 탭(런처·+ 메뉴의 "브라우저", 페이지의 ⌘T, 탭 메뉴의 "오른쪽에 새 탭"·"복제", 대화의 링크)은 그 칸이 보일 때 엔진 탭을 연다(`openBrowserEngineTab`, 주소가 없으면 빈 탭에 주소 칸 초점). 패널 탭에는 페이지 제목·아이콘(아래 "아이콘")·로딩 스피너가 있고, 브라우저 칸 안의 탭 줄은 없다. 패널에서 탭을 닫으면 그 페이지가 닫히고(엔진 탭 닫기) 패널은 다른 패널 탭처럼 그 전에 쓴 탭으로 가며, 패널 탭이 다 닫힐 때만 패널이 닫힌다. 엔진에서 앞 탭을 닫으면 그 자리로 온 탭, 없으면 앞의 탭이 앞으로 온다(Chrome). 닫은 탭 주소는 작업마다 10개까지 ⌘⇧T로 새 패널 탭에 다시 연다. 패널이 보이는 탭을 바꾸면 같은 칸의 프레임 경로(`BrowserFrameRouter`)·접근성·이벤트 처리기가 새 탭으로 옮겨 가고(칸은 그대로라 키보드 초점이 남음), 앞에 있던 탭은 엔진에 숨김으로 알린다(에이전트가 60초 안에 썼으면 그동안 보임 — Claude 앱 "Background tabs keep running while you drive them"). 저장: 탭마다 키·주소·제목(`BrowserPreviewPreferences.pages`). 작업 상태를 처음 읽을 때 엔진에 열린 탭도 잃은 탭도 없으면 저장된 탭을 `rememberTabs`로 넘겨, 패널이 그중 하나를 보이거나 에이전트가 처음 쓸 때 함께 다시 연다(`restoreTabs`). 2026-10-22~23에는 패널 탭 "브라우저" 하나 안에 Claude 앱식 탭 줄(탭 둘 이상일 때, +와 ⌘T)을 두었고 마지막 탭을 닫으면 패널이 닫혔다. 페이지가 요청한 새 창은 아래 "새 창" |
-| 탭 수 | 2026-10-27. 브라우저 호스트 하나가 모든 작업의 탭과 그 페이지의 팝업을 브라우저로 담는다. 브리지의 브라우저 표(`kMaximumBrowsers`)는 256칸이고 요청 컨텍스트 표는 그보다 32칸 많다. 그 전에는 각각 16칸·32칸이었다. 16칸일 때는 여러 작업의 탭이 16개를 채우면 어느 작업의 새 탭도 브라우저가 만들어지지 않았다(`yardlet_cef_create_browser`가 0). 호스트는 그 탭에 `failed`를 보냈지만, 앱은 그 탭을 열린 빈 탭으로 두었다. 그래서 에이전트의 호출은 모두 "The browser tab is gone."으로 끝났고, 탭 목록에는 about:blank가 "responding"으로 나왔다. 패널은 그 실패가 올 때 그 탭을 보이고 있던 경우에만 알렸다(설치본 2026-10-27 03:05부터, 호스트 17207: 탭 1~10·12~16과 렌더러가 죽은 팝업 하나로 16개). 패널이 닫힌 작업에서만 보인 까닭은, 그 작업들이 01:13 호스트 재시작 때 탭을 잃고 칸이 다 찬 뒤에야 탭을 새로 만들었기 때문이다. 이미 열린 탭은 그동안에도 정상이었다. 이제 칸이 다 차면 `create_browser`가 -1을 돌려주고, 호스트는 `failed(message:tab:limit:)`로 그 탭에만 알리며 host.log에 `tab not opened tab=… reason=limit`을 남긴다. Chromium이 브라우저를 만들지 못하면 `reason=chromium`이고, 프로필이 20초 안에 읽히지 않으면 그 탭을 포기하고(`yardlet_cef_cancel_waiting_browser`) `reason=profile`이다. 그 탭을 기다리던 DevTools 호출에는 그 이유로 바로 답한다. 앱은 그 탭을 `BrowserTab.openFailure`로 기억한다. 그 탭의 DevTools 호출은 호스트로 가지 않고 바로 실패하고, 에이전트 도구는 그 이유 하나("This tab could not open: …")로 바로 실패하며, 탭 목록은 "Could not open: tab …"을 붙인다. `browser_navigate`는 그 탭을 같은 패널 탭으로 새로 연다(응답 없는 탭과 같은 `replace`). 패널은 그 탭을 보이면(실패한 뒤에 보여도) "페이지를 열 수 없음" 카드에 "브라우저에 탭이 너무 많이 열려 있습니다. 이 작업이나 다른 작업의 탭을 닫고 다시 시도하세요."(다른 이유면 "이 탭을 열지 못했습니다: ‹이유›")를 보인다. "다시 시도", 새로 고침, 주소 입력은 그 탭을 그 자리에 다시 연다(Chrome의 오류 페이지와 새로 고침처럼 그 탭에만). 확인은 11절 QA `many-tabs` |
-| 새 창 | 2026-10-25. 페이지의 새 창 요청(`window.open`, `target=_blank`, 수정 키 클릭)에 사용자 제스처가 있으면 호스트는 `on_before_popup`에서 CEF가 창 없는 브라우저를 만들게 둔다. 그 브라우저는 Chrome의 팝업처럼 `window.opener`와 여는 탭의 요청 컨텍스트(작업 프로필)를 가진다. 호스트는 빈 슬롯을 예약해 그 슬롯의 클라이언트와 여는 탭의 크기·배율·프레임 속도를 주고, CEF가 브라우저를 만들면(`on_after_created`; 렌더 처리기의 질문이 먼저 오면 `get_opener_identifier`로 예약을 찾음) 탭 번호(2^30부터, Yardlet이 여는 탭은 1부터)를 붙여 `popupOpened(tab:opener:url:background:)`를 보낸다. Yardlet은 그 탭을 여는 탭의 작업 탭으로 받는다(`adoptPopup`: 줄 끝에, 배경 탭 클릭이면 뒤에, 아니면 앞에). 작업 밖의 탭이나 탭이 9개인 작업이면 그 브라우저를 닫고 여는 탭이 그 주소로 간다. 사용자 제스처가 없거나 브라우저 칸이 다 찼으면(아래 "탭 수") 전처럼 `newWindow`로 알리고, Yardlet은 제스처 없는 요청을 열지 않는다(Chrome 팝업 차단과 같음). 다만 2026-10-25 저녁 전에는 제스처 없는 요청이 여기까지 오지 않았다: CEF의 `CanCreateWindow`가 Chrome 층(`ChromeContentBrowserClient::CanCreateWindow`)을 먼저 부르고, Chrome의 팝업 차단기(`blocked_content::MaybeBlockPopup`, `ShouldBlockPopup`의 `kNoGesture`)가 막은 요청을 Chrome 주소 칸용 `PopupBlockerTabHelper`에 넣어, 창 없는 탭에서는 아무도 그 목록을 보지 못했다(QA로 재현: 목록 0개). 그래서 브라우저 프로세스가 Chrome 자신의 스위치 `--disable-popup-blocking`으로 뜨고, 같은 규칙(사용자 제스처 없음)은 호스트의 `on_before_popup`이 지킨다. 프로필에는 아무것도 남지 않는다. 그 뒤로 그 주소는 Chrome 주소 칸의 "팝업 차단됨"처럼 패널 주소 칸 오른쪽 표시(빗금 친 창, 도움말 "이 페이지에서 팝업이 차단되었습니다.")의 목록에 남고(`BrowserTab.blockedPopups`, Chrome처럼 처음 25개, `kMaximumNumberOfPopups`), 사람이 고르면 작업의 새 탭으로 앞에 열린다(`BrowserHostClient.openBlockedPopup`). 엔진이 만든 창이 아니므로 그 탭에는 `window.opener`가 없다(Chrome은 막은 요청을 쥐고 있다가 opener와 함께 연다). 목록은 그 페이지가 새 문서로 바뀌면 지운다(`newDocument`: CEF `on_load_start`의 본 프레임, 같은 문서 안 이동에는 오지 않는다; Chrome `PopupBlockerTabHelper::DidFinishNavigation`). 에이전트 도구는 결과 끝에 막힌 팝업 주소를 알린다(그 주소는 `browser_tab_new`로 연다). Chrome의 "이 사이트의 팝업 항상 허용"은 넣지 않았다. 만들기가 실패하면(`on_before_popup_aborted`) 예약을 푼다. 팝업이 `window.close()`하면 `closed`로 그 탭이 빠지고, 패널은 그 전에 쓴 탭으로 간다. 그래서 카드사의 3-D Secure 창, PayPal, 로그인 팝업이 `window.opener.postMessage`로 연 페이지에 답할 수 있다(QA `checkout`). 창 크기 요청(`width`·`height`)은 쓰지 않고 탭으로 연다. 2026-10-22~25에는 호스트가 새 창을 모두 취소하고 Yardlet이 그 주소를 `window.opener` 없는 새 탭으로 열었고, 그 전에는 여는 탭에서 열었다. 두 앱(번들 바이트): Claude 앱 3.1623.3은 크기를 준 팝업만 Electron이 만든 창을 탭으로 받아 opener를 지키고 `target=_blank`는 여는 탭에서 열며, Codex 앱 26.1016은 `target=_blank`만 그렇게 받고 크기를 준 팝업은 opener 없는 새 탭으로 연다 |
-| 탭 옮기기 | 새 작업 화면의 탭은 초안의 작업 공간 ID(`TaskWorkspaceStore.draftID`)가 가지고, 그 화면에서 보낸 작업이 만들어지면 탭 하나씩 그 작업으로 옮긴다(`move(_:toSession:select:)`, `moveTabs(fromSession:toSession:)`, 2026-10-23). 클라이언트의 소유(`BrowserTab.session`, 줄 순서, 앞 탭)만 바뀌고 호스트에는 아무것도 보내지 않으므로 페이지와 그 상태가 그대로다. 탭의 키도 그대로라 작업이 넘겨받은 패널 탭이 같은 탭이다. 옮긴 탭은 닫은 탭 목록에 들어가지 않고, 같은 줄 순서로 뒤에 붙으며 초안의 앞 탭이 작업의 앞 탭이 된다. 탭이 9개인 작업에는 옮기지 않는다. 호스트가 죽어 초안이 잃은 탭 주소(`rememberedTabs`)도 작업으로 넘긴다. QA: `--ui-fixture-browser-check-only=draft-handoff` |
-| 아이콘 | 2026-10-23. CEF가 페이지의 아이콘 주소를 알리면(`on_favicon_urlchange`) 호스트가 첫 주소를 `download_image`(파비콘이라 쿠키를 보내지도 받지도 않음, 16 DIP, 2배까지)로 브라우저 자신의 네트워크·캐시로 받아 `get_as_png(2.0)`의 PNG를 `favicon(tab:url:png:)` 이벤트로 보낸다(받지 못하면 빈 데이터). 내려받기마다 자기 탭을 아는 콜백을 따로 할당하고 참조 수가 0이 되면 해제한다. Yardlet은 `BrowserTab.favicon`에 두고 탭 관찰자를 부르며, 다른 호스트(사이트)로 주소가 바뀌면 지운다. 저장하지 않는다 |
-| 페이지 오류 | 2026-10-23. 패널 머리의 "사용할 수 없음"과 오류 카드는 보이는 탭의, 실패한 그 이동에만 붙는다. 본 프레임 `loadError`(-3 `ERR_ABORTED` 제외)는 그 주소가 커밋될 때 카드가 된다: 그 주소로의 `address`, 또는 Chromium이 오류 페이지에 보내는 상태 0의 `loadEnd`(CEF 154는 오류 페이지에 주소 변경을 보내지 않는다, QA `load-errors`). 커밋 없이 로딩이 끝나면(앞 페이지가 그대로) 카드 대신 "‹주소› 페이지를 열지 못했습니다" 알림이다. 로딩이 끝난 뒤에 온 오류는 이미 대체된 이동의 것이라 버린다. 카드는 다른 주소의 커밋(`address`, history.pushState 포함)이나 HTTP 상태가 있는 `loadEnd`(새로 고침이 성공함)에 지워지고, 오류 페이지 자신의 뒤이은 로딩(`loading` → -3 → 끝)에는 남는다(2026-10-23 전에는 이 로딩이 실제 실패를 지웠다). 다른 탭을 보이면 지운다. 호스트의 `failed`에는 탭이 붙어(`failed(message:tab:)`, 브라우저를 만들지 못한 탭) 그 탭에만 가고, 탭 없는 `failed`만 모든 탭에 간다. CDP 메시지를 받지 못한 탭(사라진 탭으로 간 에이전트의 호출)은 `failed` 대신 그 호출 `id`의 DevTools 오류 답(-32001)을 받아 호출이 바로 실패한다. 2026-10-23 전에는 이것이 탭 없는 `failed`로 모든 탭에 가서 멀쩡한 페이지에 "사용할 수 없음"과 카드가 떴다(QA로 재현). 진단: 호스트는 본 프레임 load error마다 host.log에 `load error tab=… code=… host=…`(호스트 이름만, 경로·쿼리 없음)와 `devtools message refused tab=…` 한 줄을 남긴다 |
-| 응답 없음 | 2026-10-23. 탭의 페이지가 응답하지 않는다는 것은 두 사실 가운데 하나다: Chromium의 hang monitor가 렌더러가 입력을 15초 처리하지 못했다고 보는 것, 또는 렌더러가 답하는 DevTools 호출(이동 계열 `Page.navigate`·`reload`·`navigateToHistoryEntry`와 `Target.`·`Browser.` 밖의 모든 호출)이 시간 안에 답이 없던 것(`BrowserTab.unresponsive`: `.hangMonitor`·`.unanswered(method:)`). Chromium은 DevTools 세션이 붙은 탭(Yardlet의 탭은 에이전트·접근성 때문에 붙음)에는 `OnRenderProcessUnresponsive`를 부르지 않으므로(`WebContentsImpl::RendererUnresponsive`의 `IsDebuggerAttached`, QA에서 "responsive"만 오던 것으로 확인) 호스트가 열린 탭마다 1초 간격으로 `is_render_process_unresponsive`를 읽어 바뀔 때 `responsiveness(tab:isResponsive:)`를 보낸다. 콜백이 오는 탭은 그 콜백을 쥐어 둔다(`unresponsive(tab:action:)` 명령의 wait·terminate). 패널은 Chrome의 "페이지 응답 없음" 줄에 "기다리기"와 "새로고침"을 두고, 머리 상태는 "응답 없음" > "비정상 종료"(아래 "렌더러 종료") > "사용할 수 없음" > "로딩 중" > "준비됨" 한 줄이다(오류 카드는 응답 없음 동안 숨김). 기다리기는 15초 동안 줄을 숨기고 그때도 응답하지 않으면 다시 보인다(Chrome의 Wait). 새로고침과 응답 없는 탭으로 가는 에이전트의 `browser_navigate`는 탭을 같은 키·자리·앞 상태로 새로 연다(`BrowserHostClient.replace`: 쥔 콜백이 있으면 렌더러를 끝낸 뒤 닫고 연다). QA(`unresponsive`): 끝나지 않는 스크립트의 렌더러가 CPU 98–100%에서, 교체 뒤 사라짐. 응답하면(`responsiveness` true), 렌더러가 끝나면(`pageCrashed`), 렌더러가 답하는 호출에 답이 오면 풀린다. 호스트 로그에 `renderer unresponsive|responsive tab=…` |
-| 렌더러 종료 | 2026-10-24. 렌더러가 끝나면(CEF `on_render_process_terminated`) 호스트는 host.log에 `renderer ended tab=… status=… code=…`
-(`status`는 crashed·oom·killed·abnormal 등, `code`는 종료 코드로 충돌이면 신호 번호) 한 줄을 남기고 `pageCrashed(tab:reason:status:code:)`를
-보낸다. `reason`은 호스트가 붙인 Chrome 오류 화면의 오류 코드다(SIGTRAP·SIGSEGV 등, Out of Memory; 신호 번호는 플랫폼마다 달라 엔진이 아니라
-호스트가 이름을 붙인다). 탭은 `BrowserTab.crash`(`BrowserTabCrash`)를 다음 로딩이 시작될 때까지 갖는다. 패널은 머리 상태 "비정상 종료"와 Codex 앱 문구의 카드("This page crashed", "‹호스트› ended unexpectedly. Error code:
-‹코드›", Reload)를, 에이전트 도구는 결과 끝의 사실("This tab's page crashed: its renderer ended (error code ‹코드›). …")과 `browser_tab_list`의
-"Crashed: tab … (‹코드›)" 한 줄을 받는다. 설치본의 충돌 다섯 번은 모두 입력 시각 때문이었다(4절 "입력 시각") |
-| 패스키(WebAuthn) | Chromium 자신의 WebAuthn(창 없는 탭도 Chrome 부트스트랩 위 Alloy 방식)을 쓴다. 창 없는 탭에는 부모 창이 없어 Chrome의 패스키 대화상자(Views `AuthenticatorRequestDialogView`)가 호스트의 별도 창(`NativeWidgetMacNSWindow`)으로 뜬다. 어느 탭의 창인지, 어디에 보이는지, 누가 닫는지는 아래 "Chromium의 창과 탭"이 정한다(2026-10-27). 지금 뜨는 것: 휴대폰·태블릿 패스키(하이브리드: QR 코드 + 블루투스) 시트와 USB 보안 키 시트(QA에서 대화상자의 글로 확인, 실제 휴대폰·키로 끝까지 등록한 확인은 없음). 그 사이트의 패스키가 어디에도 없을 때 어느 시트가 먼저 뜨는지는 Chromium 154의 `AuthenticatorRequestDialogController`가 정하고, Chrome과 규칙이 같다(2026-10-25, 원본 대조와 QA `--ui-fixture-browser-check-only=passkey`). (1) 조건부 요청은 창이 없고, 사람이 로그인 칸을 눌러도 없다(QA). (2) 즉시 요청(빈 `allowCredentials`, "패스키로 로그인")은 고를 것이 휴대폰 하나면 목록 없이 QR 시트로 간다(`IndexOfGetAssertionPriorityMechanism`의 "single mechanism"). Touch ID 프로필 인증기는 그 사이트의 자격 증명이 없다고 알리면 목록에서 빠지고(`PopulateMechanisms`), 블루투스가 켜져 있으면 USB 보안 키는 QR 시트 안의 단추가 된다. Chrome은 iCloud 패스키를 읽을 권한이 없을 때만 iCloud 키체인이 하나 더 들어가 목록("iCloud 키체인", "다른 휴대전화, 태블릿 또는 보안 키")을 먼저 보인다. 이 호스트에는 iCloud 키체인이 없으니 그 차이는 남는다. 바꾸려면 그 판단 코드를 바꿔야 하고(설정·기능 플래그·CEF API에 없음) 하지 않았다. (3) 만들기(`authenticatorAttachment` 없음)는 iCloud Drive가 켜진 Mac이면 Chromium이 iCloud 키체인을 첫 순위로 둔다(`ShouldCreateInICloudKeychain`, `WebAuthenticationICloudKeychainForInactiveWithDrive` 기본 켜짐, `IndexOfMakeCredentialPriorityMechanism`). 이 호스트에는 iCloud 키체인이 없어 다음 순위인 휴대폰 QR로 바로 갔고, Touch ID는 "다른 방법으로 저장" 뒤에 있었다. 2026-10-25부터 호스트는 요청 컨텍스트가 준비될 때마다(기본 프로필은 `on_context_initialized`, 작업 프로필은 `on_request_context_initialized`) Chrome 자신의 설정 `webauthn.create_in_icloud_keychain`을 끈다(`set_windowless_preferences`, CEF `set_preference`). 그러면 첫 순위가 Touch ID(`Transport(kInternal)`)라 "Chrome 프로필에 패스키 만들기" 시트(`kChromeProfileCreatePasskey`, "계속"·"다른 방법으로 저장")가 먼저 뜨고, QR은 "다른 방법으로 저장"에서 고를 때만 나온다. Touch ID가 없는 빌드에서는 전처럼 QR이다. QA 프로필 둘에 값이 `false`로 들어간 것은 확인했고, Touch ID 시트가 먼저 뜨는 것은 서명한 빌드가 있어야 볼 수 있어 확인하지 못했다(소스 근거). 블루투스는 호스트를 띄운 앱(책임 앱 = Yardlet)의 Info.plist에 `NSBluetoothAlwaysUsageDescription`이 있어야 Chromium이 쓴다(없으면 "Cannot use Bluetooth because the responsible app … does not have Bluetooth metadata" 뒤 보안 키 시트만). 그래서 Yardlet.app과 호스트 모두 넣었고(`Packaging/Info.plist`, `Packaging/CEF/BrowserHost-Info.plist`, 한국어는 `ko.lproj/InfoPlist.strings`), 처음 쓸 때 macOS가 블루투스 허용을 묻는다. 대화상자는 요청한 사이트가 정한 시간까지 기다리므로 사람이 보고 닫을 수 있어야 한다. 호스트는 평소 활성화되지 않으므로(`.prohibited`) 대화상자가 뜨면 (다른 앱 창 뒤에 뜬 창은 아무 알림도 내지 않아 1초마다도 본다) 활성화될 수 있게(`.accessory`) 바꾸고 `chromiumWindow`를 보낸다. Yardlet은 그 창을 그 탭을 보이는 패널 위에 놓고(아래 "Chromium의 창과 탭"), 놓인 창이 새로 생기면 `ChromiumWindowPresentation` 규칙대로 한다. Yardlet이 앞에 있으면 활성을 넘겨(`activate(from:)`) 키 창이 되게 한다(보안 키 PIN, Esc). 앞에 없으면(에이전트가 버튼을 눌렀거나 사람이 다른 앱에 있음) 다음에 Yardlet이 앞으로 올 때 그렇게 하고, 그 뒤로는 키는 두고 위로만 올린다. 놓인 창이 없어지면 호스트가 활성을 Yardlet에 돌려준다(`ChromiumWindows`). 그 탭 작업의 에이전트 도구는 대화상자가 열려 있다는 것과 제목, 탭 번호를 결과에 붙이고 `browser_handle_dialog`(accept false)로 닫을 수 있다(`closeChromiumWindows(tabs:)`: 그 탭들의 창에만 Esc를 보내고 0.5초 뒤에도 남으면 닫음 → 페이지는 `NotAllowedError`). 페이지가 다른 사이트로든 같은 사이트 안에서든 이동하면 창은 Chrome처럼 닫힌다(`WebContentsModalDialogManager::DidFinishNavigation`, 요청한 문서가 사라짐; 2026-10-27 QA `passkey`의 "closes when the page moves"). 이 기기의 패스키만 원하는 요청(`allowCredentials`의 transports `internal`, `hints: ["client-device"]`, `authenticatorAttachment: "platform"`)에는 Chrome처럼 "패스키 없음 — 이 기기에 …의 패스키가 없습니다" 또는 "이 사이트에서 기기를 사용할 수 없음" 시트에 "닫기"만 있다. 조건부 요청(`mediation: "conditional"`)은 창 없이 대기한다(명세대로, 위 (1)). `getClientCapabilities()`의 `passkeyPlatformAuthenticator`는 하이브리드로도 참이라(명세 "locally and/or via hybrid transport") Touch ID 없이 true다. Touch ID(Chromium의 프로필 패스키)는 7절 시제품으로 만든 빌드에서만 켜진다. 2026-10-25 설치본은 그렇게 빌드되어 호스트의 CEF 상수와 `keychain-access-groups`가 `<팀>.com.zzunkie.webauthn`·`…-uvk`이고, 기본 프로필에 `webauthn.touchid.metadata_secret`이 있다(`webauthn.touchid.last_used`는 없어 아직 쓴 적은 없다). 안 되는 것은 iCloud 키체인 패스키다. Touch ID는 브라우저 프로세스의 `keychain-access-groups` 엔타이틀먼트에 CEF가 빌드될 때 정해진 그룹이 글자 그대로 있어야 켜지는데(`chrome_web_authentication_delegate.cc`의 `MAC_TEAM_IDENTIFIER_STRING "." MAC_BUNDLE_IDENTIFIER_STRING ".webauthn"`, `keychain_util.mm`의 `containsObject`), CEF 배포본의 그룹은 팀 ID 없는 `.org.chromium.Chromium.webauthn`이라 어떤 프로필도 허용하지 못한다(그래서 7절의 시제품). iCloud 키체인은 `com.apple.developer.web-browser.public-key-credential`(Apple 승인)이 있으면 AuthenticationServices로 가지만, 그 discovery는 웹 콘텐츠의 NSWindow가 있을 때만 생긴다(`fido_discovery_factory.cc` `MaybeCreatePlatformDiscovery`). CEF 창 없는 탭의 `GetNativeView()`는 빈 값이라 승인만으로는 켜지지 않을 것으로 본다(소스 근거, 실행 확인 없음). `isUserVerifyingPlatformAuthenticatorAvailable()`은 Touch ID가 켜진 빌드에서만 true다 |
-| 금고 | 에이전트용 금고([BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md))가 이 호스트에서 확인한 사실(2026-10-24, `run-check.sh … --ui-fixture-browser-check-only=vault`, 실제 CEF 154 QA 번들, 시험용 값만): (1) CDP `WebAuthn` 도메인이 있다. `WebAuthn.enable`·`addVirtualAuthenticator`(ctap2, `internal`, resident key, 사용자 확인, 자동 존재 확인)로 `localhost`에서 `navigator.credentials.create()`가 대화상자 없이 끝나고(`authenticatorAttachment: platform`) `WebAuthn.credentialAdded`가 오며 `getCredentials`가 개인 키를 준다. 그 자격 증명을 새 인증기에 `addCredential`로 넣으면 `get()`이 성공하고 `credentialAsserted`가 온다. 인증기가 붙어 있는 동안 그 탭의 다른 인증기(Touch ID 프로필 패스키, 휴대폰)는 쓰이지 않으므로 금고는 짧게만 붙인다. (2) `Accessibility.getFullAXTree`는 비밀번호 칸 값을 글자 수만큼의 •로 준다(26자 시험 값 → • 26개). (3) 격리 세계(`Page.createIsolatedWorld`, 이름 `yardlet-vault`)에서 기본 `value` setter와 `input`·`change`로 넣은 값을 일반 폼과 React식으로 값을 붙든 칸이 모두 받는다(그 칸의 `input` 이벤트는 `isTrusted: false`). 같은 이름의 `Page.addScriptToEvaluateOnNewDocument`·`Runtime.addBinding`(`executionContextName`)이 같은 세계에 들어가, 사람의 로그인 제출을 그 세계의 바인딩(`Runtime.bindingCalled`)으로만 받는다. (4) Chromium 비밀번호 관리자는 비밀번호를 저장하지 않는다(`Login Data`의 `logins` 0행). 자동 완성 기록(`Web Data`의 `autofill`)에는 일반 텍스트 칸의 값이 남았다: 사용자 이름, `autocomplete`가 없는 한 글자 코드 칸의 숫자(이미 만료된 코드). `autocomplete=one-time-code` 칸과 비밀번호 칸은 남지 않았다. 2026-10-25부터는 주소 자동 완성을 끄면서(아래 "자동 완성의 저장 제안") 이 기록도 남지 않는다(QA: vault 단계가 이메일 칸에 입력한 뒤에도 QA 프로필 넷의 `autofill`·`credit_cards`가 0행, `Preferences`의 두 설정 `false`). (5) 2026-10-25: 화면 밖 렌더링 탭의 `Page.captureScreenshot`(PNG) 그림에서 Vision `VNDetectBarcodesRequest`가 페이지의 2단계 인증 설정 QR(`img`, 43모듈을 215 CSS px로 픽셀 그대로 키움)과 Google Authenticator 형식 내보내기 QR(71모듈)을 읽는다. |
-| 프로필 | 2026-10-24부터 작업마다 따로다([BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md)). `open` 명령의 `profile`(`key`, `seedFrom`)이 있으면 호스트는 `Browser/Task-<key>`를 `cache_path`로 하는 `CefRequestContext`에서 탭을 연다(같은 키의 탭은 한 컨텍스트, 마지막 탭이 닫히면 놓음). Chromium은 root cache 바로 아래 폴더만 디스크 프로필로 열고 다른 경로는 메모리 프로필로 바꾼다(`chromium.log`·`host.log`의 "Cannot create profile at path"). 디스크 프로필은 비동기로 읽히므로, 아직 읽히지 않은 프로필의 탭은 `on_request_context_initialized` 뒤에 만든다(`yardlet_cef_create_browser`가 2를 돌려주고 `YardletCEFEventProfileReady`로 알림). 폴더가 새로 생기면 기본 프로필의 Touch ID 패스키 키(`webauthn.touchid.metadata_secret`)를 넣고, 탭을 about:blank로 연 뒤 시작 쿠키(`seedFrom`의 프로필, 없으면 기본 프로필)를 쿠키 관리자로 복사하고 나서 요청한 주소를 연다. 복사는 쿠키를 Chromium이 저장한 모양대로 넣는다: 호스트 전용 쿠키는 도메인을 비워 호스트 전용으로, 파티션 쿠키는 CEF가 파티션 키를 받지 않아 빼고(2026-10-25 전에는 호스트 전용 쿠키가 도메인 쿠키가 되고 `__Host-` 쿠키가 빠져 Google 계정 사이트가 `CookieMismatch`로 돌려보냈다, [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) 8절). 프로필을 기다리는 동안과 복사하는 동안의 이동과 DevTools 메시지는 그 뒤로 미룬다. 프로필이 20초 안에 읽히지 않으면 그 탭은 포기하고 열지 못한 탭으로 알린다(2026-10-27, 아래 "탭 수"). `copyCookies` 명령은 한 사이트의 쿠키를 다른 프로필로 옮긴다(사람의 로그인을 기본 프로필로). `importCookies` 명령은 사람이 다른 브라우저에서 가져온 쿠키로 한 프로필의 고른 사이트 쿠키를 바꾼다: 그 사이트의 쿠키를 먼저 지우고 같은 넣기 경로로 넣은 뒤 `cookiesImported`로 답한다(2026-10-26, [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) 10절). `profile`이 없는 탭(설정 "쿠키 보관: 모든 작업이 함께", 작업 없는 탭)은 기본 프로필 `~/Library/Application Support/Yardlet/Browser/Default`. 세션 쿠키도 저장해(persist_session_cookies) 호스트가 다시 떠도 로그인이 유지된다(작업 프로필도 같다) |
-| 쿠키 암호화 | 호스트가 시작할 때 자기 서명을 본다(`CookieKeychain`, Gatekeeper의 Developer ID 요구 사항). Developer ID면 Chromium 기본대로 로그인 키체인 항목 "Chromium Safe Storage"(무작위 비밀번호)에서 키를 만든다. 그 항목은 만든 호스트의 서명을 믿으므로 같은 Developer ID로 서명한 업데이트에서는 묻지 않는다. ad-hoc·Apple Development 빌드와 `YARDLET_BROWSER_KEYCHAIN=mock`(QA 실행)은 전처럼 mock keychain(`--use-mock-keychain`, 고정 비밀번호 `mock_password`)을 쓴다. ad-hoc 서명은 빌드마다 서명이 달라져 로그인 키체인 허용 창이 매번 뜨기 때문이고, 대가로 이 사용자 계정의 파일을 읽을 수 있는 프로그램은 쿠키를 해독할 수 있다. 어느 쪽인지는 host.log 첫머리 "cookie key in …" 줄에 남는다. 두 키는 다르다. 쿠키 값은 `v10` + AES-128-CBC(PBKDF2-SHA1 1003회, salt `saltysalt`)이고 복호화에 실패한 쿠키는 읽지 않는다(`sqlite_persistent_cookie_store.cc` `kDecryptFailed`). 그래서 mock에서 Developer ID로 바꾸면(또는 되돌리면) 내장 브라우저의 사이트 로그인이 한 번 모두 풀린다. 기존 쿠키를 옮기는 코드는 두지 않았다(사용자 프로필 DB를 고쳐 써야 함) |
-| 자동 완성의 저장 제안 | 2026-10-25. 카드나 주소가 든 폼이 제출되면 Chromium 자동 완성이 저장을 제안하는 Chrome 말풍선을 띄우는데, 그 코드(`SaveCardBubbleControllerImpl::DoShowBubble`, `AddressBubblesController`)는 탭의 Chrome 창을 확인 없이 가져온다. 창 없는 탭에는 그 창이 없어 브라우저 프로세스가 빈 포인터를 읽고(SIGSEGV, 주소 0x10) 호스트와 모든 탭이 함께 끝났다. 실제 Stripe Checkout 결제 페이지에서도 이것으로 호스트가 끝났다. 호스트는 패스키 설정과 같은 자리(`set_windowless_preferences`, 요청 컨텍스트가 준비될 때마다)에서 Chrome 자신의 설정 "결제 수단 저장 및 자동 완성"(`autofill.credit_card_enabled`)과 "주소 저장 및 자동 완성"(`autofill.profile_enabled`)을 끈다. 그러면 자동 완성은 제출된 폼에서 카드·주소·IBAN을 꺼내지 않아(`FormDataImporter::ExtractFormData`) 아무것도 제안하지 않는다. 주소 설정을 끄면 양식 기록(autocomplete, `Web Data`의 `autofill`)도 남지 않는다. 그 제안 목록은 탭의 뷰가 창 안에 있어야 뜨므로(`CanShowRootPopup`) 창 없는 탭에서는 뜨지 않는다(소스 근거) |
-| 로캘 | 시스템 첫 언어가 한국어면 Chromium UI 로캘 `ko`, Accept-Language `ko-KR,ko,en-US,en`, 아니면 `en-US` |
-| URL 정책 | http, https, file, about, data만 연다. 주소 입력, 페이지 링크·리디렉션·스크립트 이동·폼 POST(다른 사이트로 가고 돌아오는 3-D Secure 포함), 새 창, 에이전트의 CDP `Page.navigate` 모두 호스트의 `on_before_browse`에서 같은 목록으로 거른다(새 창의 첫 주소는 `on_before_popup`에서). 막으면 패널에 알림. 다른 앱의 주소(`mailto:`, `tel:`, `zoommtg:`, `slack:` …)는 2026-10-25 저녁부터 알림 대신 아래 "외부 앱 주소"로 간다. Chromium 자신의 주소(`blob`, `chrome`, `chrome-extension`, `devtools`, `view-source`, `ws` …), Chrome이 다른 앱에 넘기지 않는 주소(`external_protocol_handler.cc`의 `kDeniedSchemes`: `javascript`, `data`, `file`, `shell` …), 한 글자 주소(Windows 드라이브)는 전처럼 막고 알린다(`is_external_scheme`). 주소 칸과 에이전트의 `browser_navigate`는 여전히 다섯 가지만 연다. 2026-10-26부터 주소 칸은 주소가 아닌 입력을 Google 검색으로 연다(Chrome 주소 칸의 기본 검색엔진, `BrowserURLPolicy.addressFieldURL`) |
-| 외부 앱 주소 | 2026-10-25 저녁. Chrome 154의 규칙(`ExternalProtocolHandler`)을 따른다. 호스트는 그런 이동을 취소하고 `externalApp(tab:request:)`(주소, 요청한 문서의 출처, 사용자 제스처, 그 출처에 "항상 허용"이 있는지)를 보내고, Yardlet이 정한다(`BrowserHostClient.handleExternalApp`, `BrowserExternalAppPolicy`). (1) 한 번 요청한 페이지는 다음 클릭·키 입력(사람이나 에이전트의 입력)이 있을 때까지 다시 요청해도 아무 일이 없다(Chrome의 홍수 방지 `g_accept_requests`). (2) 그 주소를 여는 앱이 없거나 그 앱이 Yardlet 자신이면 아무 일도 없다(Chrome은 콘솔에만 남긴다). (3) `mailto:`는 묻지 않고 기본 메일 앱으로 연다(Chrome: "every platform provides a default handler for it"). 사람이 "항상 허용"한 출처와 주소 종류도 묻지 않는다. (4) 그 밖에는 패널이 그 탭을 보일 때 페이지 위 막대로 묻는다: "‹앱›을(를) 여시겠습니까?", "‹출처›에서 이 애플리케이션을 열려고 합니다.", 취소·"‹앱› 열기"(Chrome의 문구, 앱 이름은 LaunchServices `urlForApplication(toOpen:)`). 출처가 안전하면(https, 이 Mac의 루프백 http; Chrome `MayRememberAllowDecisionsForThisOrigin`) "항상 ‹사이트›에서 연결된 앱에 있는 이 유형의 링크를 열도록 허용" 상자가 있고, 고르면 호스트가 그 탭의 프로필에 Chrome 자신의 설정 `protocol_handler.allowed_origin_protocol_pairs`(`{출처: {종류: true}}`)를 쓴다(`allowExternalApp`). (5) 에이전트의 입력에서 나온 요청은 (3)이어도 묻는다: 그 탭의 마지막 입력이 에이전트의 도구 호출이면(`BrowserTab.isDrivenByAgent`; 사람의 입력은 패널에서 페이지를 누르거나 키를 친 것, 주소·뒤로·앞으로·새로고침) 사람만 막대에서 연다. 에이전트 도구는 결과에 그 사실을 붙인다. 새 창으로 여는 앱 주소(`target=_blank` 메일 링크)는 탭을 만들지 않는다(Chrome은 그 탭을 닫는다). 막대는 그 페이지가 새 문서로 바뀌면 사라진다(Chrome의 탭 모달 창과 같음). 여는 일은 Yardlet이 `NSWorkspace.open`으로 하고, QA 실행(`YARDLET_QA_BACKGROUND`)은 열지 않는다. host.log에는 `external app tab=… scheme=… remembered=…`(주소는 남기지 않음). 두 앱(번들 바이트): Claude 앱 3.1623.3의 Browser pane은 http·https 밖을 묻지 않고 막고(`block-silent`), Codex 앱 26.1016은 에이전트가 쓰는 탭에서 http·https 밖을 막는다(`Browser Use URL policy`). 그 밖의 탐색은 Owl 프레임워크에 Chrome의 질문 문구와 같은 설정 이름이 있으나 쓰는지는 알 수 없다 |
-| 다운로드 | 확인 없이 사용자의 `~/Downloads`에 제안된 이름으로 저장하고, 이름이 겹치면 `이름 (1).확장자`. 호스트가 `LSFileQuarantineEnabled`라 받은 파일에 격리 속성이 붙는다. 패널이 열려 있으면 끝날 때 Dock의 다운로드 스택이 튀고, 알림을 허용했다면 알림, 패널 아래에 "Finder에서 보기"가 뜬다(패널이 없으면 저장만 한다). 같은 페이지의 두 번째 자동 다운로드부터(한 번의 클릭으로 여러 파일, 스크립트가 만든 파일 저장)는 Chrome처럼 "여러 파일 다운로드" 권한을 묻는다(아래 "권한 요청"). 2026-10-25 전에는 아무도 답하지 않아 그 다운로드가 소리 없이 사라졌다(QA). 페이지가 새 창으로 연 탭(`target=_blank`로 연 파일 주소)이 페이지를 하나도 보이지 않은 채 다운로드로 끝나면, Chrome처럼 그 빈 탭을 닫고 연 탭을 앞으로 가져온다(`BrowserHostClient`의 `.download`, 연 탭은 `openedTab`으로 안다). 닫는 때는 다운로드가 끝난 뒤다. CEF는 탭이 닫힌 다운로드를 더 알리지 않아, 일찍 닫으면 패널의 다운로드 줄이 끝을 받지 못한다 |
-| JS 대화상자 | alert/confirm/prompt/beforeunload를 패널 창의 시트로. 제목에 요청한 페이지의 호스트 이름을 넣어 페이지가 Yardlet을 사칭하지 못하게 한다. 패널이 창에 없거나 시트가 이미 떠 있으면 취소한다. 패널이 닫혀 있으면 Yardlet은 답하지 않는다(6절). 2026-10-25 저녁부터 사람이 패널에서 탭을 닫으면(✕, ⌘W, 탭 메뉴의 닫기들) Chrome처럼 페이지에 먼저 묻는다: 엔진에 열린 탭은 `requestClose`(호스트 `close_browser(0)`)로 닫고, "나가기 전에 확인"을 쓰는 페이지는 그 질문이 오는 동안 탭이 패널에 남아 Chrome의 "사이트에서 나가시겠습니까?"(나가기·취소, 이동의 질문과 같은 시트)로 묻는다. 취소면 탭과 페이지가 그대로이고, 나가기면 호스트가 닫은 뒤(`closed`) 패널은 다른 탭처럼 그 전에 쓴 탭으로 간다. 그런 처리기가 없는 페이지는 CEF가 바로 닫는다(`NeedToFireBeforeUnloadOrUnloadEvents`). 보이지 않는 탭이 묻으면 그 탭을 앞으로 가져와 묻는다(Chrome이 그 탭을 활성화해 묻는 것과 같음, `BrowserTab.closeQuestion`). 1초 안에 묻지도 닫히지도 않으면(`BrowserHostClient.closeAnswerWait`) 전처럼 바로 닫는다: Chromium은 답하지 않는 렌더러에 500 ms를 주고 닫지만, DevTools가 붙은 탭에는 그 시간 초과를 쓰지 않는다(`WebContentsImpl::ShouldIgnoreUnresponsiveRenderer`). 에이전트의 탭 닫기, 작업 보관·삭제, 앱 종료는 묻지 않는다. 이렇게 Yardlet이 바로 닫은 탭의 beforeunload는 호스트가 바로 "나가기"로 답하고(`BrowserSlot.closing`), 이미 Yardlet에 온 질문도 나가기로 답한다(`leaveDialog`). CEF는 강제 닫기(`close_browser(1)`)에도 페이지에 먼저 묻는데(`AlloyBrowserHostImpl::CloseBrowser`의 `DispatchBeforeUnload`), 그 탭은 이미 패널과 클라이언트에서 빠져 답할 곳이 없었다. 그래서 2026-10-25 전에는 "나가기 전에 확인"을 쓰는 페이지(편집기, 메일 작성)의 탭을 닫으면 그 브라우저와 렌더러가 호스트가 끝날 때까지 보이지 않게 남았다(QA: 닫은 탭의 `javaScriptDialog` kind 3이 종료 때 "requires a parent window handle"로 취소됨). 지금은 1초 안에 닫힌다(host.log `browser closed tab=…`) |
-| 파일 선택 | `NSOpenPanel`/`NSSavePanel` 시트. 페이지의 `accept` 확장자를 허용 형식으로 넘긴다. `multiple`, `webkitdirectory`, `showOpenFilePicker`, `showSaveFilePicker`는 각자의 모드로 온다(QA `compat`). `showDirectoryPicker`는 파일 열기로 온다(10절) |
-| 권한 요청 | 2026-10-25. 페이지가 Chrome이 권한 풍선으로 묻는 것(알림, 위치, 클립보드 읽기, 여러 파일 다운로드, 다른 사이트의 쿠키, 로컬 네트워크, 글꼴, 창 관리 등)을 요청하면 CEF가 `on_show_permission_prompt`를 부른다. Alloy 방식에서 처리기가 없으면 CEF는 답하지 않고(`CEF_PERMISSION_RESULT_IGNORE`) 페이지의 요청은 끝나지 않았다(QA: `Notification.requestPermission()`이 끝나지 않음, 위치는 페이지가 정한 시간 초과로만 끝남, 같은 페이지의 두 번째 다운로드가 사라짐). 이제 호스트가 `permissionPrompt`(사이트와 Chromium의 권한 이름들)로 넘기고, 패널이 그 탭을 보일 때 페이지 위 막대("‹사이트›에서 다음 권한을 요청합니다: 알림 표시", 차단·허용·닫기)로 묻는다. 답은 `permissionResult`(allow·block·dismiss)로 돌아가고, Chromium이 허용과 차단을 사이트별로 기억한다(Chrome과 같음, 다음 방문에는 묻지 않음). 페이지가 다른 곳으로 가거나 탭이 닫히면 CEF가 `on_dismiss_permission_prompt`를 불러 막대가 사라진다. 패널이 그 탭을 보이지 않는 동안 요청은 기다리고(Chrome도 그 탭이 앞에 올 때 묻는다), 에이전트 도구는 결과에 그 사실을 붙인다(답은 사람만 한다). 카메라·마이크(`getUserMedia`)도 2026-10-25 저녁부터 이 막대로 묻는다("카메라 사용", "마이크 사용"). CEF의 `on_request_media_access_permission`은 Alloy 방식 기본값이 바로 거부여서, 호스트가 자기 프롬프트 번호(2^62 이상)로 Yardlet에 묻고, 답을 Chrome 자신의 사이트 설정(`CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA`·`_MIC`, 그 탭의 프로필)에 남겨 다음에는 묻지 않는다(차단은 바로 거부, 허용은 바로 허용). 허용하면 Chromium이 장치를 열고, 그때 macOS가 Yardlet의 카메라·마이크 접근을 처음 한 번 묻는다(앱 Info.plist의 사용 설명, 호스트에도 같은 키와 entitlement). Chromium은 사이트가 허락되기 전에는 macOS에 묻지 않는다(content `MediaStreamManager`, CEF `media_access_query.cc` 원본). 페이지가 새 문서로 바뀌거나 탭이 닫히거나 렌더러가 끝나면 그 요청을 놓아 거부로 끝낸다. 화면 공유(`getDisplayMedia`)는 Chrome의 화면·창 고르기 창이 창 없는 탭에 없어 전처럼 거부한다. Codex 앱 26.1016은 같은 요청을 허용·이번만 허용·거부 창으로 묻고(`setPermissionPromptHandler`), Claude 앱 3.1623.3은 클립보드 쓰기 밖에는 모두 거부한다(둘 다 번들 바이트) |
-| PDF | 2026-10-25. Chromium의 PDF 보기(내장 확장 `mhjfbmdgcfjbbpaeojofohoefgiehjai`의 `index.html`)가 PDF 페이지 안 프레임에 열리고, 탭 제목이 파일 이름이 된다. 그 프레임의 `chrome-extension:` 주소를 URL 정책이 막아 모든 PDF가 빈 화면이었던 것을(패널 알림 "chrome-extension://mhjf…/index.html 주소는 열지 않았습니다"), 그 확장으로 가는 하위 프레임만 통과시키게 했다(`is_pdf_viewer_frame`). 탭이나 주소 칸이 그 주소로 가는 것은 여전히 막는다. 보기의 다운로드 단추는 다운로드로, 인쇄 단추는 아래 "인쇄"로 간다 |
-| 인증서 오류 | Chromium이 자기 경고 페이지("개인 정보 보호 오류", 고급 → ‹호스트›(으)로 이동(안전하지 않음))를 탭에 보인다. 2026-10-25부터 패널은 인증서 오류(`net::IsCertificateError`: -200부터 -219까지와 -150)에 오류 카드를 덮지 않는다. 전에는 카드("페이지를 열 수 없음 ERR_CERT_AUTHORITY_INVALID", 다시 시도)가 경고 페이지와 그 단추를 가렸다. 자체 서명 인증서에서 고급 → 이동으로 그 페이지가 열리는 것까지 QA로 확인했다(`compat`). Chromium이 넘어가기를 허락하지 않는 오류(HSTS 사이트 등)는 경고 페이지에 그 단추가 없다 |
-| HTTP 인증 | Chromium 자신의 로그인 창(Views `LoginView`: 사용자 이름, 비밀번호, 취소·로그인)이 패스키 대화상자처럼 호스트의 별도 창으로 뜬다(2026-10-25 QA에서 창의 글로 확인, 로그인까지 하지는 않음). Chrome처럼 탭의 web-modal 대화상자이고(`LoginHandler`), 그래서 `ChromiumWindows` 규칙(그 탭의 창, 그 탭을 보이는 패널 위, 활성 넘기기, 그 작업 에이전트의 닫기, 아래 "Chromium의 창과 탭")을 그대로 탄다. 창이 뜰 때 탭의 문서는 이미 Chromium의 빈 오류 페이지(`chrome-error://chromewebdata/`)로 바뀌어 있다(2026-10-27 QA의 snapshot). 2026-10-25 저녁부터 호스트는 창마다 종류를 알린다(`chromiumWindow`의 `kinds`: Views 창 가운데 Chromium 자신의 제목 "Sign in"·"로그인"(`IDS_LOGIN_DIALOG_TITLE`, 호스트의 로캘 둘)이면 signIn, 그 밖의 Views 창은 passkey, AppKit 모달 창은 print). 에이전트 도구는 이 창을 "Chromium's sign-in window for the site's HTTP authentication"으로 부르고, 닫으면 로그인이 취소된다고 알린다. 전에는 "Chromium's passkey dialog"라고 불렀다(QA로 재현) |
-| 인쇄 | `window.print()`와 PDF 보기의 인쇄는 Chromium이 macOS 인쇄 창(`PrintingContextMac::AskUserForSettings`의 `NSPrintPanel runModalWithPrintInfo:`)을 호스트의 별도 창으로 띄우는 길이다. CEF는 창 없는 탭에 인쇄 미리 보기를 쓰지 않는다(`CefBrowserPlatformDelegate::IsPrintPreviewSupported`). 원본 근거이고, 시스템 창이 뜨므로 QA로 실행하지 않았다. Codex 앱은 인쇄 명령에서 `webContents.print()`(같은 시스템 창)를 부른다. 2026-10-25 저녁부터 에이전트 도구는 이 창을 "the system's print dialog"로 부른다(호스트가 AppKit 모달 창을 print로 알림; 원본 근거이고 QA로 보지 않음). 이 창은 탭의 대화상자가 아니라 부모 없는 앱 모달 창이라 탭과 함께 숨지 않고, 어느 탭의 창인지 알 수 없다. 그래서 어느 작업의 에이전트도 닫지 못하고, 도구가 실패했을 때만 "which tab opened it is not known, so it may be another task's"로 알린다. Yardlet은 이 창을 제자리에 두고 Yardlet의 맨 앞 창 바로 위로 올린다. 인쇄 창이 다른 탭의 입력을 막는지는 QA로 보지 않았다(원본상 `CATransaction` 완료 블록에서 도는 모달 루프이고, 호스트의 입력은 창 이벤트가 아니라 Yardlet의 명령으로 오므로 막지 않을 것으로 본다) |
-| Chromium의 창과 탭 | 2026-10-27. 한 작업이나 사람이 연 패스키 창이 모든 작업의 에이전트 결과에 "is open over the browser"로 붙었고, 어느 에이전트든 `browser_handle_dialog`로 그 창을 닫을 수 있었다. 에이전트가 "Stripe 탭에 패스키 창이 떠 있다"고 했는데 사람이 열면 창이 없었고, Yardlet 창을 누르면 창이 뒤로 가 다시 불러올 길이 없었다. **어느 탭의 창인가:** 패스키 대화상자와 로그인 창은 Chrome처럼 그 탭의 web-modal 대화상자다. 그런데 macOS의 창 없는 탭에서는 부모가 비어 있고(CEF 154 `AlloyWebContentsDialogHelper::GetHostView`가 창 없는 탭에 빈 값, Aura 전용 `GetAcceleratedWidget`은 Mac에서 `NOTIMPLEMENTED`, `parent_view`를 줘도 쓰이지 않음), 창이 뜰 때 탭을 알리는 CEF 콜백도 없다(대화상자 크기는 저장된 `GetContainerBounds`). 남는 연결은 Chromium의 규칙이다: 그 탭이 숨겨지면 대화상자가 같은 호출 안에서 숨고, 보이면 다시 뜬다(`WebContentsModalDialogManager::OnVisibilityChanged`; CEF `WasHidden`은 UI 스레드인 호스트의 메인 스레드에서 바로 `WebContents::WasHidden`을 부름). 그래서 호스트(`ChromiumWindows`)는 Yardlet의 `visibility` 명령마다 전후의 창을 비교해 그 사이 사라지거나 생긴 창을 그 탭의 것으로 적는다. 숨겨지지 않은 탭이 있는 동안 새 창이 뜨면, 그런 탭이 하나일 때 그 탭의 것이고, 여럿이면 각 탭을 한 호출 동안 숨겼다 바로 다시 보여 그때 사라지는 창의 탭으로 정한다(그 페이지들은 아주 잠깐 `visibilitychange`를 두 번 본다). 끝내 모르면 -1이다. 인쇄 창은 탭이 없다(위 "인쇄"). `chromiumWindow`는 창마다 `ids`(창 번호)와 `tabs`(탭, 모르면 -1)를 싣는다. QA(`compat`의 "Chromium's windows belong to their tab")에서 숨겨지지 않은 탭이 [1, 3]일 때 다른 작업 탭 3의 창을, [1, 3, 4, 5]일 때 탭 5의 창을 맞게 찾았다. **누가 듣고 닫나:** 에이전트 도구는 자기 작업 탭의 창만 결과에 붙이고(탭 번호, "Chromium ignores input to that tab until it closes", 사람은 그 작업의 패널이 그 탭을 보일 때만 본다는 것, `browser_handoff`가 그 탭을 사람에게 보인다는 것) 그 창만 닫는다(`closeChromiumWindows(tabs:)`). 다른 작업의 창은 결과에도 닫기에도 없다. 탭을 모르는 창은 어느 에이전트도 닫지 못한다. 그 창이 떠 있는 동안 Chromium은 그 탭의 입력을 버린다(사람 클릭이 페이지에 닿지 않음, QA). 그래서 에이전트의 클릭·입력·키·스크롤 도구는 그 탭에 아무것도 보내지 않고 실패로 답한다: "The click was not sent to tab 3." 뒤에 그 창의 이름과 종류, `browser_handle_dialog`(accept false)로 닫는다는 것, `browser_handoff`가 그 탭을 사람에게 보인다는 것. 2026-10-27 저녁 전에는 클릭이 버려지는데도 "Clicked"라고 답했다(QA). 읽기 도구(snapshot, screenshot, evaluate)와 이동은 그대로다. 다른 탭과 다른 작업의 탭은 클릭·입력·이동이 되고, 사람의 패널도 클릭을 받는다(QA). **어디에 보이나:** Chrome은 탭의 대화상자를 그 탭 위에 그린다. Yardlet(`ChromiumWindowPresenter`)은 창마다 그 탭을 보이는 화면 위 패널을 찾아 `presentChromiumWindows`로 자리를 준다: 그 패널 페이지의 가운데 위쪽 끝(그 화면 안)과, 그 패널 창의 바로 위(`order(.above, relativeTo:)`, 다른 프로세스의 창 번호로도 됨, QA)다. 탭을 모르는 창은 제자리에 두고 Yardlet의 맨 앞 창 바로 위로 올린다. 놓이지 않은 창(그 탭을 보이는 패널이 없음: 에이전트의 뒤 탭, 사람이 다른 작업에 있음)은 화면 밖에서 투명하게 기다리고, 패널이 그 탭을 보이면 그 위에 뜬다. 창이 패널이 화면에 없는 작업의 탭 위에 뜨면 Yardlet은 `browser_handoff`처럼 그 작업의 오른쪽 패널을 그 탭으로 열어 둔다(`onChromiumWindowOverHiddenTab` → `AppModel.showBrowserTab`). 사람이 보고 있는 작업은 바꾸지 않고, 그 작업의 패널이 화면에서 다른 탭을 보이고 있으면 그대로 둔다. macOS 알림은 따로 보내지 않는다(에이전트의 답과 턴 끝 알림이 사람을 부른다). 다시 놓는 때는 창이 바뀔 때, 패널이 탭을 보이거나 그만둘 때, 패널이 화면에 들어오거나 나갈 때, Yardlet이 앞으로 올 때, Yardlet 창이 key·main이 되거나 움직이거나 크기가 바뀔 때, Yardlet 창을 누를 때(`NSEvent` 로컬 모니터, AppKit이 그 창을 앞으로 올린 뒤)다. 매번 그 패널 창 바로 위로 올리므로 Yardlet 창을 눌러도 창이 다시 앞에 온다. 늘 위에 두는 수준(floating)은 쓰지 않아, 사람이 다른 앱으로 가면 그 앱 창이 위에 온다. 호스트의 1초 타이머는 창을 올리지 않는다(올리면 다른 앱 위로 돌아옴). QA는 Yardlet 창을 실제로 누르지 않고(사람의 화면을 가져가므로) 그 창을 앞으로 보낸 뒤 클릭 처리 경로(`yardletWasClicked`)를 불러, 창 서버의 앞뒤 순서(`CGWindowListCopyWindowInfo`)로 Yardlet 창이 앞에 왔다가 로그인 창이 다시 앞에 오는 것을 본다 |
-| 결제 API(지갑 단추) | 2026-10-25 저녁. 브라우저 프로세스가 `--disable-features=WebPayments`로 뜬다(알림을 끄는 `NativeNotifications`와 같은 자리, `disable_features`). Chromium은 그 기능으로 `WebPreferences.payment_request_enabled`를 정하고(`WebContentsImpl`) Blink가 그 값으로 `PaymentRequest`를 켜므로, 페이지에 `PaymentRequest`가 없다. 그러면 Google Pay·Apple Pay 같은 지갑 단추를 그 API로 고르는 결제 페이지는 단추를 보이지 않고, 사람은 카드를 입력해 결제한다. 전에는 단추가 보였지만 `show()`가 Chrome 창이 없어 늘 `AbortError`로 끝났다. 두 앱(번들 바이트): Claude 앱과 Codex 앱 모두 이 API를 끄는 지정이 앱 코드에 없고, 프레임워크에 Blink `PaymentRequest` 구현 문자열이 있다. Claude 앱의 Electron에 이 API가 없다는 앞선 판단은 바이트로 확인되지 않았다 |
+| Host lifetime | Session tabs are not closed when the panel closes or the agent stops; they stay until the task is archived or deleted and its tabs are closed (the Codex app cleans up the browser conversation on `thread/archived`, and pages that are not visible only get background throttling). A tab that is not visible is reported to the engine as hidden, which stops drawing. When the last tab closes, the host ends 60 seconds later (`idleGrace`). Opening the panel again shows the same tab (with the page state as it was). After the host has died, the task's tabs open again together at the addresses they last showed (`rememberedTabs(forSession:)`, including order and the front tab) (`restoreTabs`), and the agent tools open the same tabs again. Failing that, they open at the addresses saved with the task (the list when there are several tabs, `BrowserPreviewPreferences.tabs` and `selectedTab`, after the app restarts). Closing the task's tabs (`closeTabs(forSession:)`) forgets the addresses. Before 2026-10-22, tabs without a panel were closed after 5 minutes (`agentKeepAlive`) + 60 seconds, so a page the agent opened became an empty tab before the user opened the panel |
+| Shutdown | 2026-10-24. End of input (Yardlet ended), the `shutdown` command and SIGTERM all end in the order CEF recommends: close every open browser with `close_browser(force)`, end the message loop after the last `on_before_close` (or after 3 seconds if it does not come), then `exit(0)` after `CefShutdown` (`BrowserHost.shutdown`). With CEF's signal handlers turned off (`disable_signal_handlers`), the host catches SIGTERM and follows this order. The handler is an empty function, not SIG_IGN: an ignored signal is inherited by Chromium's child processes, and Chromium ends its child processes with SIGTERM. SIGPIPE is ignored so that writing an event after Yardlet has ended fails with EPIPE. If it has not ended within 10 seconds (`shutdownDeadline`), the host ends its own process group with SIGKILL (a host started by `Process` leads its own group, and Chromium's child processes are in the same group). When the app quits (`terminateHost`), Yardlet sends `shutdown`, waits up to 5 seconds (`shutdownTimeout`) for the host to end, and ends it with SIGKILL after that (`terminate()`). Shutdown after the grace period (`shutdownHost`) does the same after 5 seconds. `CefShutdown` starts Chromium's code-sign clone cleanup Helper (`--type=code-sign-clone-cleanup`) in a new process group; that Helper waits for the host to end (`getppid() == 1`) and then deletes the bundle copy the host made when it started (section 8). CEF does not pass `--framework-dir-path` or `--main-bundle-path` to this Helper, so the Helper executable (`YardletCEFHelper/main.c`) fills the missing switches with the host bundle's path. Without that, CEF took the outermost `.app` in the executable path (Yardlet.app) as the main bundle, could not find the framework and ended with a CHECK (SIGTRAP), so every orderly shutdown left a crash report and copies piled up. Before 2026-10-24, app quit and the end of QA sent SIGTERM right after `shutdown`, so the host ended without `CefShutdown`, and when Yardlet ended abruptly the host died of SIGPIPE. When the host ends with SIGKILL, its child processes end on their own when IPC breaks (0 left in QA), and only that host's copy remains. The `closed` the host sends for each tab as it ends does not mean the page closed: Yardlet does not accept a `closed` that comes after it sent `shutdown` (`isHostEnding`), and on `terminated` the tab stays as a tab lost with the host (`rememberedTabs`, with its panel tab and saved state unchanged). From the change above on 2026-10-24 until the fix on 2026-10-25, this `closed` was taken as the page closing, so on app quit the tabs open in the engine dropped out of the panel and the task's saved state (after a restart the task had no browser tabs, and a panel that held only those tabs was closed). Before that, SIGTERM ended the host at once, so `closed` almost never came |
+| Full-page screenshots | 2026-10-24. Chromium handles `captureBeyondViewport` in `Page.captureScreenshot` by briefly growing the view to the capture size (`PageHandler::CaptureScreenshot` calls the view's `SetSize`), but in CEF's windowless view `SetSize` and `SetBounds` are empty functions (`render_widget_host_view_osr.cc`), so the surface stayed at the panel's size and the image repeated the first screen at every multiple of that height (reproduced in QA, every 800 px). So `fullPage` in `browser_screenshot` draws the tab at the capture size while it captures (`BrowserAgentTools.drawn`): it pins the page's layout viewport at the current size (the view's whole points) with `Emulation.setDeviceMetricsOverride`, `resize`s the tab to the capture size, and after the capture first restores the tab's size and then removes the pin. Commands go in order over the same pipe, so there is nothing to wait for. Meanwhile 100vh and `innerHeight` stay the same, and the page gets only the one `resize` event that Chromium's capture itself fires. The surface is a GPU texture, so when a side went over 16,384 device pixels the GPU process kept dying with `Invalid size=2560x20352, max_texture…`, the host ended with `GPU process isn't usable. Goodbye.`, and every tab was lost (confirmed with a 10,176 CSS px page at 2x). So the capture is cut within that limit and takes the top part (8,190 CSS px at 2x). If the panel is showing that tab, the large frames in between reach the panel, so the panel view clips to its own bounds (`clipsToBounds`). Element (`ref`) screenshots are still taken only within the view |
+| Screen size emulation | 2026-10-26. The person (Viewport in the panel's ⋯ menu) and the agent (`browser_resize`) view a tab's page as a 375×812 phone, a 768×1024 tablet, 1280 × 800, 1024 × 768 or a custom size (the same presets and rules as the Claude app's Browser window). `BrowserTab.emulate` sends `Emulation.setDeviceMetricsOverride` (scale 1; below 768 wide, mobile and deviceScaleFactor 2), `setTouchEmulationEnabled` and `setUserAgentOverride`, and draws the tab itself at that size: when a panel shows the tab, the panel view sends the emulated size with `resize` (`BrowserHostView.emulatedSize`); without a panel the tab sends it, and removing the emulation returns to the earlier size. The panel shrinks the layer holding that frame (`pageLayer`) until both sides fit and places it centered horizontally at the top (`BrowserViewportEmulation.pageFrame`), with `underPageBackgroundColor` and a 1-point divider outside it. It does not shrink with Chromium's `scale` because that factor is not reflected in CDP `Input.dispatchMouseEvent` coordinates, so the agent's clicks would miss (in headless Chrome 155 at 0.5x, the page received doubled coordinates). The DevTools session carries the emulation, so it survives new loads. The state lives only in the tab, so when the host starts again the page is responsive again. What the agent set is cleared when its turn ends (`endAgentEmulation`) |
+| Cross-site frames | 2026-10-26. An iframe that site isolation puts in another renderer can be read only through its own session attached to the tab's DevTools session. When the agent tools first use a tab, `BrowserDevToolsClient.attachFrames()` sends `Target.setAutoAttach` (flatten, `filter` iframes only, `waitForDebuggerOnStart` false), and sends the same request to each attached frame so nested frames attach too. `frameSessions` follows `Target.attachedToTarget` and `detachedFromTarget` (removing a detached frame's descendants with it); events from frame sessions do not go into the tab's event log or its observers, and timeouts of those calls do not count as the tab not responding |
+| Drawing (power) | A session tab is "visible" to the engine only while a panel **on screen** shows it and for 60 seconds (`agentVisibleWindow`) after the agent uses (or opens) it. Otherwise it is hidden with `was_hidden`, which stops frames and slows the page's timers (QA: an animation page, 63 fps → 0 over 2 seconds). Even with a panel attached, if the window is minimized, fully covered by other windows, on another Space, or the app is hidden (⌘H) (`NSWindow.occlusionState` without `.visible`, `BrowserHostView.isOccluded`), the panel reports itself "occluded" (`setPanelOccluded`) and the tab is hidden. The tab stays attached (its lifetime depends on the number of panels), and when it is visible again it gets a new frame through `invalidate` (2026-10-22 QA: in a minimized window, 60 fps and about 40% total CPU → 0 fps and about 2%). The rule that keeps a tab visible for 60 seconds after it opens applies only to tabs opened without a panel (the agent's tabs). A tab a panel has shown even once is visible only after the agent uses it, so a tab the panel opened hides as soon as the window is covered (fixed on 2026-10-22: this rule used to keep drawing a covered tab opened less than 60 seconds earlier). Attaching a panel or the agent using the tab again makes it visible before the next command |
+| Frame rate | The panel sends the refresh rate of the display its window is on (`NSScreen.maximumFramesPerSecond`) as the viewport's `framesPerSecond` (whenever the size, scale or display changes), and the host matches it with `set_windowless_frame_rate`: 120 on the built-in ProMotion display, 60 on an external LG. A tab without a panel (`offscreenDefault`) defaults to 60. requestAnimationFrame animations reach 120 fps on a 120 Hz screen (QA). Wheel and key scrolling stay at 60 fps whatever the input rate; this looks like a scroll frame limit on Chromium's side, and the cause is not found yet (section 10) |
+| Frame surface lifetime | The host cycles through up to 4 IOSurfaces of the same size for each of a tab's layers (view and popup) (`SurfaceRing`). When the size changes it makes a new ring; when the tab is hidden (`visibility` isHidden) it drops the ring and then sends a `hidden` event; when the tab closes it drops the ring. Whether a surface's port has been sent is remembered for each surface in the ring (the earlier global set of IDs did not send the port again when an ID was reused, so Yardlet waited 200 ms at a time and lost frames: in 2026-10-22 QA, 26 of 40 size changes did not get a frame at the new size within 600 ms → 0). On the event pipe queue, in event order (`BrowserFrameSurfaceCache` inside `BrowserSurfaceReceiver`), Yardlet drops surfaces of a different size in the same tab and layer, and old surfaces beyond the ring's capacity (4), as frames arrive, and drops all of a tab's (or layer's) surfaces on `hidden`, `closed` and popup-closed events. So a hidden tab uses no surface memory (QA: host footprint after 40 size changes +81 MiB → +9 MiB, after hiding 220 → 75 MiB). If the port of the surface a frame names is missing, Yardlet drops that frame without waiting. The host writes the frame event after sending the port, so a port that is missing when the event is read is not coming (it used to wait 200 ms each time) |
+| Frames during a resize | 2026-10-27. While the panel's width was dragged, the page shrank and grew instead of following the new width. Chromium's capture (`FrameSinkVideoCapturer`) changes the frame size only after the page has drawn at the new size (CEF `OnRenderFrameMetadataChangedAfterActivation` → `SizeChanged`), while the root of the view, the capture source, takes the new size as soon as `was_resized` is called. Frames in between fit the new-size source into the old size, keeping its proportions, and fill the rest with black bars (`content_rect` smaller than the frame; about 8 px left and right when narrowing, about 17 px top and bottom when widening). In the drag QA, 136 such frames came over 202 size changes. The bridge (`is_resize_letterbox`) does not send such screen frames within 1 second after a size or scale change, and the panel keeps the previous frame. A difference that remains after 1 second (when the page is held at a size other than the view's, as in the agent's full-page screenshot) shows as before. For software drawing (`--paint software`) CEF gives no `content_rect`, so nothing is filtered |
+| Tabs | Each task has up to 9 tabs (`maxTabsPerSession`) in strip order, one of which is the front tab (Claude app 3.1623.3 Browser window: "Tab limit reached" past 8 tabs, ⌘1…⌘9). Since 2026-10-23 each tab is a tab of the side panel (`browser:<key>`) (Codex app 26.1016). Each tab has a panel key (`BrowserTab.key`), and it opens again with the same key when the tab moves to another task, the host dies or Yardlet restarts. The panel and the engine refer to the same tab by this key (`TaskWorkspaceState.syncBrowserTabs`): a tab the engine opened (the agent's or a page's) becomes a panel tab placed after the tab just before it in the engine, and a tab the engine closed while the host is running drops out of the panel too (tabs closed as the host ends do not drop out; see "Shutdown" above). The browser tab the panel shows is the front tab (`frontShownBrowserTab`), and when the engine changes the front tab (the agent's selection, a new window opened in front), the panel that was showing a browser tab shows that tab. A new panel tab ("Browser" in the launcher and the + menu, ⌘T on a page, "New Tab to the Right" and "Duplicate" in the tab menu, a link in the conversation) opens an engine tab once its pane is visible (`openBrowserEngineTab`; with no address, an empty tab with focus in the address field). A panel tab has the page title, icon (see "Icons" below) and a loading spinner; there is no tab strip inside the browser pane. Closing a tab in the panel closes its page (closes the engine tab), and the panel goes to the tab used before it, as with other panel tabs; the panel closes only when all its panel tabs are closed. When the front tab closes in the engine, the tab that moves into its place comes to the front, or the one before it if there is none (Chrome). Up to 10 closed tab addresses per task reopen in a new panel tab with ⌘⇧T. When the panel switches the tab it shows, the pane's frame route (`BrowserFrameRouter`), accessibility and event handlers move to the new tab (the pane stays, so keyboard focus stays), and the tab that was in front is reported to the engine as hidden (if the agent used it within 60 seconds it stays visible for that time, as in the Claude app: "Background tabs keep running while you drive them"). Saved: each tab's key, address and title (`BrowserPreviewPreferences.pages`). When the task state is first read and the engine has neither open nor lost tabs, the saved tabs are passed to `rememberTabs` and reopen together when the panel shows one of them or the agent first uses them (`restoreTabs`). On 2026-10-22 and 2026-10-23 there was a Claude-app-style tab strip (with two or more tabs, + and ⌘T) inside the single panel tab "Browser", and closing the last tab closed the panel. For new windows a page asks for, see "New windows" below |
+| Number of tabs | 2026-10-27. One browser host holds the tabs of every task, and the pop-ups of their pages, as browsers. The bridge's browser table (`kMaximumBrowsers`) has 256 slots, and the request context table 32 more than that. Before, they had 16 and 32 slots. With 16 slots, once the tabs of several tasks filled 16, no browser was created for a new tab in any task (`yardlet_cef_create_browser` returned 0). The host sent `failed` for that tab, but the app kept it as an open, empty tab. So every agent call ended with "The browser tab is gone.", and the tab list showed about:blank as "responding". The panel reported it only if it was showing that tab when the failure came (installed app from 2026-10-27 03:05, host 17207: 16 made up of tabs 1–10 and 12–16 and one pop-up whose renderer had died). It showed only in tasks whose panel was closed because those tasks lost their tabs when the host restarted at 01:13 and made new tabs only after the slots were full. Tabs already open stayed normal throughout. Now, when the slots are full, `create_browser` returns -1, and the host tells only that tab with `failed(message:tab:limit:)` and writes `tab not opened tab=… reason=limit` to host.log. If Chromium cannot create the browser it is `reason=chromium`, and if the profile is not read within 20 seconds the host gives up on the tab (`yardlet_cef_cancel_waiting_browser`) with `reason=profile`. DevTools calls waiting for that tab are answered at once with that reason. The app remembers the tab as `BrowserTab.openFailure`. That tab's DevTools calls fail at once without going to the host, the agent tools fail at once with that one reason ("This tab could not open: …"), and the tab list adds "Could not open: tab …". `browser_navigate` opens the tab anew as the same panel tab (the same `replace` as for a tab that is not responding). When the panel shows the tab (even if it shows it only after the failure), it shows "The browser has too many tabs open. Close a tab in this or another task, then try again." (for another reason, "This tab could not open: ‹reason›") on the "Page unavailable" card. "Try again", reloading and entering an address open the tab again in its place (only that tab, like Chrome's error page and reload). Verified by the QA `many-tabs` in section 11 |
+| New windows | 2026-10-25. When a page's request for a new window (`window.open`, `target=_blank`, a click with a modifier key) comes with a user gesture, the host lets CEF create a windowless browser in `on_before_popup`. Like a Chrome pop-up, that browser has `window.opener` and the opening tab's request context (the task profile). The host reserves an empty slot and gives that slot's client the opening tab's size, scale and frame rate, and when CEF creates the browser (`on_after_created`; if the render handler's question comes first, it finds the reservation with `get_opener_identifier`), the host assigns a tab number (from 2^30; tabs Yardlet opens start at 1) and sends `popupOpened(tab:opener:url:background:)`. Yardlet takes the tab as a task tab of the opening tab (`adoptPopup`: at the end of the strip; behind for a background-tab click, otherwise in front). For a tab outside any task, or a task that has 9 tabs, it closes that browser and the opening tab goes to the address. Without a user gesture, or when the browser slots are full (see "Number of tabs" above), the host reports `newWindow` as before, and Yardlet does not open requests without a gesture (as Chrome's pop-up blocking does). But before the evening of 2026-10-25, requests without a gesture never got this far: CEF's `CanCreateWindow` calls the Chrome layer (`ChromeContentBrowserClient::CanCreateWindow`) first, and Chrome's pop-up blocker (`blocked_content::MaybeBlockPopup`, `kNoGesture` in `ShouldBlockPopup`) put the blocked request into `PopupBlockerTabHelper`, which serves Chrome's address bar, so in a windowless tab no one ever saw that list (reproduced in QA: 0 entries). So the browser process starts with Chrome's own switch `--disable-popup-blocking`, and the host's `on_before_popup` keeps the same rule (no user gesture). Nothing is left in the profile. From then on, the address stays in the list of an indicator at the right of the panel's address field (a crossed-out window, with the help text "Pop-ups were blocked on this page."), like "Pop-ups blocked" in Chrome's address bar (`BrowserTab.blockedPopups`, the first 25 as in Chrome, `kMaximumNumberOfPopups`), and when the person picks it, it opens in front as a new task tab (`BrowserHostClient.openBlockedPopup`). The engine did not create that window, so the tab has no `window.opener` (Chrome holds on to the blocked request and opens it with its opener). The list is cleared when the page changes to a new document (`newDocument`: the main frame in CEF's `on_load_start`, which does not come for navigation within the same document; Chrome's `PopupBlockerTabHelper::DidFinishNavigation`). The agent tools report the blocked pop-up addresses at the end of a result (the agent opens such an address with `browser_tab_new`). Chrome's "Always allow pop-ups from this site" is not included. If creation fails (`on_before_popup_aborted`), the reservation is released. When a pop-up calls `window.close()`, its tab drops out on `closed`, and the panel goes to the tab used before it. So a card issuer's 3-D Secure window, PayPal or a sign-in pop-up can answer the page that opened it through `window.opener.postMessage` (QA `checkout`). Window size requests (`width` and `height`) are not used; the window opens as a tab. From 2026-10-22 to 2026-10-25 the host cancelled every new window and Yardlet opened its address in a new tab without `window.opener`; before that it opened in the opening tab. The two apps (bundle bytes): the Claude app 3.1623.3 takes only pop-ups given a size into tabs, as windows Electron created, keeping the opener, and opens `target=_blank` in the opening tab; the Codex app 26.1016 takes only `target=_blank` that way and opens pop-ups given a size in a new tab without an opener |
+| Moving tabs | Tabs on the new-task screen belong to the draft's workspace ID (`TaskWorkspaceStore.draftID`), and when the task sent from that screen is created, they move to that task one tab at a time (`move(_:toSession:select:)`, `moveTabs(fromSession:toSession:)`, 2026-10-23). Only the client's ownership changes (`BrowserTab.session`, strip order, front tab) and nothing is sent to the host, so the pages and their state stay as they are. The tab keys stay too, so the panel tabs the task takes over are the same tabs. Moved tabs do not go into the closed-tab list; they are appended in the same strip order, and the draft's front tab becomes the task's front tab. Tabs are not moved into a task that has 9 tabs. Tab addresses the draft lost when the host died (`rememberedTabs`) are handed to the task too. QA: `--ui-fixture-browser-check-only=draft-handoff` |
+| Icons | 2026-10-23. When CEF reports the page's icon addresses (`on_favicon_urlchange`), the host downloads the first one with `download_image` (as a favicon, so it neither sends nor receives cookies; 16 DIP, up to 2x) through the browser's own network and cache, and sends the PNG from `get_as_png(2.0)` in a `favicon(tab:url:png:)` event (empty data if the download fails). Each download gets its own callback that knows its tab, freed when its reference count reaches 0. Yardlet keeps the icon in `BrowserTab.favicon` and calls the tab observers, and clears it when the address changes to another host (site). It is not saved |
+| Page errors | 2026-10-23. "Unavailable" in the panel header and the error card attach only to the visible tab, and only to the navigation that failed. A main-frame `loadError` (except -3 `ERR_ABORTED`) becomes a card when its address commits: an `address` to that address, or the `loadEnd` with status 0 that Chromium sends for the error page (CEF 154 sends no address change for an error page; QA `load-errors`). If loading ends without a commit (the previous page stays), there is a "Could not open ‹address›." notice instead of a card. An error that comes after loading has ended belongs to a navigation already replaced, so it is dropped. The card is cleared by a commit of another address (`address`, including history.pushState) or by a `loadEnd` with an HTTP status (a reload succeeded), and stays through the error page's own follow-up loading (`loading` → -3 → end) (before 2026-10-23 that loading cleared real failures). Showing another tab clears it. The host's `failed` carries a tab (`failed(message:tab:)`, a tab whose browser could not be created) and goes only to that tab; only a `failed` without a tab goes to every tab. A tab that could not receive a CDP message (an agent call to a tab that is gone) gets a DevTools error answer (-32001) for that call's `id` instead of `failed`, so the call fails at once. Before 2026-10-23 this went to every tab as a `failed` without a tab, and healthy pages showed "Unavailable" and the card (reproduced in QA). Diagnostics: for each main-frame load error the host writes one line to host.log, `load error tab=… code=… host=…` (host name only, no path or query), and one line `devtools message refused tab=…` |
+| Not responding | 2026-10-23. A tab's page is not responding when one of two facts holds: Chromium's hang monitor finds that the renderer has not handled input for 15 seconds, or a DevTools call the renderer answers (the navigation calls `Page.navigate`, `reload` and `navigateToHistoryEntry`, and every call outside `Target.` and `Browser.`) got no answer in time (`BrowserTab.unresponsive`: `.hangMonitor` and `.unanswered(method:)`). Chromium does not call `OnRenderProcessUnresponsive` for a tab with a DevTools session attached (Yardlet's tabs have one, for the agent and accessibility) (`IsDebuggerAttached` in `WebContentsImpl::RendererUnresponsive`; confirmed in QA, where only "responsive" ever came), so the host reads `is_render_process_unresponsive` for each open tab every second and sends `responsiveness(tab:isResponsive:)` when it changes. For a tab where the callback does come, the host holds on to that callback (wait and terminate in the `unresponsive(tab:action:)` command). The panel shows Chrome's "Page Unresponsive" bar with "Wait" and "Reload", and the header status is one line: "Not responding" > "Crashed" (see "Renderer exit" below) > "Unavailable" > "Loading" > "Ready" (the error card is hidden while the page is not responding). Wait hides the bar for 15 seconds and shows it again if the page still does not respond (Chrome's Wait). Reload, and the agent's `browser_navigate` to a tab that is not responding, open the tab anew with the same key, position and front state (`BrowserHostClient.replace`: if a callback is held, it ends the renderer first, then closes and opens). QA (`unresponsive`): the renderer of a script that never ends was at 98–100% CPU and was gone after the replacement. The state clears when the page responds (`responsiveness` true), when the renderer ends (`pageCrashed`) or when an answer comes to a call the renderer answers. The host log has `renderer unresponsive|responsive tab=…` |
+| Renderer exit | 2026-10-24. When a renderer ends (CEF `on_render_process_terminated`), the host writes one line to host.log, `renderer ended tab=… status=… code=…` (`status` is crashed, oom, killed, abnormal and so on; `code` is the exit code, the signal number for a crash), and sends `pageCrashed(tab:reason:status:code:)`. `reason` is the error code of Chrome's error screen, named by the host (SIGTRAP, SIGSEGV and so on, Out of Memory; signal numbers differ by platform, so the host names them, not the engine). The tab keeps `BrowserTab.crash` (`BrowserTabCrash`) until the next load starts. The panel gets the header status "Crashed" and a card in the Codex app's wording ("This page crashed", "‹host› ended unexpectedly. Error code: ‹code›", Reload), and the agent tools get the fact at the end of a result ("This tab's page crashed: its renderer ended (error code ‹code›). …") and a line "Crashed: tab … (‹code›)" in `browser_tab_list`. All five crashes in the installed app were caused by input timestamps (section 4, "Input timestamps") |
+| Passkeys (WebAuthn) | Chromium's own WebAuthn is used (windowless tabs too, in the Alloy style on top of Chrome's bootstrap). A windowless tab has no parent window, so Chrome's passkey dialog (Views `AuthenticatorRequestDialogView`) shows as a separate window of the host (`NativeWidgetMacNSWindow`). Which tab the window belongs to, where it shows and who closes it are set by "Chromium's windows and tabs" below (2026-10-27). What shows now: the phone and tablet passkey sheet (hybrid: QR code + Bluetooth) and the USB security key sheet (confirmed in QA from the dialog's text; registering end to end with a real phone or key has not been confirmed). Which sheet shows first when the site has no passkey anywhere is decided by Chromium 154's `AuthenticatorRequestDialogController`, with the same rules as Chrome (2026-10-25, checked against the source and with QA `--ui-fixture-browser-check-only=passkey`). (1) A conditional request shows no window, even when the person clicks the sign-in field (QA). (2) An immediate request (empty `allowCredentials`, "Sign in with a passkey") goes straight to the QR sheet without a list when the phone is the only choice ("single mechanism" in `IndexOfGetAssertionPriorityMechanism`). The Touch ID profile authenticator drops out of the list when it reports no credential for the site (`PopulateMechanisms`), and when Bluetooth is on, the USB security key becomes a button inside the QR sheet. Chrome adds iCloud Keychain as one more entry, and so shows a list first ("iCloud Keychain", "A different phone, tablet or security key"), only when it lacks permission to read iCloud passkeys. This host has no iCloud Keychain, so that difference remains. Changing it would mean changing that decision code (it is not in settings, feature flags or the CEF API), which was not done. (3) For creation (no `authenticatorAttachment`), on a Mac with iCloud Drive on, Chromium puts iCloud Keychain first (`ShouldCreateInICloudKeychain`, `WebAuthenticationICloudKeychainForInactiveWithDrive` on by default, `IndexOfMakeCredentialPriorityMechanism`). This host has no iCloud Keychain, so it went straight to the next in line, the phone QR, and Touch ID was behind "Save another way". Since 2026-10-25, the host turns off Chrome's own setting `webauthn.create_in_icloud_keychain` whenever a request context is ready (`on_context_initialized` for the default profile, `on_request_context_initialized` for task profiles) (`set_windowless_preferences`, CEF `set_preference`). Then Touch ID (`Transport(kInternal)`) comes first, so the "Create a passkey in your Chrome profile" sheet (`kChromeProfileCreatePasskey`, "Continue" and "Save another way") shows first, and the QR appears only when chosen from "Save another way". In a build without Touch ID it is the QR, as before. It was confirmed that the value went into two QA profiles as `false`; that the Touch ID sheet shows first could not be confirmed, because that needs a signed build (based on the source). Chromium uses Bluetooth only if the Info.plist of the app that started the host (the responsible app = Yardlet) has `NSBluetoothAlwaysUsageDescription` (without it, "Cannot use Bluetooth because the responsible app … does not have Bluetooth metadata", and then only the security key sheet). So it is in both Yardlet.app and the host (`Packaging/Info.plist`, `Packaging/CEF/BrowserHost-Info.plist`, Korean in `ko.lproj/InfoPlist.strings`), and macOS asks for Bluetooth permission on first use. The dialog waits until the time the requesting site set, so the person must be able to see and close it. The host is normally not activated (`.prohibited`), so when a dialog appears (it also checks every second, because a window that appears behind another app's window gives no notice) the host switches to being able to activate (`.accessory`) and sends `chromiumWindow`. Yardlet places that window over the panel showing that tab (see "Chromium's windows and tabs" below), and when a newly placed window appears it follows the `ChromiumWindowPresentation` rules. If Yardlet is in front, it hands over activation (`activate(from:)`) so the window becomes key (security key PIN, Esc). If Yardlet is not in front (the agent pressed the button, or the person is in another app), it does so the next time Yardlet comes to the front, and after that it only raises the window without making it key. When no placed window is left, the host hands activation back to Yardlet (`ChromiumWindows`). The agent tools of the task that owns the tab add to their results that a dialog is open, with its title and tab number, and can close it with `browser_handle_dialog` (accept false) (`closeChromiumWindows(tabs:)`: sends Esc only to those tabs' windows and closes any still there after 0.5 seconds → the page gets `NotAllowedError`). When the page navigates, to another site or within the same site, the window closes as in Chrome (`WebContentsModalDialogManager::DidFinishNavigation`, the requesting document is gone; "closes when the page moves" in the 2026-10-27 QA `passkey`). For a request that wants only this device's passkeys (transports `internal` in `allowCredentials`, `hints: ["client-device"]`, `authenticatorAttachment: "platform"`), there is, as in Chrome, a "No passkeys: this device has no passkey for …" or "Your device can't be used on this site" sheet with only "Close". A conditional request (`mediation: "conditional"`) waits without a window (per the spec; (1) above). `passkeyPlatformAuthenticator` in `getClientCapabilities()` is true with hybrid alone (the spec: "locally and/or via hybrid transport"), so it is true without Touch ID. Touch ID (Chromium's profile passkeys) is on only in builds made with the prototype in section 7. The 2026-10-25 installed app was built that way, so the host's CEF constants and `keychain-access-groups` are `<team>.com.zzunkie.webauthn` and `…-uvk`, and the default profile has `webauthn.touchid.metadata_secret` (there is no `webauthn.touchid.last_used`, so it has not been used yet). What does not work is iCloud Keychain passkeys. Touch ID turns on only when the browser process's `keychain-access-groups` entitlement contains, letter for letter, the group fixed when CEF was built (`MAC_TEAM_IDENTIFIER_STRING "." MAC_BUNDLE_IDENTIFIER_STRING ".webauthn"` in `chrome_web_authentication_delegate.cc`, `containsObject` in `keychain_util.mm`), and the CEF distribution's group is `.org.chromium.Chromium.webauthn` with no team ID, which no profile can allow (hence the prototype in section 7). With `com.apple.developer.web-browser.public-key-credential` (Apple approval), iCloud Keychain goes through AuthenticationServices, but that discovery is created only when the web content has an NSWindow (`fido_discovery_factory.cc` `MaybeCreatePlatformDiscovery`). `GetNativeView()` of a CEF windowless tab is empty, so approval alone is not expected to turn it on (based on the source, not checked by running it). `isUserVerifyingPlatformAuthenticatorAvailable()` is true only in builds with Touch ID on |
+| Vault | Facts the agent vault ([BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)) confirmed in this host (2026-10-24, `run-check.sh … --ui-fixture-browser-check-only=vault`, a real CEF 154 QA bundle, test values only): (1) The CDP `WebAuthn` domain exists. With `WebAuthn.enable` and `addVirtualAuthenticator` (ctap2, `internal`, resident key, user verification, automatic presence), `navigator.credentials.create()` on `localhost` completes without a dialog (`authenticatorAttachment: platform`), `WebAuthn.credentialAdded` arrives, and `getCredentials` gives the private key. Putting that credential into a new authenticator with `addCredential` makes `get()` succeed, and `credentialAsserted` arrives. While the authenticator is attached, the tab's other authenticators (Touch ID profile passkeys, the phone) are not used, so the vault attaches it only briefly. (2) `Accessibility.getFullAXTree` gives a password field's value as one • per character (a 26-character test value → 26 •). (3) A value set in an isolated world (`Page.createIsolatedWorld`, name `yardlet-vault`) with the native `value` setter and `input` and `change` is accepted both by ordinary forms and by fields that hold their value React-style (that field's `input` event has `isTrusted: false`). `Page.addScriptToEvaluateOnNewDocument` and `Runtime.addBinding` (`executionContextName`) with the same name enter the same world, so the person's sign-in submission is received only through that world's binding (`Runtime.bindingCalled`). (4) Chromium's password manager does not store passwords (0 rows in `logins` of `Login Data`). The autofill history (`autofill` in `Web Data`) kept values of plain text fields: the user name, and the digits typed into one-character code fields without `autocomplete` (a code already expired). Fields with `autocomplete=one-time-code` and password fields were not kept. Since 2026-10-25, turning off address autofill (see "Autofill save offers" below) also keeps this history empty (QA: even after the vault step typed into an email field, `autofill` and `credit_cards` in all four QA profiles had 0 rows, and both settings in `Preferences` were `false`). (5) 2026-10-25: in a `Page.captureScreenshot` (PNG) image of an off-screen rendered tab, Vision `VNDetectBarcodesRequest` reads the page's two-step verification setup QR (`img`, 43 modules scaled pixel for pixel to 215 CSS px) and a Google Authenticator-style export QR (71 modules). |
+| Profiles | Since 2026-10-24, one per task ([BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md)). When the `open` command has `profile` (`key`, `seedFrom`), the host opens the tab in a `CefRequestContext` whose `cache_path` is `Browser/Task-<key>` (tabs with the same key share one context, released when the last tab closes). Chromium opens only folders directly under the root cache as disk profiles and turns other paths into in-memory profiles ("Cannot create profile at path" in `chromium.log` and `host.log`). Disk profiles are read asynchronously, so a tab for a profile not yet read is created after `on_request_context_initialized` (`yardlet_cef_create_browser` returns 2 and reports with `YardletCEFEventProfileReady`). When a folder is newly created, the host puts in the default profile's Touch ID passkey key (`webauthn.touchid.metadata_secret`), opens the tab at about:blank, copies the starting cookies (from the `seedFrom` profile, or the default profile if there is none) through the cookie manager, and then opens the requested address. The copy puts cookies in the shape Chromium stored them: host-only cookies stay host-only, with the domain left empty, and partitioned cookies are left out because CEF does not take a partition key (before 2026-10-25, host-only cookies became domain cookies and `__Host-` cookies were dropped, so Google account sites sent the person back with `CookieMismatch`; [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) section 8). Navigation and DevTools messages that come while waiting for the profile or while copying are deferred until after. If the profile is not read within 20 seconds, the host gives up on the tab and reports it as a tab that could not open (2026-10-27; see "Number of tabs" above). The `copyCookies` command moves one site's cookies to another profile (the person's sign-in to the default profile). The `importCookies` command replaces the chosen sites' cookies in one profile with cookies the person imported from another browser: it first deletes that site's cookies, puts the new ones in through the same insertion path, and answers with `cookiesImported` (2026-10-26, [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) section 10). Tabs without `profile` (the setting "Keep cookies: Shared by all tasks", tabs without a task) use the default profile `~/Library/Application Support/Yardlet/Browser/Default`. Session cookies are saved too (persist_session_cookies), so sign-ins survive a host restart (the same for task profiles) |
+| Cookie encryption | When the host starts, it checks its own signature (`CookieKeychain`, Gatekeeper's Developer ID requirement). With Developer ID, it derives the key from the login keychain item "Chromium Safe Storage" (a random password), as Chromium does by default. That item trusts the signature of the host that created it, so updates signed with the same Developer ID do not ask. Ad-hoc and Apple Development builds, and `YARDLET_BROWSER_KEYCHAIN=mock` (QA runs), use the mock keychain as before (`--use-mock-keychain`, the fixed password `mock_password`). This is because an ad-hoc signature differs from build to build, so the login keychain permission window would appear every time; the price is that any program that can read this user account's files can decrypt the cookies. Which one is in use is recorded in the "cookie key in …" line at the top of host.log. The two keys differ. Cookie values are `v10` + AES-128-CBC (PBKDF2-SHA1 with 1003 iterations, salt `saltysalt`), and cookies that fail to decrypt are not read (`sqlite_persistent_cookie_store.cc` `kDecryptFailed`). So switching from mock to Developer ID (or back) signs the built-in browser out of every site once. There is no code to migrate existing cookies (it would have to rewrite the user's profile database) |
+| Autofill save offers | 2026-10-25. When a form containing a card or an address is submitted, Chromium's autofill shows a Chrome bubble offering to save it, and that code (`SaveCardBubbleControllerImpl::DoShowBubble`, `AddressBubblesController`) fetches the tab's Chrome window without checking. A windowless tab has no such window, so the browser process read a null pointer (SIGSEGV, address 0x10) and the host ended along with every tab. This also ended the host on a real Stripe Checkout payment page. In the same place as the passkey setting (`set_windowless_preferences`, whenever a request context is ready), the host turns off Chrome's own settings "Save and fill payment methods" (`autofill.credit_card_enabled`) and "Save and fill addresses" (`autofill.profile_enabled`). Then autofill does not extract cards, addresses or IBANs from submitted forms (`FormDataImporter::ExtractFormData`) and offers nothing. With the address setting off, form history (autocomplete, `autofill` in `Web Data`) is not kept either. Autofill's suggestion list appears only when the tab's view is inside a window (`CanShowRootPopup`), so it does not appear in a windowless tab (based on the source) |
+| Locale | If the system's first language is Korean, the Chromium UI locale is `ko` and Accept-Language is `ko-KR,ko,en-US,en`; otherwise `en-US` |
+| URL policy | Only http, https, file, about and data open. Typed addresses, page links, redirects, script navigation and form POSTs (including 3-D Secure, which goes to another site and back), new windows and the agent's CDP `Page.navigate` are all filtered against the same list in the host's `on_before_browse` (the first address of a new window in `on_before_popup`). A blocked address shows a notice in the panel. Since the evening of 2026-10-25, other apps' addresses (`mailto:`, `tel:`, `zoommtg:`, `slack:` …) go to "External app addresses" below instead of a notice. Chromium's own addresses (`blob`, `chrome`, `chrome-extension`, `devtools`, `view-source`, `ws` …), addresses Chrome does not hand to other apps (`kDeniedSchemes` in `external_protocol_handler.cc`: `javascript`, `data`, `file`, `shell` …) and single-letter schemes (Windows drives) are blocked with a notice as before (`is_external_scheme`). The address field and the agent's `browser_navigate` still open only the five. Since 2026-10-26 the address field opens input that is not an address as a Google search (the default search engine of Chrome's address bar, `BrowserURLPolicy.addressFieldURL`) |
+| External app addresses | Evening of 2026-10-25. Follows Chrome 154's rules (`ExternalProtocolHandler`). The host cancels such a navigation and sends `externalApp(tab:request:)` (the address, the origin of the requesting document, the user gesture, and whether that origin has "always allow"), and Yardlet decides (`BrowserHostClient.handleExternalApp`, `BrowserExternalAppPolicy`). (1) Once a page has made a request, further requests from it do nothing until the next click or key press (by the person or the agent) (Chrome's flood protection `g_accept_requests`). (2) If no app opens the address, or that app is Yardlet itself, nothing happens (Chrome only logs it to the console). (3) `mailto:` opens in the default mail app without asking (Chrome: "every platform provides a default handler for it"). Origins and address kinds the person set to "always allow" do not ask either. (4) Otherwise, when the panel shows that tab, a bar over the page asks: "Open ‹app›?", "‹origin› wants to open this application.", Cancel and "Open ‹app›" (Chrome's wording; the app name comes from LaunchServices `urlForApplication(toOpen:)`). If the origin is secure (https, loopback http on this Mac; Chrome `MayRememberAllowDecisionsForThisOrigin`), there is an "Always allow ‹site› to open links of this type in the associated app" box, and when the person checks it, the host writes Chrome's own setting `protocol_handler.allowed_origin_protocol_pairs` (`{origin: {scheme: true}}`) to the tab's profile (`allowExternalApp`). (5) A request that came from the agent's input asks even in case (3): if the tab's last input was an agent tool call (`BrowserTab.isDrivenByAgent`; the person's input is a click or key press on the page in the panel, or the address, back, forward or reload), only the person opens it, from the bar. The agent tools add that fact to their result. An app address opened as a new window (a `target=_blank` mail link) does not create a tab (Chrome closes that tab). The bar goes away when the page changes to a new document (like Chrome's tab-modal windows). Yardlet does the opening with `NSWorkspace.open`; QA runs (`YARDLET_QA_BACKGROUND`) do not open anything. host.log has `external app tab=… scheme=… remembered=…` (the address is not logged). The two apps (bundle bytes): the Claude app 3.1623.3's Browser pane blocks anything other than http and https without asking (`block-silent`), and the Codex app 26.1016 blocks anything other than http and https in tabs the agent uses (`Browser Use URL policy`). For other navigation, the Owl framework has setting names matching Chrome's question wording, but whether they are used is not known |
+| Downloads | Saved without asking to the user's `~/Downloads` under the suggested name; if the name is taken, `name (1).ext`. The host has `LSFileQuarantineEnabled`, so downloaded files get the quarantine attribute. If the panel is open, when a download finishes the Dock's Downloads stack bounces, a notification appears if notifications are allowed, and "Show in Finder" appears at the bottom of the panel (without a panel the file is only saved). From the second automatic download on the same page (several files from one click, file saves a script made), Yardlet asks for the "Download multiple files" permission as Chrome does (see "Permission requests" below). Before 2026-10-25 no one answered, so those downloads silently disappeared (QA). When a tab a page opened as a new window (a file address opened with `target=_blank`) ends in a download without ever showing a page, Yardlet closes that empty tab and brings the opening tab to the front, as Chrome does (`.download` in `BrowserHostClient`; the opening tab is known from `openedTab`). It closes the tab after the download finishes. CEF stops reporting a download whose tab has closed, so closing early would leave the panel's download line without an end |
+| JS dialogs | alert/confirm/prompt/beforeunload as a sheet on the panel's window. The title includes the host name of the requesting page, so a page cannot pose as Yardlet. If the panel is not in a window or a sheet is already up, the dialog is cancelled. If the panel is closed, Yardlet does not answer (section 6). Since the evening of 2026-10-25, when the person closes a tab in the panel (✕, ⌘W, the close items in the tab menu), the page is asked first, as in Chrome: a tab open in the engine is closed with `requestClose` (host `close_browser(0)`), and for a page that uses "confirm before leaving", the tab stays in the panel while that question comes and is asked with Chrome's "Leave site?" (Leave and Cancel, the same sheet as the navigation question). With Cancel the tab and page stay; with Leave, once the host has closed it (`closed`), the panel goes to the tab used before it, as with other tabs. CEF closes pages without such a handler at once (`NeedToFireBeforeUnloadOrUnloadEvents`). If a tab that is not visible asks, Yardlet brings it to the front to ask (as Chrome activates that tab to ask, `BrowserTab.closeQuestion`). If within 1 second the page neither asks nor closes (`BrowserHostClient.closeAnswerWait`), the tab is closed at once as before: Chromium gives a renderer that does not answer 500 ms and then closes, but does not apply that timeout to a tab with DevTools attached (`WebContentsImpl::ShouldIgnoreUnresponsiveRenderer`). The agent closing a tab, archiving or deleting a task, and quitting the app do not ask. For a tab Yardlet closes at once like this, the host answers its beforeunload with "Leave" right away (`BrowserSlot.closing`), and a question that has already reached Yardlet is answered with Leave too (`leaveDialog`). CEF asks the page first even on a forced close (`close_browser(1)`) (`DispatchBeforeUnload` in `AlloyBrowserHostImpl::CloseBrowser`), but that tab had already left the panel and the client, so there was nowhere to answer. So before 2026-10-25, closing the tab of a page that uses "confirm before leaving" (editors, mail composition) left its browser and renderer behind, invisible, until the host ended (QA: the closed tab's `javaScriptDialog` kind 3 was cancelled at shutdown with "requires a parent window handle"). Now it closes within 1 second (host.log `browser closed tab=…`) |
+| File choosers | `NSOpenPanel`/`NSSavePanel` sheets. The page's `accept` extensions are passed as the allowed types. `multiple`, `webkitdirectory`, `showOpenFilePicker` and `showSaveFilePicker` arrive in their own modes (QA `compat`). `showDirectoryPicker` arrives as opening a file (section 10) |
+| Permission requests | 2026-10-25. When a page requests something Chrome asks about with a permission bubble (notifications, location, clipboard read, downloading multiple files, cookies of other sites, local network, fonts, window management and so on), CEF calls `on_show_permission_prompt`. In the Alloy style without a handler, CEF does not answer (`CEF_PERMISSION_RESULT_IGNORE`), and the page's request never finished (QA: `Notification.requestPermission()` never finished, location finished only on the timeout the page set, and the second download on the same page disappeared). Now the host passes it on as `permissionPrompt` (the site and Chromium's permission names), and when the panel shows that tab, a bar over the page asks ("‹site› wants to: Show notifications", Block, Allow and Close). The answer goes back as `permissionResult` (allow, block or dismiss), and Chromium remembers allow and block per site (as Chrome does; it does not ask on the next visit). When the page goes elsewhere or the tab closes, CEF calls `on_dismiss_permission_prompt` and the bar goes away. While the panel is not showing that tab, the request waits (Chrome also asks when that tab comes to the front), and the agent tools add that fact to their result (only the person answers). Since the evening of 2026-10-25, camera and microphone (`getUserMedia`) ask through this bar too ("Use your camera", "Use your microphone"). CEF's `on_request_media_access_permission` denies at once by default in the Alloy style, so the host asks Yardlet with its own prompt number (2^62 or higher) and records the answer in Chrome's own site settings (`CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA` and `_MIC`, in that tab's profile) so it does not ask next time (block denies at once, allow allows at once). When allowed, Chromium opens the device, and at that point macOS asks once, the first time, about Yardlet's access to the camera and microphone (the usage descriptions in the app's Info.plist; the host has the same keys and entitlements). Chromium does not ask macOS before the site is allowed (content `MediaStreamManager`, CEF `media_access_query.cc` source). When the page changes to a new document, the tab closes or the renderer ends, the request is released and ends as denied. Screen sharing (`getDisplayMedia`) is denied as before, because Chrome's screen and window picker does not exist for a windowless tab. The Codex app 26.1016 asks about the same requests with an allow, allow this time and deny window (`setPermissionPromptHandler`), and the Claude app 3.1623.3 denies everything except clipboard write (both from bundle bytes) |
+| PDF | 2026-10-25. Chromium's PDF viewer (`index.html` of the built-in extension `mhjfbmdgcfjbbpaeojofohoefgiehjai`) opens in a frame inside the PDF page, and the tab title becomes the file name. The URL policy used to block that frame's `chrome-extension:` address, so every PDF was a blank screen (panel notice "Blocked chrome-extension://mhjf…/index.html"); now only subframes going to that extension pass (`is_pdf_viewer_frame`). A tab or the address field going to that address is still blocked. The viewer's download button leads to a download, and its print button to "Printing" below |
+| Certificate errors | Chromium shows its own warning page in the tab ("Privacy error", Advanced → Proceed to ‹host› (unsafe)). Since 2026-10-25 the panel does not lay its error card over certificate errors (`net::IsCertificateError`: -200 to -219, and -150). Before, the card ("Page unavailable ERR_CERT_AUTHORITY_INVALID", Try again) hid the warning page and its buttons. QA confirmed that with a self-signed certificate, Advanced → Proceed opens the page (`compat`). For errors Chromium does not let the user skip (HSTS sites and so on), the warning page has no such button |
+| HTTP authentication | Chromium's own sign-in window (Views `LoginView`: user name, password, Cancel and Sign in) shows as a separate window of the host, like the passkey dialog (confirmed in 2026-10-25 QA from the window's text, without actually signing in). As in Chrome it is a web-modal dialog of the tab (`LoginHandler`), so it follows the `ChromiumWindows` rules unchanged (the tab's window, over the panel showing that tab, handing over activation, closing by that task's agent; see "Chromium's windows and tabs" below). When the window appears, the tab's document has already changed to Chromium's empty error page (`chrome-error://chromewebdata/`) (snapshot in 2026-10-27 QA). Since the evening of 2026-10-25 the host reports a kind for each window (`kinds` in `chromiumWindow`: among Views windows, signIn if the title is Chromium's own "Sign in" or the Korean for "Sign in" (`IDS_LOGIN_DIALOG_TITLE`, in the host's two locales), passkey for other Views windows, print for AppKit modal windows). The agent tools call this window "Chromium's sign-in window for the site's HTTP authentication" and say that closing it cancels the sign-in. Before, they called it "Chromium's passkey dialog" (reproduced in QA) |
+| Printing | `window.print()` and printing from the PDF viewer take the path where Chromium opens the macOS print window (`NSPrintPanel runModalWithPrintInfo:` in `PrintingContextMac::AskUserForSettings`) as a separate window of the host. CEF does not use print preview for windowless tabs (`CefBrowserPlatformDelegate::IsPrintPreviewSupported`). This is based on the source; it was not run in QA because a system window would appear. The Codex app calls `webContents.print()` (the same system window) from its print command. Since the evening of 2026-10-25 the agent tools call this window "the system's print dialog" (the host reports AppKit modal windows as print; based on the source, not seen in QA). This window is not a dialog of the tab but an app-modal window without a parent, so it does not hide with the tab, and which tab it belongs to cannot be known. So no task's agent can close it, and the tools mention it only when they fail, with "which tab opened it is not known, so it may be another task's". Yardlet leaves this window where it is and raises it just above Yardlet's frontmost window. Whether the print window blocks input to other tabs was not checked in QA (in the source it is a modal loop running in a `CATransaction` completion block, and the host's input comes as Yardlet's commands rather than window events, so it is not expected to block it) |
+| Chromium's windows and tabs | 2026-10-27. A passkey window opened by one task or by the person was added to the agent results of every task as "is open over the browser", and any agent could close it with `browser_handle_dialog`. An agent reported a passkey window open on the Stripe tab, but when the person opened that tab there was no window, and clicking a Yardlet window sent the window to the back with no way to bring it back. **Which tab a window belongs to:** the passkey dialog and the sign-in window are web-modal dialogs of their tab, as in Chrome. But in a windowless tab on macOS the parent is empty (CEF 154's `AlloyWebContentsDialogHelper::GetHostView` is empty for a windowless tab, the Aura-only `GetAcceleratedWidget` is `NOTIMPLEMENTED` on Mac, and `parent_view` is not used even when given), and there is no CEF callback that names the tab when the window appears (the dialog's size comes from the stored `GetContainerBounds`). The link that remains is Chromium's rule: when the tab is hidden, the dialog hides within the same call, and when the tab is shown, it appears again (`WebContentsModalDialogManager::OnVisibilityChanged`; CEF `WasHidden` calls `WebContents::WasHidden` directly on the host's main thread, which is the UI thread). So for each `visibility` command from Yardlet, the host (`ChromiumWindows`) compares the windows before and after and records the windows that disappeared or appeared in between as that tab's. When a new window appears while there are tabs that are not hidden, it belongs to that tab if there is only one; if there are several, the host hides each tab for one call and shows it again at once, and assigns the window to the tab whose hiding makes it disappear (those pages see `visibilitychange` twice, very briefly). If it still cannot tell, the tab is -1. The print window has no tab (see "Printing" above). `chromiumWindow` carries `ids` (window numbers) and `tabs` (the tab, -1 if unknown) for each window. In QA ("Chromium's windows belong to their tab" in `compat`), with tabs [1, 3] not hidden it correctly found the window of tab 3 of another task, and with [1, 3, 4, 5] the window of tab 5. **Who hears about it and closes it:** the agent tools add only the windows of their own task's tabs to results (the tab number, "Chromium ignores input to that tab until it closes", that the person sees it only when that task's panel shows that tab, and that `browser_handoff` shows that tab to the person), and close only those windows (`closeChromiumWindows(tabs:)`). Other tasks' windows appear neither in results nor in closing. A window whose tab is unknown cannot be closed by any agent. While such a window is open, Chromium drops input to that tab (the person's clicks do not reach the page, QA). So the agent's click, typing, key and scroll tools send nothing to that tab and answer with a failure: "The click was not sent to tab 3." followed by the window's name and kind, that it closes with `browser_handle_dialog` (accept false), and that `browser_handoff` shows that tab to the person. Before the evening of 2026-10-27 they answered "Clicked" although the click was dropped (QA). Reading tools (snapshot, screenshot, evaluate) and navigation work as before. Other tabs and other tasks' tabs take clicks, typing and navigation, and the person's panel takes clicks too (QA). **Where it shows:** Chrome draws a tab's dialog over that tab. Yardlet (`ChromiumWindowPresenter`) finds, for each window, the on-screen panel showing that tab and gives the window a place with `presentChromiumWindows`: centered at the top edge of that panel's page (within that screen), and just above that panel's window (`order(.above, relativeTo:)`, which works with another process's window number too, QA). A window whose tab is unknown stays where it is and is raised just above Yardlet's frontmost window. A window not placed (no panel shows its tab: the agent's background tab, or the person is in another task) waits off screen, transparent, and appears over the panel when the panel shows that tab. When a window appears over a tab of a task whose panel is not on screen, Yardlet opens that task's side panel at that tab, as `browser_handoff` does (`onChromiumWindowOverHiddenTab` → `AppModel.showBrowserTab`). It does not change the task the person is looking at, and if that task's panel is showing another tab on screen, it leaves it as it is. No separate macOS notification is sent (the agent's answer and the end-of-turn notification call the person). Windows are placed again when the windows change, when a panel starts or stops showing a tab, when a panel comes on or goes off screen, when Yardlet comes to the front, when a Yardlet window becomes key or main, moves or is resized, and when a Yardlet window is clicked (an `NSEvent` local monitor, after AppKit has brought that window forward). Each time, the window is raised just above that panel's window, so even after a click on a Yardlet window it comes back to the front. The always-on-top level (floating) is not used, so when the person goes to another app, that app's windows come on top. The host's one-second timer does not raise windows (if it did, they would come back over other apps). QA does not actually click a Yardlet window (that would take the person's screen); it sends that window to the front and then calls the click-handling path (`yardletWasClicked`), and checks in the window server's front-to-back order (`CGWindowListCopyWindowInfo`) that the Yardlet window came to the front and then the sign-in window came in front again |
+| Payment API (wallet buttons) | Evening of 2026-10-25. The browser process starts with `--disable-features=WebPayments` (in the same place as `NativeNotifications`, which turns off notifications, `disable_features`). Chromium sets `WebPreferences.payment_request_enabled` from that feature (`WebContentsImpl`), and Blink turns `PaymentRequest` on from that value, so pages have no `PaymentRequest`. Then payment pages that choose wallet buttons such as Google Pay and Apple Pay through that API do not show the buttons, and the person pays by entering a card. Before, the buttons showed, but `show()` always ended with `AbortError` because there was no Chrome window. The two apps (bundle bytes): neither the Claude app nor the Codex app has anything in its app code that turns this API off, and their frameworks have Blink `PaymentRequest` implementation strings. The earlier conclusion that the Claude app's Electron lacks this API was not confirmed in the bytes |
 
-## 4. 입력
+## 4. Input
 
-- 마우스(클릭·드래그·이동·나감), 휠·트랙패드(정밀 델타와 관성 단계가 그대로 페이지 스크롤로 이어진다), 핀치 확대.
-- 키: macOS 가상 키 코드 → Windows 키 코드 전체 표(`BrowserKeyCodes`, Chromium `keyboard_code_conversion_mac.mm` 기준):
-  글자·숫자·기호, 방향키, Home/End/PageUp/PageDown, Delete, F1~F20, 키패드, 수정 키(Shift/Control/Option/Command/
-  Caps Lock, 좌우 구분), 한/영(`kVK_JIS_Kana` → VKEY_HANGUL). 수정 키는 flagsChanged로 누름·뗌을 보낸다.
-- 한글 등 입력기: 패널 뷰가 `NSTextInputClient`다. 조합 중인 글자는 `composition.set`(밑줄 포함), 확정은 `commit`, 조합 끝은
-  `finish`로 보내고, 입력기가 쓴 키는 DOM에 `Process`(229)로 보인다. 입력기가 글자를 확정하고 그 키를 넘기면(`doCommandBySelector:`, 한글
-  조합 뒤의 Return·방향키·Tab) 확정한 글자 다음에 그 키 자체를 보낸다(2026-10-24, Chrome `render_widget_host_view_cocoa.mm`과 같음, 전에는
-  조합 뒤 첫 Return이 페이지에 가지 않았다). 후보 창 위치는 호스트가 알려 주는 글자 영역을 쓴다.
-- 비밀번호 칸(2026-10-25): 페이지의 비밀번호 칸(`<input type=password>`, 어느
-  프레임이든)이 키보드를 가진 동안, 곧 보이는 탭의 포커스된 칸이 비밀번호 칸이고 패널 뷰가 키 창의 first responder인 동안 Safari처럼 보안
-  입력(`EnableSecureEventInput`)을 켜고 패널 뷰의 입력 맥락에는 로마자 입력 소스만 허용한다(`allowedInputSourceLocales =
-  [NSAllRomanInputSourcesLocaleIdentifier]`, WebKit `WebViewImpl::updateSecureInputState`). 한글 입력 소스로 비밀번호 칸에 들어가면 입력 소스가
-  로마자로 바뀌고, 다른 프로세스는 키를 엿보지 못한다. 전에는 입력기의 한글 조합이 그대로 들어갔다(점으로 가려져 보이지 않음). 다른 칸, 패널이
-  키보드를 잃음, 다른 탭, 패널 닫힘(뷰가 창에서 빠짐), 다른 창·시트·앱(창의 키 상태), 렌더러 종료, 호스트 종료(탭이 뷰에서 떨어짐)에서 둘 다
-  끄고, 켠 횟수만큼 끈다(`BrowserHostView.updateSecureInput`, `BrowserSecureInput`). 숨겨진 뷰는 AppKit이 first responder를 거두므로 같이
-  꺼진다. 입력 소스 제한은 그 뷰의 입력 맥락에만 걸려 대화 입력창이나 다른 앱에 남지 않고, 보안 입력은 프로세스가 끝나면 시스템이 거둔다.
-  Chrome은 같은 일을 `ui::ScopedPasswordInputEnabler`(보안 입력, `TSMSetDocumentProperty`로 ASCII 입력 소스만)로 하고 비밀번호 칸에서
-  `inputContext`를 nil로 돌려 입력기도 끈다. Yardlet은 입력기를 끄지 않는다(10절).
-  칸의 종류는 렌더러가 알린다. CEF 154의 창 없는 뷰는 브라우저 프로세스에 포커스된 칸의 종류를 주지 않는다(`on_virtual_keyboard_requested`는
-  `inputmode`만, 그것도 입력기를 띄울 때만 준다). 그래서 Helper의 렌더러 처리기(`YardletCEFHelper/FocusedField.c`)가 프레임의 포커스가 바뀔
-  때마다(`on_focused_node_changed`, cefclient가 편집 칸 알림에 쓰는 CEF 표준 경로) 새로 포커스된 요소가 비밀번호 칸인지를 프로세스 메시지로
-  보내고, 호스트는 탭마다 값이 바뀔 때만 `passwordField` 이벤트를 낸다. 메인 프레임(또는 비밀번호 칸이 있던 프레임)에 새 문서가 들어오면 호스트는
-  상태를 끄고 그 렌더러에 지금 포커스된 칸을 묻는다. 뒤로-앞으로 캐시에서 돌아온 페이지는 칸에 포커스를 둔 채 돌아와 포커스 변화를 알리지 않기
-  때문이다. 새 문서에 밀려난 프레임의 보고(`is_valid`가 거짓)는 버리고, 렌더러가 끝나면 끈다. 탭은 마지막 값을 들고 있어 패널이 다시 보일 때 쓴다.
-- 키보드 포커스: 패널 뷰가 창의 first responder이면 보이는 탭의 페이지가 포커스를 갖는다(`focus`). 같은 뷰가 다른 탭을 보이면(브라우저 탭
-  사이, 다시 연 탭, 교체한 탭) 보이던 탭은 포커스를 잃고 새 탭이 받는다(2026-10-24, Chrome과 같음. 전에는 뷰가 first responder가 될 때만
-  보냈다. QA에서는 그때도 페이지를 클릭하면 Chromium이 포커스를 주어 커서와 입력이 맞았다).
-- 페이지가 바뀌어도 포커스가 남는다(2026-10-24): 새 문서로의 이동(링크, 폼 제출, 스크립트
-  이동, 뒤로·앞으로, 새로고침, 뒤로-앞으로 캐시)과 다른 사이트 iframe의 커밋. Chromium은 새 페이지 뷰나 iframe의 렌더러에 이전 뷰가 포커스를
-  가졌을 때만 포커스를 넘기는데(`RenderFrameHostManager::CommitPending`의 `old_view->HasFocus()`), CEF 154의 창 없는 뷰는 `HasFocus`가 늘
-  false이고 `Focus`가 빈 함수다(CEF 156의 `dff7cc2c12`, chromiumembedded/cef#4301에서 고침). 그래서 전에는 새 페이지가 포커스를 잃었다:
-  패널은 그대로 first responder라 키는 들어가는데 커서가 그려지지 않고 `document.hasFocus()`가 false였다. 아이디를 낸 뒤 다음 문서에 있는
-  로그인 비밀번호 칸이 그 경우다(사용자 보고 "password input에서 왜 커서가 안보이지"). 호스트는 탭마다 Yardlet의 마지막 `focus`를 기억하고
-  (`BrowserSlot.focused`) 프레임마다 새 문서가 커밋될 때(`on_load_start`) 그 값이 참이면 `set_focus(1)`을 다시 준다. 본 위젯의 포커스는
-  Chromium이 페이지의 다른 프로세스(iframe)에 전하고(`ReplicatePageFocus`), 이미 포커스가 있으면 Blink는 아무것도 하지 않는다. 패널이
-  키보드를 갖지 않으면 주지 않는다. CEF를 156 이상으로 올리면 CEF가 같은 일을 하지만, 남겨 두어도 같은 값을 다시 줄 뿐이다.
-- 주소 칸에서 Enter나 열기 단추로 이동하면 페이지가 키보드를 받는다(2026-10-24, Chrome의 `BrowserUiController::UpdateUIForNavigationInTab` →
-  `SetInitialFocus`). 전에는 키보드가 아무 데도 없어 autofocus 칸에 커서가 없고 타자가 페이지에 가지 않았다. 주소를 열 수 없으면(URL 정책)
-  주소 칸에 남는다.
-- 입력 시각: CEF의 macOS 경로는 넘겨받은 키·마우스·휠 이벤트의 시각을 `[NSApp currentEvent]`에서 읽고, 없으면 0을 쓴다
-  (`browser_platform_delegate_native_mac.mm`). 호스트는 입력을 넘기는 동안 `currentEvent`로 지금 시각(`CLOCK_UPTIME_RAW`)의 이벤트를
-  돌려준다(`YardletBrowserHostApplication`, 2026-10-24). 전에는 QA에서 키 이벤트가 1.8–4.1초 늦게 찍혔고(마우스는 맞았음), 페이지가
-  열리기 전 시각으로 찍힌 입력으로 SPA가 이동하면 Blink의 soft navigation CHECK가 렌더러를 끝냈다(3절 "렌더러 종료").
-- 단축키(패널 뷰에 초점이 있을 때): ⌘C/⌘X/⌘V/⌘A/⌘Z/⇧⌘Z, ⌘+/⌘−/⌘0 확대·축소, ⌘F 찾기, ⌘L 주소 칸, ⌘R 새로고침,
-  ⌘[/⌘] 뒤로·앞으로. 탭(창의 초점이 페이지에 있을 때만): ⌘T 새 패널 브라우저 탭, ⌘W 이 탭 닫기(패널 탭 닫기 규칙),
-  ⌘⇧T 닫은 탭을 새 탭으로, ⌃Tab·⌃⇧Tab 다음·이전 브라우저 탭, ⌘5…⌘8 그 탭, ⌘9 마지막 탭. ⌘1–⌘4는 창의 키(작업 패널)가
-  먼저 받는다. 페이지 밖(대화·주소 칸)에서는 같은 키가 창의 작업 탭 줄에 간다.
-- 끌어 놓기: Finder의 파일을 페이지에 놓을 수 있다(`drag` 명령 → CEF drag target). 페이지에서 밖으로 끌기는 지원하지 않는다.
-- 흉내 낸 화면 크기(2026-10-26, 3절 "화면 크기 흉내"): 패널이 페이지를 줄여 그리는 동안 마우스·휠·끌어 놓기의 위치는 `pagePoint`로, 입력기
-  후보 창·문맥 메뉴·VoiceOver 요소의 자리는 `viewRect`로 페이지 좌표와 바꾼다. 흉내 상자 바깥을 누른 것은 페이지에 보내지 않는다. `<select>`
-  목록(popup 층)은 페이지 층 안에 있어 함께 줄어든다.
-- 커서 모양, `title` 툴팁, `<select>` 목록(popup 층), 우클릭 메뉴(CEF 메뉴 모델을 `NSMenu`로).
+- Mouse (click, drag, move, exit), wheel and trackpad (precise deltas and momentum phases carry straight through to page
+  scrolling), pinch zoom.
+- Keys: a full table from macOS virtual key codes to Windows key codes (`BrowserKeyCodes`, based on Chromium's
+  `keyboard_code_conversion_mac.mm`): letters, digits and symbols, arrow keys, Home/End/PageUp/PageDown, Delete, F1 to
+  F20, keypad, modifier keys (Shift/Control/Option/Command/ Caps Lock, left and right told apart), the Korean/English
+  key (`kVK_JIS_Kana` → VKEY_HANGUL). Modifier keys send press and release through flagsChanged.
+- Input methods such as Korean: the panel view is an `NSTextInputClient`. Text being composed goes as `composition.set`
+  (with underlines), committed text as `commit`, and the end of composition as `finish`; keys the input method used show
+  in the DOM as `Process` (229). When the input method commits text and passes the key on (`doCommandBySelector:`,
+  Return, arrow keys or Tab after Korean composition), the key itself is sent after the committed text (2026-10-24, as
+  in Chrome's `render_widget_host_view_cocoa.mm`; before, the first Return after composition did not reach the page).
+  The candidate window's position uses the character bounds the host reports.
+- Password fields (2026-10-25): while a password field on the page (`<input type=password>`, in any frame) has the
+  keyboard, that is, while the focused field of the visible tab is a password field and the panel view is first
+  responder of the key window, Yardlet turns on secure input (`EnableSecureEventInput`) as Safari does and allows only
+  Roman input sources in the panel view's input context
+  (`allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]`, WebKit
+  `WebViewImpl::updateSecureInputState`). Entering a password field with a Korean input source switches the input source
+  to a Roman one, and other processes cannot snoop on the keys. Before, the input method's Korean composition went in as
+  is (hidden behind dots, so it could not be seen). Both are turned off on another field, when the panel loses the
+  keyboard, on another tab, when the panel closes (the view leaves the window), on another window, sheet or app (the
+  window's key state), on renderer exit and on host exit (the tab detaches from the view), and they are turned off as
+  many times as they were turned on (`BrowserHostView.updateSecureInput`, `BrowserSecureInput`). AppKit takes first
+  responder away from a hidden view, so they turn off with it. The input source limit applies only to that view's input
+  context, so it does not linger in the conversation composer or other apps, and the system withdraws secure input when
+  the process ends. Chrome does the same with `ui::ScopedPasswordInputEnabler` (secure input, and only ASCII input
+  sources through `TSMSetDocumentProperty`) and also turns off the input method in password fields by returning nil for
+  `inputContext`. Yardlet does not turn off the input method (section 10). The renderer reports the field's kind. CEF
+  154's windowless view does not give the browser process the kind of the focused field (`on_virtual_keyboard_requested`
+  gives only `inputmode`, and only when the input method is brought up). So the Helper's renderer handler
+  (`YardletCEFHelper/FocusedField.c`) sends a process message whenever a frame's focus changes
+  (`on_focused_node_changed`, the standard CEF path cefclient uses for editable-field notices), saying whether the newly
+  focused element is a password field, and the host emits a `passwordField` event for each tab only when the value
+  changes. When a new document comes into the main frame (or the frame that had the password field), the host turns the
+  state off and asks that renderer for the field focused now. This is because a page restored from the back-forward
+  cache comes back with focus in a field and reports no focus change. Reports from frames a new document replaced
+  (`is_valid` false) are dropped, and the state turns off when the renderer ends. The tab holds the last value and uses
+  it when the panel shows it again.
+- Keyboard focus: when the panel view is the window's first responder, the visible tab's page has focus (`focus`). When
+  the same view shows another tab (between browser tabs, a reopened tab, a replaced tab), the tab that was shown loses
+  focus and the new tab gets it (2026-10-24, as in Chrome. Before, focus was sent only when the view became first
+  responder. In QA, even then, clicking the page made Chromium give focus, so the caret and input were right).
+- Focus stays when the page changes (2026-10-24): navigation to a new document (links, form submission, script
+  navigation, back and forward, reload, back-forward cache) and the commit of a cross-site iframe. Chromium hands focus
+  to the renderer of a new page view or iframe only if the previous view had focus (`old_view->HasFocus()` in
+  `RenderFrameHostManager::CommitPending`), but in CEF 154's windowless view `HasFocus` is always false and `Focus` is
+  an empty function (fixed in CEF 156 by `dff7cc2c12`, chromiumembedded/cef#4301). So before, the new page lost focus:
+  the panel was still first responder, so keys went in, but the caret was not drawn and `document.hasFocus()` was false.
+  The sign-in password field on the next document, after the user name is submitted, is such a case (a user reported
+  that the caret did not show in a password input). The host remembers Yardlet's last `focus` for each tab
+  (`BrowserSlot.focused`), and whenever a new document commits in a frame (`on_load_start`), it gives `set_focus(1)`
+  again if that value is true. Chromium passes the main widget's focus on to the page's other processes (iframes)
+  (`ReplicatePageFocus`), and Blink does nothing if focus is already there. If the panel does not have the keyboard,
+  focus is not given. After upgrading CEF to 156 or later, CEF does the same thing, but leaving this in place only gives
+  the same value again.
+- Navigating from the address field with Enter or the open button gives the page the keyboard (2026-10-24, Chrome's
+  `BrowserUiController::UpdateUIForNavigationInTab` → `SetInitialFocus`). Before, the keyboard was nowhere, so an
+  autofocus field had no caret and typing did not reach the page. If the address cannot be opened (URL policy), the
+  keyboard stays in the address field.
+- Input timestamps: CEF's macOS path reads the timestamp of the key, mouse and wheel events it is handed from
+  `[NSApp currentEvent]`, and uses 0 if there is none (`browser_platform_delegate_native_mac.mm`). While it hands over
+  input, the host returns an event with the current time (`CLOCK_UPTIME_RAW`) as `currentEvent`
+  (`YardletBrowserHostApplication`, 2026-10-24). Before, in QA, key events were stamped 1.8–4.1 seconds late (mouse
+  events were right), and when an SPA navigated on input stamped earlier than the page had opened, Blink's soft
+  navigation CHECK ended the renderer (section 3, "Renderer exit").
+- Shortcuts (when the panel view has focus): ⌘C/⌘X/⌘V/⌘A/⌘Z/⇧⌘Z, ⌘+/⌘−/⌘0 zoom in and out, ⌘F find, ⌘L address field, ⌘R
+  reload, ⌘[/⌘] back and forward. Tabs (only when the window's focus is on the page): ⌘T new panel browser tab, ⌘W close
+  this tab (the panel tab closing rule), ⌘⇧T reopen a closed tab as a new tab, ⌃Tab and ⌃⇧Tab next and previous browser
+  tab, ⌘5…⌘8 that tab, ⌘9 last tab. ⌘1–⌘4 go to the window's keys (task panels) first. Outside the page (the
+  conversation, the address field) the same keys go to the window's task tab strip.
+- Drag and drop: files from Finder can be dropped on the page (`drag` command → CEF drag target). Dragging out of the
+  page is not supported.
+- Emulated screen size (2026-10-26, section 3, "Screen size emulation"): while the panel draws the page shrunk, the
+  positions of mouse, wheel and drag and drop are converted to page coordinates with `pagePoint`, and the places of the
+  input method's candidate window, context menus and VoiceOver elements with `viewRect`. Clicks outside the emulated box
+  are not sent to the page. `<select>` lists (the popup layer) are inside the page layer, so they shrink with it.
+- Cursor shapes, `title` tooltips, `<select>` lists (the popup layer), right-click menus (CEF's menu model as an
+  `NSMenu`).
 
-## 5. 접근성 (VoiceOver)
+## 5. Accessibility (VoiceOver)
 
-창 없는 렌더링이라 Chromium은 macOS 접근성 객체를 만들지 않는다(CEF 문서의 "TreeOnly" 모드). Yardlet이 CEF의 접근성
-트리를 받아 `NSAccessibilityElement`로 다시 만든다. 구성은 cefclient의 OSR 접근성(`osr_accessibility_helper`,
-`osr_accessibility_node`)과 같은 방식이다. 다만 cefclient 소스는 minimal 배포본에 없어 받지 않았고, 필드 이름과 단위는
-실제 CEF 출력을 녹화해 확인했다.
+Because rendering is windowless, Chromium does not create macOS accessibility objects (the "TreeOnly" mode in CEF's
+documentation). Yardlet receives CEF's accessibility tree and rebuilds it as `NSAccessibilityElement`s. The construction
+follows the same approach as cefclient's OSR accessibility (`osr_accessibility_helper`, `osr_accessibility_node`). But
+the cefclient source is not in the minimal distribution, so it was not downloaded; field names and units were checked by
+recording real CEF output.
 
-**흐름.** 패널마다 `BrowserAccessibilityBridge`가 `BrowserHostView.accessibilitySource`에 붙는다.
-1. 켤 때 `accessibility(tab:isEnabled:)` 명령을 보낸다. 호스트는 `set_accessibility_state`를 부른다.
-2. CEF가 `on_accessibility_tree_change`와 `on_accessibility_location_change`를 부른다. CEF는 이 처리기에 브라우저를
-   넘기지 않아서, 브리지는 탭마다 client·render handler·accessibility handler를 따로 두어 탭을 가린다.
-3. 브리지는 `cef_write_json`으로 JSON을 만든다(큰 페이지 10 MB에 약 80 ms, CEF UI 스레드).
-4. 호스트는 별도 직렬 큐에서 `CEFAccessibilityReducer`로 필요한 필드만 남겨 `accessibilityTree`·`accessibilityLocations`
-   이벤트로 보낸다.
-5. 엔진 `BrowserAccessibilityTree`가 Chromium 규칙으로 적용한다. 노드는 통째로 교체하고, `clear`는 자손을 지우고, 도달할 수
-   없는 노드는 없애고, iframe 문서는 별도 트리로 둔다. 부모보다 먼저 온 iframe 트리도 둔다.
-6. 브리지가 요소를 만들고 알림을 보낸다.
+**Flow.** For each panel, a `BrowserAccessibilityBridge` attaches to `BrowserHostView.accessibilitySource`.
+1. Turning it on sends the `accessibility(tab:isEnabled:)` command. The host calls `set_accessibility_state`.
+2. CEF calls `on_accessibility_tree_change` and `on_accessibility_location_change`. CEF does not pass the browser to
+   these handlers, so the bridge keeps a separate client, render handler and accessibility handler for each tab to tell
+   the tabs apart.
+3. The bridge builds JSON with `cef_write_json` (about 80 ms for 10 MB on a large page, on the CEF UI thread).
+4. On a separate serial queue, the host keeps only the needed fields with `CEFAccessibilityReducer` and sends them as
+   `accessibilityTree` and `accessibilityLocations` events.
+5. The engine's `BrowserAccessibilityTree` applies them by Chromium's rules. Nodes are replaced whole, `clear` removes
+   descendants, unreachable nodes are removed, and iframe documents are kept as separate trees. An iframe tree that
+   arrives before its parent is kept too.
+6. The bridge creates elements and posts notifications.
 
-**필요할 때만 켠다.** 다음 경우에만 켠다.
-- VoiceOver가 켜져 있다.
-- 접근성 클라이언트가 패널 뷰의 자식, 좌표의 요소(hit test), 포커스 요소를 물었다.
+**On only when needed.** It is turned on only when:
+- VoiceOver is on.
+- An accessibility client has asked for the panel view's children, the element at a point (hit test) or the focused
+  element.
 
-다음 경우에는 끄고 트리를 버린다.
-- VoiceOver가 꺼져 있고 60초 동안 묻는 곳이 없다.
-- 패널을 닫았다.
+It is turned off and the tree dropped when:
+- VoiceOver is off and nothing has asked for 60 seconds.
+- The panel was closed.
 
-켜기 전에는 렌더러가 접근성 일을 하지 않는다. QA에서 질의 전 트리 변경은 0건이었고, 끈 뒤 다시 물으면 트리 전체가 다시 왔다.
-다른 접근성 앱(창 관리자, 자동화 도구 등)이 패널 안쪽까지 물으면 그때도 켜진다.
+Until it is turned on, the renderer does no accessibility work. In QA there were 0 tree changes before the first query,
+and asking again after it was turned off brought the whole tree again. When another accessibility app (a window manager,
+an automation tool and so on) asks about the inside of the panel, it turns on then too.
 
-**남기는 필드.**
-- 역할, 이름, 값, 설명, placeholder, 역할 설명
-- 상태: 초점 가능, 편집, 펼침/접힘, 숨김, ignored, 여러 줄, 보호, 필수, 방문 등
-- checked/selected/disabled, `haspopup`, 제목 수준, 표·집합 위치, 범위 값, 텍스트 선택, 링크 URL
-- 하위 프레임 트리, 자식, 위치(offset container 기준 기기 픽셀), 스크롤
+**Fields kept.**
+- Role, name, value, description, placeholder, role description
+- States: focusable, editable, expanded/collapsed, hidden, ignored, multiline, protected, required, visited and so on
+- checked/selected/disabled, `haspopup`, heading level, table and set positions, range values, text selection, link URL
+- Child frame trees, children, location (device pixels relative to the offset container), scrolling
 
-한 줄마다 생기는 inline text box(글자별 위치 목록 포함)를 버리는 것이 크기를 가장 많이 줄인다. CEF 출력에는 DOM 노드 번호가
-없다.
+Dropping the inline text boxes made for every line (including their per-character position lists) cuts the size the
+most. CEF output has no DOM node numbers.
 
-**노출 규칙(엔진).**
-- 부모로 펼치는 것: 이름 없는 일반 컨테이너·문단·label·form·rowGroup, iframe 문서.
-- 빼는 것: 숨김(invisible) 하위 트리, list marker, 줄바꿈.
-- 자식 없는 요소로 두는 것: 버튼·체크박스·텍스트 입력·select처럼 내용이 이름뿐인 역할.
-- 텍스트를 이름으로 삼는 것: 텍스트만 가진 링크·제목·목록 항목·표 칸.
-- select의 선택지(`menuListOption`)는 자식으로 두지 않고 select가 따로 내놓는다.
+**Exposure rules (engine).**
+- Unwrapped into the parent: unnamed generic containers, paragraphs, labels, forms and rowGroups, and iframe documents.
+- Left out: hidden (invisible) subtrees, list markers, line breaks.
+- Kept as elements without children: roles whose content is only their name, such as buttons, checkboxes, text inputs
+  and selects.
+- Text used as the name: links, headings, list items and table cells that hold only text.
+- A select's options (`menuListOption`) are not kept as children; the select exposes them separately.
 
-**역할.**
-- 기본 역할: 버튼, 링크, 텍스트 필드/영역(보안·검색 하위 역할), 체크박스(스위치·토글), 라디오, 팝업 버튼(select),
-  콤보박스, 제목(`AXHeading`, 값은 수준), 정적 텍스트, 이미지, 목록, 표·행·칸(행 수·칸 위치), 슬라이더, 진행률, 탭, 메뉴,
-  툴바, 트리.
-- 랜드마크 하위 역할: 배너(`header`)·탐색·주요·바닥글(`footer`)·보조·검색·영역, 글, 알림, 대화상자.
-- AppKit이 설명하지 않는 역할(제목·랜드마크 등)은 한국어·영어 역할 이름을 직접 준다.
+**Roles.**
+- Basic roles: button, link, text field and text area (secure and search subroles), checkbox (switch and toggle), radio,
+  pop-up button (select), combo box, heading (`AXHeading`, its value is the level), static text, image, list, table, row
+  and cell (row count, cell position), slider, progress, tab, menu, toolbar, tree.
+- Landmark subroles: banner (`header`), navigation, main, footer (`footer`), complementary, search and region; article,
+  alert, dialog.
+- Roles AppKit does not describe (headings, landmarks and so on) get their role names directly, in Korean or English.
 
-**좌표.**
-1. 노드 위치에 offset container를 따라 올라가며 위치를 더하고 그 컨테이너의 스크롤을 뺀다(Chromium 규칙). 결과는 기기 픽셀
-   페이지 좌표다.
-2. 배율로 나눠 뷰 좌표를 얻고, 창 좌표를 거쳐 화면 좌표로 바꾼다. iframe 문서는 그 iframe 위치에서 이어진다.
+**Coordinates.**
+1. Starting from the node's location, walk up the offset containers, adding their positions and subtracting each
+   container's scroll (Chromium's rule). The result is page coordinates in device pixels.
+2. Divide by the scale to get view coordinates, then convert through window coordinates to screen coordinates. An iframe
+   document continues from that iframe's position.
 
-평범한 스크롤은 Chromium이 트리로 보내지 않는다. CEF의 위치 변경은 빈 목록으로 오고, 루트의 `scrollY`는 크기가 바뀔 때만
-다시 온다. 그래서 호스트가 `on_scroll_offset_changed`를 `scrollOffset(tab:x:y:)` 이벤트(뷰 포인트)로 보내고, 트리는 루트가
-다시 올 때까지 이 값을 쓴다. QA에서 위치 요소, 스크롤 뒤, iframe 안 요소의 프레임이 페이지의 `getBoundingClientRect`와
-0.00 pt 차이였다.
+Chromium does not send ordinary scrolling into the tree. CEF's location changes arrive as an empty list, and the root's
+`scrollY` comes again only when the size changes. So the host sends `on_scroll_offset_changed` as a
+`scrollOffset(tab:x:y:)` event (view points), and the tree uses this value until the root comes again. In QA, the frames
+of positioned elements, of elements after scrolling and of elements inside an iframe differed from the page's
+`getBoundingClientRect` by 0.00 pt.
 
-**알림.**
+**Notifications.**
 
-| 알림 | 보내는 때 |
+| Notification | When it is posted |
 |---|---|
-| `layoutChanged` | 구조 변경 뒤(150 ms에 한 번) |
-| `valueChanged`·`titleChanged` | 값·이름이 바뀐 요소 |
-| `focusedUIElementChanged` | 포커스가 바뀌고 패널 뷰가 first responder일 때 |
-| `uiElementDestroyed` | 사라진 요소(20개 이하일 때) |
+| `layoutChanged` | After a structure change (at most once per 150 ms) |
+| `valueChanged` and `titleChanged` | For elements whose value or name changed |
+| `focusedUIElementChanged` | When focus changes and the panel view is first responder |
+| `uiElementDestroyed` | For elements that went away (when there are 20 or fewer) |
 
-**동작.**
-- AXPress: 요소가 화면 밖이면 페이지를 스크롤한 뒤 요소 중앙을 패널의 마우스 입력으로 클릭한다. select는 선택지를 네이티브
-  `NSMenu`로 띄운다.
-- 포커스 설정(`AXFocused`), 텍스트 값 설정(`AXValue`), select 선택, `AXScrollToVisible`: CEF 트리에 DOM 노드 번호가 없어서
-  위치로 찾는다. 필요하면 페이지를 스크롤하고, 요소 중앙의 DOM 요소에 `Runtime.evaluate` 한 번으로 한다. 값은 전체 선택 뒤
-  `insertText`라 페이지의 input 이벤트가 돈다. select는 input·change 이벤트를 보낸다.
-- 같은 출처 iframe은 따라 들어간다. 다른 출처 iframe 안에서는 AXPress만 된다.
+**Actions.**
+- AXPress: if the element is off screen, scroll the page, then click the element's center as mouse input to the panel. A
+  select opens its options as a native `NSMenu`.
+- Setting focus (`AXFocused`), setting a text value (`AXValue`), choosing in a select, `AXScrollToVisible`: the CEF tree
+  has no DOM node numbers, so the element is found by position. If needed, the page is scrolled, and then a single
+  `Runtime.evaluate` acts on the DOM element at the element's center. A value is set by selecting all and then
+  `insertText`, so the page's input events fire. A select sends input and change events.
+- Same-origin iframes are followed into. Inside a cross-origin iframe, only AXPress works.
 
-**비용**(QA, 배율 2).
+**Cost** (QA, scale 2).
 
-| 페이지 | CEF JSON → 보낸 크기 | 처리 시간 |
+| Page | CEF JSON → size sent | Processing time |
 |---|---|---|
-| 작은 폼 페이지(노드 107개) | 45 KB → 15 KB | 첫 질의부터 트리까지 27 ms, 적용 2 ms |
-| 노드 18,020개(노출 10,009개) 페이지 | 변경 하나 10.0 MB → 2.9 MB(불러오는 동안 전체 트리가 두 번 왔다) | 호스트 가공 0.56~0.64 s(별도 큐), Yardlet 적용 63 ms |
+| Small form page (107 nodes) | 45 KB → 15 KB | 27 ms from the first query to the tree, 2 ms to apply |
+| Page with 18,020 nodes (10,009 exposed) | 10.0 MB → 2.9 MB for one change (the full tree came twice during loading) | Host processing 0.56–0.64 s (on a separate queue), Yardlet apply 63 ms |
 
-큰 페이지의 나머지 수치:
-- Yardlet 메인 스레드 최장 정지 66 ms. 해석을 파이프 큐로 옮기기 전에는 325 ms였다.
-- 불러오기 시작부터 트리를 쓸 수 있을 때까지 1.6~1.7 s.
-- 노출 트리 한 바퀴 42 ms, 요소 10,009개의 모든 속성 읽기 220 ms.
+Other figures for the large page:
+- Longest stall of Yardlet's main thread: 66 ms. It was 325 ms before decoding moved to the pipe queue.
+- 1.6–1.7 s from the start of loading until the tree is usable.
+- 42 ms for one walk of the exposed tree, 220 ms to read every attribute of the 10,009 elements.
 
-## 6. 에이전트 쪽 API (엔진)
+## 6. Agent-side API (engine)
 
-에이전트 브라우저 도구와 Yardlet MCP 서버는 `MacBrowserHost.shared.client`(`BrowserHostClient`)를 쓴다.
+The agent browser tools and the Yardlet MCP server use `MacBrowserHost.shared.client` (`BrowserHostClient`).
 
-| API | 쓰임 |
+| API | Use |
 |---|---|
-| `openTab(forSession:url:viewport:)` | 작업의 앞 탭을 얻는다. 있으면 그 탭(페이지를 다시 열지 않음), 없으면 연다(호스트도 시작). 패널 없이 열 때 `BrowserViewport.offscreenDefault`(1280×800, 2배) |
-| `tab(forSession:)` | 작업의 앞 탭(패널이 보여 주고 `tabId` 없는 도구가 쓰는 탭) |
-| `tabs(forSession:)` | 작업의 탭들(줄 순서, 패널의 브라우저 탭 순서와 같음) |
-| `tab(key:forSession:)` | 패널 탭 키의 탭 |
-| `newTab(forSession:url:viewport:select:key:after:)` | 맨 뒤(또는 `after` 바로 뒤)에 탭을 연다. `select`가 거짓이면 앞 탭 뒤에. `key`는 그 탭이 될 패널 탭(기본 새 키). 9개면 `BrowserTabLimitError`, 그 키의 탭이 이미 있으면 `BrowserTabKeyInUseError` |
-| `select(_:)` / `BrowserTab.select()` | 앞 탭으로 |
-| `closeTabs(forSession:)` | 작업의 탭을 모두 닫고 주소를 잊는다(보관·삭제) |
-| `replace(_:url:)` | 응답하지 않는 탭을 같은 키·자리·앞 상태의 새 탭으로(닫은 탭 목록에 넣지 않음, 쥔 hang 콜백이 있으면 렌더러를 먼저 끝냄) |
-| `waitForPage(_:)` | 응답 없는 탭의 기다리기(15초 뒤에도 응답하지 않으면 다시 알림) |
-| `rememberedTabs(forSession:)`, `restoreTabs(forSession:viewport:)`, `rememberTabs(_:forSession:)`, `reopenClosedTab(forSession:viewport:)` | 호스트가 죽거나 끝나 잃은 탭(앱을 끝낼 때 포함), 또는 앱 재시작 전 작업에 저장된 탭을 순서·앞 탭·키 그대로 다시 연다(`BrowserRememberedTabs.keys`). 닫은 탭을 새 키로 다시 연다 |
-| `addTabsObserver(forSession:_:)` / `removeTabsObserver` | 탭이 열리고 닫히고 앞 탭이 바뀌거나 제목·주소·아이콘이 바뀌거나 로딩이 시작·끝나면 부른다(프레임과 그 밖의 로딩 상태는 부르지 않음). 패널과 패널 탭 동기화가 쓴다 |
-| `popupOpened`·`newWindow` 이벤트 → `openedTab` 이벤트 | 페이지의 새 창. 호스트가 만든 창(`popupOpened`)은 클라이언트가 작업의 탭으로 받고, 호스트가 만들지 않은 요청(`newWindow`)은 새 탭을 연다. 연 탭에 `openedTab(tab:newTab:url:)`(작업 밖이거나 9개면 `newTab` nil)을 보낸다. 에이전트 도구는 다음 결과에 알린다 |
-| `noteAgentActivity(forSession:)` / `BrowserTab.noteAgentActivity()` | 에이전트가 브라우저를 쓸 때마다 부른다. 패널이 없어도 `agentVisibleWindow`(60초) 동안 탭을 엔진에 보이게 하고, 패널 머리글에 "에이전트" 표시가 4초 뜬다 |
-| `BrowserTab.devTools` | CDP 클라이언트(`send(method:params:session:timeout:)`, `nextEvent`, `events`). 2026-10-26부터 `attachFrames()`와 `frameSessions`(다른 사이트 프레임의 세션, 3절) |
-| `BrowserTab.emulate(_:)`, `emulateColorScheme(_:)`, `endAgentEmulation()`, `emulation`, `onEmulationChange` | 화면 크기·색 구성 흉내(3절 "화면 크기 흉내") |
-| `BrowserTab.handOff(reason:)`, `answerHandoff(_:)`, `endHandoff()`, `handoff`, `onHandoffChange` | `browser_handoff`의 넘긴 상태. 패널 막대가 답하고 에이전트의 기다림이 읽는다 |
-| `BrowserTab.addEventObserver(_:)` / `removeEventObserver(_:)` | 패널의 `eventHandler`와 별도로 이벤트를 받는다(대화상자·다운로드·주소 등) |
-| `BrowserTab.key`, `unresponsive`, `currentURL`, `lastPageURL`, `title`, `favicon`, `isLoading`, `canGoBack`, `canGoForward`, `session`, `isPanelAttached` | 상태(뒤에 있던 탭을 앞으로 가져올 때 패널이 읽는다) |
-| `attachPanel(to:)` / `detachPanel(from:)` | 패널 전용 |
-| `openTab(url:viewport:)`, `closeTab(_:)`, `BrowserTab.close()` | 세션 없는 탭(닫을 때까지 유지)과 명시적 닫기. 2차 시험의 이름 그대로 |
-| `accessibility(tab:isEnabled:)` 명령, `accessibilityTree`·`accessibilityLocations`·`scrollOffset` 이벤트 | 패널의 접근성 브리지가 쓴다(5절). 에이전트 도구는 CDP `Accessibility` 도메인을 따로 쓸 수 있다 |
+| `openTab(forSession:url:viewport:)` | Gets the task's front tab: that tab if there is one (without reopening the page), otherwise it opens one (starting the host too). Opened without a panel, it uses `BrowserViewport.offscreenDefault` (1280×800, 2x) |
+| `tab(forSession:)` | The task's front tab (the tab the panel shows and tools without `tabId` use) |
+| `tabs(forSession:)` | The task's tabs (in strip order, the same as the order of the panel's browser tabs) |
+| `tab(key:forSession:)` | The tab of a panel tab key |
+| `newTab(forSession:url:viewport:select:key:after:)` | Opens a tab at the end (or right after `after`). If `select` is false, it stays behind the front tab. `key` is the panel tab it becomes (a new key by default). With 9 tabs, `BrowserTabLimitError`; if a tab with that key already exists, `BrowserTabKeyInUseError` |
+| `select(_:)` / `BrowserTab.select()` | Brings the tab to the front |
+| `closeTabs(forSession:)` | Closes all of the task's tabs and forgets their addresses (archive or delete) |
+| `replace(_:url:)` | Replaces a tab that is not responding with a new tab with the same key, position and front state (not put in the closed-tab list; if a hang callback is held, the renderer is ended first) |
+| `waitForPage(_:)` | The Wait action for a tab that is not responding (reports it again if it still does not respond after 15 seconds) |
+| `rememberedTabs(forSession:)`, `restoreTabs(forSession:viewport:)`, `rememberTabs(_:forSession:)`, `reopenClosedTab(forSession:viewport:)` | Reopen the tabs lost when the host died or ended (including at app quit), or the tabs saved with the task before an app restart, with their order, front tab and keys (`BrowserRememberedTabs.keys`). Reopen a closed tab with a new key |
+| `addTabsObserver(forSession:_:)` / `removeTabsObserver` | Called when a tab opens or closes, the front tab changes, a title, address or icon changes, or loading starts or ends (not for frames or other loading states). Used by the panel and by panel tab sync |
+| `popupOpened` and `newWindow` events → `openedTab` event | A page's new window. A window the host created (`popupOpened`) is taken by the client as a task tab; a request the host did not create (`newWindow`) opens a new tab. The opening tab gets `openedTab(tab:newTab:url:)` (`newTab` nil outside a task or with 9 tabs). The agent tools report it in their next result |
+| `noteAgentActivity(forSession:)` / `BrowserTab.noteAgentActivity()` | Called whenever the agent uses the browser. Keeps the tab visible to the engine for `agentVisibleWindow` (60 seconds) even without a panel, and shows an "Agent" mark in the panel header for 4 seconds |
+| `BrowserTab.devTools` | CDP client (`send(method:params:session:timeout:)`, `nextEvent`, `events`). Since 2026-10-26 also `attachFrames()` and `frameSessions` (sessions of cross-site frames, section 3) |
+| `BrowserTab.emulate(_:)`, `emulateColorScheme(_:)`, `endAgentEmulation()`, `emulation`, `onEmulationChange` | Screen size and color scheme emulation (section 3, "Screen size emulation") |
+| `BrowserTab.handOff(reason:)`, `answerHandoff(_:)`, `endHandoff()`, `handoff`, `onHandoffChange` | The handed-over state of `browser_handoff`. The panel bar answers it and the agent's wait reads it |
+| `BrowserTab.addEventObserver(_:)` / `removeEventObserver(_:)` | Receives events separately from the panel's `eventHandler` (dialogs, downloads, addresses and so on) |
+| `BrowserTab.key`, `unresponsive`, `currentURL`, `lastPageURL`, `title`, `favicon`, `isLoading`, `canGoBack`, `canGoForward`, `session`, `isPanelAttached` | State (the panel reads it when it brings a background tab to the front) |
+| `attachPanel(to:)` / `detachPanel(from:)` | Panel only |
+| `openTab(url:viewport:)`, `closeTab(_:)`, `BrowserTab.close()` | Tabs without a session (kept until closed) and explicit closing. Names kept as they were in the second trial |
+| `accessibility(tab:isEnabled:)` command, `accessibilityTree`, `accessibilityLocations` and `scrollOffset` events | Used by the panel's accessibility bridge (section 5). The agent tools can use the CDP `Accessibility` domain separately |
 
-패널이 닫혀 있을 때 페이지가 JS 대화상자나 파일 선택을 열면 Yardlet 패널 쪽은 아무것도 하지 않는다. 대화상자는 누군가
-`javaScriptDialogResult`/`fileDialogResult`로 답하거나 탭이 닫힐 때까지 열려 있고, 그동안 페이지 스크립트는 멈춘다.
-에이전트 도구는 `addEventObserver`로 `javaScriptDialog`·`fileDialog` 이벤트를 받아 답해야 한다. 패널이 열려 있으면 시트가
-뜬다. 이때 에이전트가 먼저 답해도 시트는 남고, 나중에 누른 시트의 답은 호스트가 무시한다(페이지 이동으로 대화상자가
-취소되면 `javaScriptDialogReset`이 와서 시트가 닫힌다).
+When a page opens a JS dialog or file chooser while the panel is closed, the Yardlet panel side does nothing. The dialog
+stays open until someone answers with `javaScriptDialogResult`/`fileDialogResult` or the tab closes, and the page's
+scripts are paused meanwhile. The agent tools have to receive the `javaScriptDialog` and `fileDialog` events through
+`addEventObserver` and answer them. If the panel is open, a sheet appears. Even if the agent answers first, the sheet
+stays, and the host ignores the sheet's later answer (if navigation cancels the dialog, `javaScriptDialogReset` arrives
+and the sheet closes).
 
-## 7. 빌드와 서명
+## 7. Build and signing
 
-- `scripts/build-app.sh`는 고정한 CEF를 쓴다: `154.0.28+g564dd6c+chromium-154.0.8037.58`, macOS arm64 minimal, 공식 배포본
-  SHA-1 `f7c50c2719deb8aa0c78de517c1228d0b8c3fced`, 프레임워크 실행 파일 SHA-256
-  `e2f817695b598f92dcc671238e508a7d7b984983072c36d5257d6c67ff776112`. `~/Library/Caches/Yardlet/CEF/`에 풀린 배포본을 검증해
-  쓰고, 압축 파일만 있으면 SHA-1을 확인한 뒤 푼다. 둘 다 없으면 받는 명령을 보여 주고 멈춘다.
-- release 번들은 항상 CEF를 넣는다. debug에서만 `YARDLET_WITHOUT_CEF=1`로 CEF 없이 만들 수 있다(패널은 WebKit 미리보기).
-- 스크립트가 `YARDLET_CEF_DIR`를 설정해 `Package.swift`가 호스트·helper 타깃을 넣는다. 이 변수가 없으면(`swift build`,
-  `swift test`) 그 타깃은 빠진다.
-- 서명은 `scripts/sign-app.sh`가 조립한 번들을 안쪽부터 한다: 프레임워크의 dylib → 프레임워크 → helper 5개 → 호스트 → MCP
-  실행 파일 → 앱. 각 번들은 자기 Info.plist의 identifier로 서명하므로 QA 복사본(`prepare-qa.sh`)도 같은 길을 쓴다.
-  - ad-hoc(기본, `YARDLET_SIGNING_IDENTITY` 없음이나 `-`): 전과 같다. 각 부분에 identifier 기반 designated requirement
-    (`com.zzunkie.yardlet.helper`, `….helper.gpu` 등, `com.zzunkie.yardlet.browser-host`, `com.zzunkie.yardlet.mcp`), hardened runtime 없음.
-  - 인증서(`YARDLET_SIGNING_IDENTITY`에 이름·이름 일부·SHA-1): 실행 파일마다 hardened runtime(`--options runtime`)과
-    `Packaging/Entitlements`의 엔타이틀먼트. Chrome 155 번들의 서명과 Chromium의 `chrome/installer/mac/signing/parts.py`를 따랐다 —
-    Renderer·GPU helper만 `com.apple.security.cs.allow-jit`, 나머지 helper(기본·Alerts·Plugin)와 MCP는 예외 없음, 호스트는 패스키용
-    `com.apple.security.device.bluetooth`·`…usb`, 앱은 호스트의 블루투스를 책임지므로 `…bluetooth`, 그리고 앱이 띄우는 명령(하네스, 그 도구,
-    터미널)의 권한 요청이 macOS에서 앱의 것이 되므로 `com.apple.security.automation.apple-events`·`device.audio-input`·`device.camera`와
-    Info.plist 사용 이유 문자열(Claude Code가 Apple Events·마이크를 선언하고, Claude 앱·Codex 앱·VS Code·Cursor·cmux가 같은 셋을 둔다.
-    hardened runtime 앱에 엔타이틀먼트가 없으면 tccd가 묻지 않고 거절한다). 라이브러리는 자기 프로세스의
-    hardened runtime을 따른다. Developer ID 인증서는 보안 타임스탬프(`--timestamp`, Apple 타임스탬프 서버)로, 다른 인증서는 없이
-    서명한다(`YARDLET_SIGNING_TIMESTAMP`로 바꿈). 공증은 `scripts/notarize.sh`(README "Signing and notarization")가 먼저 모든 Mach-O의
-    Developer ID·타임스탬프·hardened runtime·`get-task-allow` 없음과 notarytool 키체인 프로필(기본 `yardlet-notary`, 없으면
-    `store-credentials` 명령을 보여 주고 멈춤)을 확인한 뒤, 앱(zip)을 `notarytool submit --wait`로 보내 스테이플하고, 그 앱과
-    /Applications 링크를 담은 DMG를 앱의 인증서로 서명해 다시 보내 스테이플한 뒤 둘 다 `spctl`로 확인한다.
-  - 프로필(`YARDLET_PROVISIONING_PROFILE`): 호스트의 `embedded.provisionprofile`로 넣는다. 프로필의 App ID가
-    `<팀 ID>.com.zzunkie.yardlet.browser-host`인지, 팀이 서명 인증서와 같은지, 만료 전인지 확인하고, 호스트 엔타이틀먼트에
-    `com.apple.application-identifier`·`com.apple.developer.team-identifier`를 넣는다. 앱 본체는 제한된 엔타이틀먼트를 쓰지 않아
-    프로필이 필요 없다. Touch ID용 `keychain-access-groups`는 CEF 프레임워크가 기대하는 그룹(`scripts/cef-webauthn-group.sh list`)이 이 팀
-    접두사로 시작할 때만 넣는다. 배포본은 `.org.chromium.Chromium.webauthn`·`…-uvk`라 넣지 않는다(넣으면 프로필이 허용하지 않아
-    AMFI가 호스트 실행을 막는다).
-  - Touch ID 시제품(`YARDLET_PATCH_CEF_WEBAUTHN_GROUP=1`, 프로필과 함께일 때만, 기본 꺼짐): 번들에 복사한 CEF 프레임워크 사본에서
-    두 상수를 같은 길이(31·35바이트)로 `<팀 ID>.com.zzunkie.webauthn`·`…-uvk`로 바꾸고(받은 배포본과 그 고정 해시는 그대로) 그 그룹을
-    엔타이틀먼트에 넣는다. 가짜 팀 ID로 바꾼 QA 빌드에서 host.log의 "Expected value"가 바뀐 그룹이 되는 것까지 확인했다. 실제 Touch ID
-    등록·로그인은 2026-10-23 실제 팀의 Developer ID 프로필로 서명한 QA 번들에서 사용자의 Touch ID 지문으로 성공했다.
-    바이너리 상수를 바꾸는 이 방식은 여전히 명시적 opt-in이며 기본값은 꺼져 있다.
-- 업데이트: 설치본이 팀 서명(Developer ID)이면 `stage-update.sh`와 Install Update…·설치 스크립트가 새 빌드에 설치본의 designated
-  requirement(같은 identifier, 같은 팀)를 요구한다(Sparkle과 같은 규칙). ad-hoc 설치본은 전처럼 서명이 맞는 어떤 Yardlet 빌드든 받는다.
-- 새 CEF로 올릴 때: 버전·URL·두 해시를 바꾸고, C API 해시(`CEF_API_VERSION`)가 맞는지 호스트 시작으로 확인하고,
-  `scripts/browser-host-qa/run-check.sh`를 돌린다.
+- `scripts/build-app.sh` uses a pinned CEF: `154.0.28+g564dd6c+chromium-154.0.8037.58`, macOS arm64 minimal, official
+  distribution SHA-1 `f7c50c2719deb8aa0c78de517c1228d0b8c3fced`, framework executable SHA-256
+  `e2f817695b598f92dcc671238e508a7d7b984983072c36d5257d6c67ff776112`. It verifies and uses the unpacked distribution in
+  `~/Library/Caches/Yardlet/CEF/`, and if only the archive is there, it checks the SHA-1 and unpacks it. If neither is
+  there, it shows the download command and stops.
+- Release bundles always include CEF. Only debug builds can be made without CEF, with `YARDLET_WITHOUT_CEF=1` (the panel
+  is the WebKit preview).
+- The script sets `YARDLET_CEF_DIR`, so `Package.swift` includes the host and helper targets. Without this variable
+  (`swift build`, `swift test`) those targets are left out.
+- `scripts/sign-app.sh` signs the assembled bundle from the inside out: the framework's dylibs → the framework → the 5
+  helpers → the host → the MCP executable → the app. Each bundle is signed with the identifier in its own Info.plist, so
+  QA copies (`prepare-qa.sh`) take the same path.
+  - Ad-hoc (the default, with no `YARDLET_SIGNING_IDENTITY` or with `-`): the same as before. Each part has an
+    identifier-based designated requirement (`com.zzunkie.yardlet.helper`, `….helper.gpu` and so on,
+    `com.zzunkie.yardlet.browser-host`, `com.zzunkie.yardlet.mcp`), no hardened runtime.
+  - Certificate (a name, part of a name or a SHA-1 in `YARDLET_SIGNING_IDENTITY`): each executable gets the hardened
+    runtime (`--options runtime`) and the entitlements in `Packaging/Entitlements`. This follows the signatures in the
+    Chrome 155 bundle and Chromium's `chrome/installer/mac/signing/parts.py`: only the Renderer and GPU helpers get
+    `com.apple.security.cs.allow-jit`; the other helpers (default, Alerts, Plugin) and the MCP have no exceptions; the
+    host gets `com.apple.security.device.bluetooth` and `…usb` for passkeys; the app gets `…bluetooth` because it is
+    responsible for the host's Bluetooth; and, because permission requests from commands the app starts (harnesses,
+    their tools, terminals) count as the app's in macOS, the app gets `com.apple.security.automation.apple-events`,
+    `device.audio-input` and `device.camera`, with Info.plist usage description strings (Claude Code declares Apple
+    Events and the microphone, and the Claude app, the Codex app, VS Code, Cursor and cmux have the same three. Without
+    the entitlement, tccd refuses a hardened runtime app without asking). Libraries follow the hardened runtime of their
+    process. Developer ID certificates sign with a secure timestamp (`--timestamp`, Apple's timestamp server), other
+    certificates without one (changed with `YARDLET_SIGNING_TIMESTAMP`). For notarization, `scripts/notarize.sh` (README
+    "Signing and notarization") first checks every Mach-O for Developer ID, timestamp, hardened runtime and no
+    `get-task-allow`, and checks the notarytool keychain profile (default `yardlet-notary`; if it is missing, the script
+    shows the `store-credentials` command and stops). It then submits the app (zip) with `notarytool submit --wait` and
+    staples it, signs a DMG holding that app and an /Applications link with the app's certificate, submits and staples
+    that too, and checks both with `spctl`.
+  - Profile (`YARDLET_PROVISIONING_PROFILE`): added as the host's `embedded.provisionprofile`. The script checks that
+    the profile's App ID is `<team ID>.com.zzunkie.yardlet.browser-host`, that its team matches the signing certificate
+    and that it has not expired, and adds `com.apple.application-identifier` and `com.apple.developer.team-identifier`
+    to the host's entitlements. The app itself uses no restricted entitlements, so it needs no profile.
+    `keychain-access-groups` for Touch ID is added only when the groups the CEF framework expects
+    (`scripts/cef-webauthn-group.sh list`) start with this team's prefix. In the distribution they are
+    `.org.chromium.Chromium.webauthn` and `…-uvk`, so it is not added (if it were, the profile would not allow it and
+    AMFI would block the host from running).
+  - Touch ID prototype (`YARDLET_PATCH_CEF_WEBAUTHN_GROUP=1`, only together with a profile, off by default): in the copy
+    of the CEF framework placed in the bundle, it changes the two constants to `<team ID>.com.zzunkie.webauthn` and
+    `…-uvk` at the same lengths (31 and 35 bytes) (the downloaded distribution and its pinned hash stay as they are),
+    and adds those groups to the entitlements. In a QA build changed to a fake team ID, it was confirmed that the
+    "Expected value" in host.log becomes the changed group. Real Touch ID registration and sign-in succeeded on
+    2026-10-23 in a QA bundle signed with the real team's Developer ID profile, with the user's Touch ID fingerprint.
+    This approach of changing binary constants is still an explicit opt-in, and it is off by default.
+- Updates: if the installed app has a team signature (Developer ID), `stage-update.sh`, Install Update… and the install
+  script require the new build to meet the installed app's designated requirement (the same identifier, the same team)
+  (the same rule as Sparkle). An ad-hoc installed app accepts any Yardlet build with a valid signature, as before.
+- To move to a new CEF: change the version, URL and both hashes, confirm by starting the host that the C API hash
+  (`CEF_API_VERSION`) matches, and run `scripts/browser-host-qa/run-check.sh`.
 
-## 8. 파일 위치
+## 8. File locations
 
-| 경로 | 내용 |
+| Path | Contents |
 |---|---|
-| `~/Library/Application Support/Yardlet/Browser/Default` | 기본 프로필(쿠키, 저장소, 캐시): 작업 없는 탭, "모든 작업이 함께", 새 작업의 시작 쿠키 |
-| `~/Library/Application Support/Yardlet/Browser/Task-<key>` | 작업마다의 프로필(Chromium이 root cache 바로 아래만 디스크 프로필로 연다). `TaskProfiles.json`은 새 작업 화면의 키와 그 탭을 넘겨받은 작업의 키. 남은 작업에 속하지 않는 폴더는 호스트가 끝날 때 지우고, Chromium이 `Local State`에 남긴 그 프로필의 기록(`profile.info_cache`, `profile.profiles_order`, `variations_google_groups`)도 지운다 |
-| `~/Library/Application Support/Yardlet/Browser/Home` | 호스트의 `CFFIXED_USER_HOME`. Chromium이 캐시 경로 밖에 쓰는 파일(`CEF/User Data`, `Google/RLZ` 등)이 여기 모인다 |
-| `~/Library/Application Support/Yardlet/Browser/Logs/host.log` | 호스트 표준 오류(4 MB를 넘으면 새로 시작), `chromium.log` |
-| `~/Downloads` | 다운로드 |
-| `$TMPDIR/<bundle id>.browser-host.*` | Chromium의 임시 폴더(OS가 정리) |
-| `/var/folders/…/X/<호스트 번들 ID>.code_sign_clone/code_sign_clone.XXXXXX` | 호스트 하나가 시작할 때 Chromium이 만드는 호스트 번들의 사본(APFS 사본에 실행 파일만 하드 링크). 업데이트가 번들을 바꿔도 실행 중인 호스트의 서명이 맞게 둔다. 호스트가 끝나면 Chromium의 정리 Helper가 지운다(3절 "종료"). 강제로 끝난 호스트의 것은 남고, macOS dirhelper가 3일 뒤 지운다. 사본이 생긴 뒤에는 커널이 알려 주는 호스트의 실행 경로(`proc_pidpath`)가 사본 쪽일 수 있다 |
+| `~/Library/Application Support/Yardlet/Browser/Default` | Default profile (cookies, storage, cache): tabs without a task, "Shared by all tasks", starting cookies for new tasks |
+| `~/Library/Application Support/Yardlet/Browser/Task-<key>` | Per-task profiles (Chromium opens only folders directly under the root cache as disk profiles). `TaskProfiles.json` holds the new-task screen's key and the key of the task that took over its tabs. Folders that do not belong to a remaining task are deleted when the host ends, along with the records Chromium kept for those profiles in `Local State` (`profile.info_cache`, `profile.profiles_order`, `variations_google_groups`) |
+| `~/Library/Application Support/Yardlet/Browser/Home` | The host's `CFFIXED_USER_HOME`. Files Chromium writes outside the cache path (`CEF/User Data`, `Google/RLZ` and so on) collect here |
+| `~/Library/Application Support/Yardlet/Browser/Logs/host.log` | Host standard error (starts over past 4 MB), `chromium.log` |
+| `~/Downloads` | Downloads |
+| `$TMPDIR/<bundle id>.browser-host.*` | Chromium's temporary folders (the OS cleans them up) |
+| `/var/folders/…/X/<host bundle ID>.code_sign_clone/code_sign_clone.XXXXXX` | A copy of the host bundle Chromium makes when a host starts (an APFS clone with only the executables hard-linked). It keeps the running host's signature valid when an update replaces the bundle. When the host ends, Chromium's cleanup Helper deletes it (section 3, "Shutdown"). Copies from hosts that were forced to end remain, and macOS dirhelper deletes them after 3 days. Once the copy exists, the host's executable path that the kernel reports (`proc_pidpath`) can point into the copy |
 
-## 9. 보안
+## 9. Security
 
-- 프레임은 Mach로 받는다. Yardlet이 실행마다 `"<bundle id>.browser-host.<pid>.<128비트 난수>"` 이름으로 bootstrap check-in을
-  하고, 이름과 256비트 토큰을 호스트 환경 변수로 넘긴다. 받은 메시지는 커널이 붙인 audit token의 PID가 띄운 호스트인지,
-  토큰이 맞는지 확인하고 아니면 버린다(QA에서 Yardlet 자신이 보낸 위조 메시지 2건이 거부됨). 설치본과 QA 앱이 함께 떠도
-  이름이 겹치지 않는다.
-- 호스트 쓰기 파이프는 `F_SETNOSIGPIPE`라 호스트가 죽어도 Yardlet이 SIGPIPE로 끝나지 않는다.
-- helper 샌드박스를 켠다. 프레임워크·helper가 호스트 번들 밖에 있으면 샌드박스가 GPU helper의 프레임워크 적재를 막는다.
-- URL 정책, 새 창, 다운로드 격리 속성은 3절. 인증서 오류는 CEF 기본(차단 페이지), HTTP 인증 창은 지원하지 않는다.
-- mock keychain의 절충은 3절.
+- Frames are received over Mach. For each run, Yardlet does a bootstrap check-in under the name
+  `"<bundle id>.browser-host.<pid>.<128-bit random>"` and passes the name and a 256-bit token to the host in environment
+  variables. For each received message, it checks that the PID in the kernel-attached audit token is the host it started
+  and that the token matches, and drops the message otherwise (in QA, 2 forged messages Yardlet sent itself were
+  rejected). Even with the installed app and a QA app running together, the names do not collide.
+- The host's write pipe has `F_SETNOSIGPIPE`, so Yardlet does not end with SIGPIPE if the host dies.
+- The helper sandbox is on. If the framework and helpers are outside the host bundle, the sandbox stops the GPU helper
+  from loading the framework.
+- URL policy, new windows and the quarantine attribute on downloads: section 3. Certificate errors use CEF's default (a
+  blocking page); HTTP authentication windows are not supported.
+- The mock keychain trade-off: section 3.
 
-## 10. 알려진 한계
+## 10. Known limits
 
-- **접근성:** 요소 단위 이동(VO+화살표), 읽기, 누르기, 포커스, 값 설정, select 선택, 스크롤해서 보이기는 된다(5절). 다음은
-  없다.
-  - VoiceOver의 웹 탐색: 로터의 제목·링크 목록과 빠른 탐색(`AXUIElementsForSearchPredicate`), text marker 기반 글자·단어·줄
-    이동. 루트를 `AXWebArea`가 아닌 그룹으로 내놓는 이유다.
-  - 라이브 영역 알림, 슬라이더 증감(AXIncrement/Decrement).
-  - 페이지 안 스크롤 영역의 스크롤과 CSS transform의 위치 반영: 다시 그려질 때까지 이전 위치로 보인다.
-  - 다른 출처 iframe 안의 포커스·값 설정.
-- **프로필 잠금:** 같은 사용자 홈을 쓰는 Yardlet 두 개(예: 설치본과 개발 빌드)가 동시에 브라우저를 열면 두 번째 호스트는
-  Chromium 프로필 잠금 때문에 시작하지 못한다(`cef_initialize returned 0`, 로그에 "기존 브라우저 세션에서 여는 중").
-- **폭을 바꾸는 동안의 지연:** 패널 폭을 끄는 동안 페이지는 렌더러가 새 폭으로 다시 배치하고 그리는 시간만큼 늦게 따라온다. 넓힐 때는
-  오른쪽에 흰 띠가, 좁힐 때는 페이지 오른쪽이 잘려 보이다가 끄기를 멈추면 맞는다(QA `resize`, 16 ms마다 약 7 pt씩 끌 때 패널 폭과 페이지
-  폭의 차이 중앙값: 가벼운 페이지 8 pt, 글 카드 3,000개인 페이지 31 pt, 멈춘 뒤 맞기까지 16·95 ms). CEF는 크기 변경을 한 번에 하나만
-  렌더러로 보내고(`hold_resize_`), 창 없는 뷰에는 Chrome 창처럼 새 크기의 프레임을 기다려 창을 그리는 장치가 없다.
-  QA가 서로 다른 임시 홈을 쓰는 이유다.
-- 트랙패드의 가장자리 탄성(rubber-band)과 스와이프 뒤로 가기는 없다(CEF 휠 이벤트에 단계 정보가 없음). 스마트 확대(두 번 탭)도 없다.
-- 웹 알림은 보이지 않는다. 2026-10-25부터 브라우저 프로세스가 `--disable-features=NativeNotifications`로 떠서(`disable_native_notifications`,
-  확장 스위치의 `disable-features`에 덧붙임) Chromium이 시스템 알림 브리지를 만들지 않는다. 그 전에는 시작할 때마다 지난 알림을 맞추느라
-  배너 서비스(호스트 자신)와 `Yardlet Helper (Alerts)`를 macOS 알림에 연결해 권한을 요청했고, 새 bundle ID의 QA 번들마다 사람의 화면에
-  허용 요청이 떴다. 웹 알림을 Yardlet 알림으로 넘기는 공개 CEF API는 없다.
-- 페이지에서 밖으로 끌기, 확장 프로그램, DevTools 창은 없다.
-- 카메라·마이크는 2026-10-25 저녁부터 권한 막대로 묻는다(3절 "권한 요청"). QA는 막대에서 차단까지만 본다: 허용하면 macOS의 허용 창이
-  사람의 화면에 뜨기 때문이다. 그래서 허용 뒤 macOS가 묻는 단계, 실제 영상과 소리, 서명한 설치본에서 호스트 entitlement가 쓰이는지(Yardlet
-  본체에는 전부터 있음)는 확인하지 않았다. 화면 공유(`getDisplayMedia`)는 고를 창이 없어 거부한다. 위치와 알림은 막대에서
-  허용할 수 있지만, 그 뒤 macOS가 묻는 단계와 알림이 실제로 뜨는지는 확인하지 않았다(호스트와 Yardlet에 위치 사용 설명이 없다).
-- 외부 앱 주소(`mailto:`, `tel:`, `zoommtg:`, `slack:` 등)는 2026-10-25 저녁부터 Chrome처럼 열거나 묻는다(3절 "외부 앱 주소"). 남은 차이:
-  (1) 주소 칸에 그런 주소를 쳐 넣으면 Chrome은 앱을 열지만 Yardlet은 전처럼 막는다. (2) "항상 허용"은 그 탭의 프로필에 남아, 작업마다 따로인
-  프로필에서는 작업마다 따로다(Chrome은 프로필 하나). (3) 에이전트의 입력에서 나온 요청은 메일 링크와 "항상 허용"한 사이트도 사람에게 묻는다
-  (Chrome에는 에이전트가 없다). 실제 메일 앱·FaceTime·Zoom이 열리는지는 QA로 보지 않았다(여는 함수를 기록기로 바꿔 끼움).
-- 사용자 제스처 없는 팝업은 Chrome처럼 열지 않고(`window.open`이 null), 2026-10-25 저녁부터 주소 칸 오른쪽의 "팝업 차단됨" 목록에서 연다(3절
-  "새 창"). 그렇게 연 탭에는 `window.opener`가 없고, "이 사이트의 팝업 항상 허용"은 없다. 페이지가 사용자 제스처 뒤 5초 안에 연 창은 제스처가
-  있는 것으로 친다(Chromium의 transient activation).
-- 탭을 닫을 때 Chrome의 "사이트에서 나가시겠습니까?"는 2026-10-25 저녁부터 사람이 패널에서 닫을 때 묻는다(3절 "JS 대화상자"). 에이전트의 탭
-  닫기, 작업 보관·삭제, 앱 종료는 묻지 않고 닫는다(Chrome은 창을 닫거나 끝낼 때도 묻는다). 1초 안에 답하지 않는 페이지는 묻지 않고 닫는다.
-- `showDirectoryPicker()`는 파일 열기 창으로 온다. CEF가 폴더 고르기(`ui::SelectFileDialog::SELECT_FOLDER`)를 처리하지 않기 때문이다
-  (`file_dialog_manager.cc`의 NOTIMPLEMENTED, 기본 모드 열기). `<input webkitdirectory>`는 폴더 창이다.
-- 전체 화면(`requestFullscreen`)은 패널의 페이지 영역 안에서만 된다. 창을 전체 화면으로 바꾸지 않는다(CEF `on_fullscreen_mode_change` 없음).
-- 비밀번호 칸(2026-10-25부터 보안 입력과 로마자 입력 소스 제한, 4절)에 남은 차이: (1) Chrome·Claude 앱·Codex 앱처럼 입력기 자체를 끄지는
-  않는다(`inputContext`가 nil). 한글·일본어처럼 조합하는 입력기는 로마자 입력 소스 제한으로 빠지고, 로마자 입력 소스의 dead key 조합은 Safari처럼
-  남는다. (2) 칸에 포커스가 있는 채 스크립트가 `type`을 바꾸면(포커스를 옮기지 않는 "비밀번호 보기" 단추) 다음 포커스 변화까지 앞 상태가 남는다.
-  Chrome은 한 번 비밀번호 칸이었던 칸(`TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD`)도 비밀번호 칸으로 보고, CEF의 DOM API는 그 표시를 주지 않는다.
-  (3) 실제 입력 소스가 로마자로 바뀌고 칸을 떠나면 돌아오는지는 QA로 보지 못했다. 앞에 있는 앱에서만 일어나는데 QA 앱은 활성 앱이 되지 않고,
-  사람의 입력기를 바꾸지 않으려고 기록기(`BrowserSecureInputRecorder`)로 켜고 끈 차례만 본다(11절).
-- 패스키: iCloud 키체인은 없고, Touch ID는 7절 시제품으로 만든 빌드에만 있다(3절의 이유). 그 사이트의 패스키가 없는 즉시 요청은 Chrome처럼 QR 시트로 바로 간다(3절 (2)). 대화상자를 패널 위에 놓고 Yardlet 창 앞으로 다시 올리는 것은 2026-10-27부터 QA가 창 서버의 앞뒤 순서로 본다(3절 "Chromium의 창과 탭"). 실제 클릭과 활성 넘기기는 QA에서 실행하지 못했다(QA 앱은 뒤에서
-  떠 활성 앱이 되지 않는다; 규칙은 `ChromiumWindowPresentationTests`). 실제 USB 보안 키와 휴대폰으로 끝까지 등록·로그인한 확인도 없다.
-- 탭은 작업당 9개까지다. 에이전트가 사용자가 보는 탭을 쓰면 입력이 섞일 수 있다(`browser_tab_new`로 뒤 탭에서 일할 수 있다).
-  탭 끌어 순서 바꾸기·탭을 창으로 떼기·탭 이름 바꾸기·음소거는 없다(Codex 앱에는 있음). 페이지 초점에서 ⌘1–⌘4는 탭을 고르지 않는다(창의
-  키가 먼저 받음). 아이콘은 저장하지 않아 다시 켠 뒤 페이지가 열릴 때까지 지구본이다.
-- 새 창(3절 "새 창"): 사용자 제스처 없는 팝업은 열지 않고, 창 크기 요청은 쓰지 않고 탭으로 연다. 탭이 9개인 작업이나 작업 밖의 탭에서는
-  여는 탭이 그 주소로 가므로 그때는 `window.opener`가 없다.
-- 카드·주소 자동 완성(저장 제안, 저장한 것 채우기, 양식 기록)은 없다(3절 "자동 완성의 저장 제안"). Chrome의 그 화면들은 브라우저 창에 붙는다.
-  Payment Request(Google Pay·Apple Pay 단추, Secure Payment Confirmation)는 2026-10-25 저녁부터 페이지에 없다(3절 "결제 API"). 전에는 `show()`가
-  결제 시트를 띄우지 않고 `AbortError: Cannot show PaymentRequest UI in a preview page or a background tab.`로 끝났다. Chromium은 탭의 Chrome 창이
-  활성일 때만 시트를 띄운다(`ChromePaymentRequestDelegate::IsBrowserWindowActive`). 그래서 지갑으로만 결제하는 사이트는 결제할 수 없고, 카드를
-  입력하는 결제는 된다.
-- 패널이 닫힌 탭의 JS 대화상자·파일 선택은 에이전트가 답할 때까지 열려 있다(6절). 권한 요청은 패널이 그 탭을 보일 때까지 기다린다
-  (에이전트는 답하지 못한다). 다운로드 알림도 패널이 있을 때만 뜬다.
-- **대화상자 로그 한 줄(2026-10-22 전, 새 창을 같은 탭에서 열던 때):** 사용자 제스처가 있는 `window.open`은 호스트가 새 창을 취소하고 같은 탭에서 열었다. 그 뒤 그
-  페이지의 다음 main frame 이동에서 CEF가 `Default dialog implementation requires a parent window handle; canceling the JS
-  dialog`를 한 번 남긴다. QA에서는 CDP로 부른 `window.open` 뒤에만 보였고, 실제로 클릭한 `target=_blank` 링크 뒤에는
-  남지 않았다.
-  - Yardlet의 JS 대화상자 처리기 네 개(on_jsdialog, on_before_unload_dialog, on_reset_dialog_state, on_dialog_closed)는 모두
-    불리지 않는다.
-  - 같은 탭으로 여는 방법을 바꿔도 남는다: 콜백 안의 `load_url`, 콜백 뒤로 미룬 `load_url`, 페이지 쪽 `location.assign`,
-    아예 열지 않기.
-  - 이동은 그대로 진행되고 사용자에게 보이는 것은 없다. 즉 Yardlet으로 보낼 수 있는 대화상자가 아니라, 취소된 새 창에 대한
-    CEF 내부 처리로 본다. 무엇인지 더 알려면 CEF 소스나 verbose 로그가 필요하다(minimal 배포본에 없음).
-  - DEBUG 호스트는 QA에서 명령과 대화상자 처리를 시각과 함께 로그에 남겨 대조할 수 있다.
-- 호스트마다 시작할 때 로그에 `sandbox_extension_issue_file_to_process failed … Operation not permitted` 한 줄이 남는다. 기능 영향은 보지 못했다.
-- 종료의 멈춤(2026-10-24): QA 전체 확인 8번 가운데 3번, 많이 쓴 첫 호스트가 유예 시간 뒤의 `shutdown`에서 Chromium 하위 프로세스를 끝낸 뒤
-  `CefShutdown`에서 돌아오지 않았다(통계 줄 없음, 사본 정리 Helper도 뜨기 전). 5초 뒤 Yardlet이 SIGKILL로 끝내므로 그 호스트의 사본만 남는다.
-  원인은 확인하지 못했다(멈춘 호스트의 표본을 아직 뜨지 못함). 2026-10-25 `--ui-fixture-browser-check-only=tabs`에서 탭 2개가 열린 채
-  끝낼 때 두 번 연속 같은 모양으로 멈췄다(host.log가 `command shutdown`에서 끝남, 열린 탭의 `closed`는 둘 다 옴). 재현 길로 쓸 수 있다.
-  2026-10-25 처음 뜬 멈춘 호스트의 표본(작업 트리 `~/Desktop/…/.build` 아래 QA 홈, `compat`)에서 주 스레드는 `yardlet_cef_shutdown` 안에서
-  기다리고, Chromium 작업 스레드 셋이 프로필 파일의 `getxattr`(`NSURL getResourceValue:forKey:`) 둘과 `link` 하나에서 표본 내내 막혀
-  있었다. `~/Desktop` 아래에서 돈 `compat` 실행 다섯 번은 모두 사본이 남았고, 같은 빌드를 `$TMPDIR` 아래 QA 홈으로 돌리자 정상 종료
-  (통계 줄, 사본 없음)였다. QA에서의 원인은 macOS의 데스크탑 폴더 보호로 본다(11절, QA 앱의 `open()`도 같은 곳에서 멈췄다). 설치본의
-  프로필은 `~/Library/Application Support` 아래라 해당하지 않을 것으로 보지만 확인하지 않았다.
-- 프레임 전달: 호스트는 새 IOSurface를 Mach 메시지로 기다리지 않고 보내고(큐가 차면 그 프레임만 버림), Yardlet은 프레임
-  이벤트가 오는 대로 파이프 큐에서 받는다(2절). 전에는 패널 없는 탭에서 큐가 차 CEF UI 스레드가 프레임마다 1초씩 막혀 CDP가 수 초 늦었다.
-- 가속 그리기의 복사: `on_accelerated_paint`의 IOSurface는 콜백 밖에서 쓸 수 없어(CEF 풀) 호스트가 Metal blit으로 자기 링에
-  복사하고 끝나기를 기다린다. 2026-10-22 QA(840×1536 px, 120 fps 애니메이션 3초)에서 CEF UI 스레드 표본 1,497개 중 콜백 399개,
-  그중 대기 216개 — 프레임당 약 0.6 ms. 완료 핸들러로 비동기화하면 UI 스레드 시간을 더 줄일 수 있지만 아직 하지 않았다.
-- 스크롤 프레임 속도: 120 Hz 디스플레이에서 requestAnimationFrame은 120 fps지만 휠(정밀 델타 120·240 이벤트/초)·Page Down 스크롤은
-  60 fps다(QA `run-perf.sh`). CEF OSR의 BeginFrame은 120 Hz로 돌고 있으니 Chromium 컴포지터가 입력 스크롤 프레임을 절반으로 제한하는
-  규칙으로 보이며, 어느 기능(`cc` 프레임 속도 추정, `viz` FrameRateDecider 등)인지는 확인하지 못했다.
-- 번들이 크다: release 303 MiB(zip 134 MiB), 그중 호스트 272 MiB.
+- **Accessibility:** moving element by element (VO+arrows), reading, pressing, focus, setting values, choosing in a
+  select, and scrolling into view work (section 5). The following do not:
+  - VoiceOver web navigation: the rotor's heading and link lists and quick navigation
+    (`AXUIElementsForSearchPredicate`), and moving by character, word and line with text markers. This is why the root
+    is exposed as a group rather than an `AXWebArea`.
+  - Live region announcements, slider increment and decrement (AXIncrement/Decrement).
+  - Scrolling scroll areas inside the page, and reflecting CSS transforms in positions: elements show at their previous
+    position until redrawn.
+  - Focus and setting values inside a cross-origin iframe.
+- **Profile lock:** when two Yardlet instances using the same user home (for example the installed app and a development
+  build) open the browser at the same time, the second host cannot start because of Chromium's profile lock
+  (`cef_initialize returned 0`, "Opening in existing browser session." in the log). This is why QA runs use separate
+  temporary homes.
+- **Lag while the width changes:** while the panel's width is dragged, the page follows late, by the time the renderer
+  takes to lay out and draw at the new width. When widening, a white strip shows on the right; when narrowing, the right
+  of the page looks cut off; both settle once the drag stops (QA `resize`, dragging about 7 pt every 16 ms; median
+  difference between panel width and page width: 8 pt on a light page and 31 pt on a page with 3,000 post cards; time to
+  settle after stopping 16 and 95 ms). CEF sends only one size change at a time to the renderer (`hold_resize_`), and
+  the windowless view has no mechanism, like a Chrome window has, for waiting for a frame at the new size before drawing
+  the window.
+- No trackpad edge bounce (rubber-band) and no swipe to go back (CEF wheel events carry no phase information). No smart
+  zoom (double tap) either.
+- Web notifications do not show. Since 2026-10-25 the browser process starts with
+  `--disable-features=NativeNotifications` (`disable_native_notifications`, appended to `disable-features` among the
+  extra switches), so Chromium does not create the system notification bridge. Before that, at every start, to reconcile
+  past notifications, it connected the banner service (the host itself) and `Yardlet Helper (Alerts)` to macOS
+  notifications and asked for permission, so each QA bundle with a new bundle ID put a permission request on the
+  person's screen. There is no public CEF API that passes web notifications on as Yardlet notifications.
+- No dragging out of the page, no extensions, no DevTools window.
+- Since the evening of 2026-10-25, camera and microphone ask through the permission bar (section 3, "Permission
+  requests"). QA checks only up to Block on the bar, because allowing would put the macOS permission window on the
+  person's screen. So the step where macOS asks after allowing, real video and sound, and whether the host's
+  entitlements are used in a signed installed app (Yardlet itself has had them for some time) were not verified. Screen
+  sharing (`getDisplayMedia`) is denied, since there is no window to pick from. Location and notifications can be
+  allowed on the bar, but the step where macOS asks after that and whether notifications actually show were not verified
+  (the host and Yardlet have no location usage description).
+- Since the evening of 2026-10-25, external app addresses (`mailto:`, `tel:`, `zoommtg:`, `slack:` and so on) open or
+  ask as in Chrome (section 3, "External app addresses"). Remaining differences: (1) When such an address is typed into
+  the address field, Chrome opens the app, but Yardlet blocks it as before. (2) "Always allow" is stored in the tab's
+  profile, so with per-task profiles it is per task (Chrome has one profile). (3) Requests that come from the agent's
+  input ask the person even for mail links and sites set to "always allow" (Chrome has no agent). Whether a real mail
+  app, FaceTime or Zoom opens was not checked in QA (the opening function is swapped for a recorder).
+- Pop-ups without a user gesture are not opened, as in Chrome (`window.open` returns null), and since the evening of
+  2026-10-25 they open from the "Pop-ups blocked" list at the right of the address field (section 3, "New windows"). A
+  tab opened that way has no `window.opener`, and there is no "Always allow pop-ups from this site". A window a page
+  opens within 5 seconds after a user gesture counts as having a gesture (Chromium's transient activation).
+- Since the evening of 2026-10-25, Chrome's "Leave site?" question on closing a tab is asked when the person closes the
+  tab in the panel (section 3, "JS dialogs"). The agent closing a tab, archiving or deleting a task, and quitting the
+  app close without asking (Chrome also asks when a window is closed or the app quits). A page that does not answer
+  within 1 second is closed without asking.
+- `showDirectoryPicker()` arrives as the file open window. This is because CEF does not handle folder selection
+  (`ui::SelectFileDialog::SELECT_FOLDER`) (NOTIMPLEMENTED in `file_dialog_manager.cc`, which opens in the default mode).
+  `<input webkitdirectory>` gets the folder window.
+- Full screen (`requestFullscreen`) works only within the panel's page area. It does not make the window full screen (no
+  CEF `on_fullscreen_mode_change`).
+- Remaining differences in password fields (secure input and the Roman input source limit since 2026-10-25, section 4):
+  (1) Unlike Chrome, the Claude app and the Codex app, Yardlet does not turn off the input method itself (`inputContext`
+  nil). Composing input methods such as Korean and Japanese drop out through the Roman input source limit, and dead key
+  composition in Roman input sources stays, as in Safari. (2) If a script changes `type` while the field has focus (a
+  "show password" button that does not move focus), the previous state stays until the next focus change. Chrome also
+  treats a field that was once a password field (`TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD`) as a password field, and CEF's DOM
+  API does not give that flag. (3) Whether the real input source switches to Roman and comes back on leaving the field
+  could not be seen in QA. It happens only in the frontmost app, the QA app does not become the active app, and to avoid
+  changing the person's input method, QA only checks the order of turning on and off with a recorder
+  (`BrowserSecureInputRecorder`) (section 11).
+- Passkeys: there is no iCloud Keychain, and Touch ID exists only in builds made with the prototype in section 7 (for
+  the reasons in section 3). An immediate request for which the site has no passkey goes straight to the QR sheet, as in
+  Chrome (section 3, (2)). Since 2026-10-27, QA checks placing the dialog over the panel and raising it again in front
+  of the Yardlet window through the window server's front-to-back order (section 3, "Chromium's windows and tabs"). Real
+  clicks and handing over activation could not be run in QA (the QA app starts in the background and does not become the
+  active app; the rules are in `ChromiumWindowPresentationTests`). Registering and signing in end to end with a real USB
+  security key or phone has not been confirmed either.
+- Up to 9 tabs per task. If the agent uses the tab the user is looking at, input can mix (the agent can work in a
+  background tab with `browser_tab_new`). There is no dragging tabs to reorder, detaching a tab into a window, renaming
+  tabs or muting (the Codex app has them). With focus on the page, ⌘1–⌘4 do not select tabs (the window's keys get them
+  first). Icons are not saved, so after a restart a tab shows a globe until its page opens.
+- New windows (section 3, "New windows"): pop-ups without a user gesture are not opened, and window size requests are
+  not used; the window opens as a tab. In a task with 9 tabs, or for a tab outside any task, the opening tab goes to the
+  address, so there is no `window.opener` in that case.
+- No card or address autofill (save offers, filling saved entries, form history) (section 3, "Autofill save offers").
+  Chrome's screens for these attach to a browser window. Since the evening of 2026-10-25, Payment Request (Google Pay
+  and Apple Pay buttons, Secure Payment Confirmation) is not available to pages (section 3, "Payment API (wallet
+  buttons)"). Before, `show()` did not bring up the payment sheet and ended with
+  `AbortError: Cannot show PaymentRequest UI in a preview page or a background tab.`. Chromium shows the sheet only when
+  the tab's Chrome window is active (`ChromePaymentRequestDelegate::IsBrowserWindowActive`). So sites that take payment
+  only through wallets cannot be paid on, while payments where a card is entered work.
+- JS dialogs and file choosers of a tab whose panel is closed stay open until the agent answers (section 6). Permission
+  requests wait until the panel shows that tab (the agent cannot answer them). Download notices also show only when
+  there is a panel.
+- **One dialog log line (before 2026-10-22, when new windows opened in the same tab):** for a `window.open` with a user
+  gesture, the host cancelled the new window and opened it in the same tab. Afterwards, on that page's next main-frame
+  navigation, CEF logs `Default dialog implementation requires a parent window handle; canceling the JS dialog` once. In
+  QA it showed only after a `window.open` called through CDP, and not after a `target=_blank` link that was actually
+  clicked.
+  - None of Yardlet's four JS dialog handlers (on_jsdialog, on_before_unload_dialog, on_reset_dialog_state,
+    on_dialog_closed) is called.
+  - It remains when the way of opening in the same tab changes: `load_url` inside the callback, `load_url` deferred
+    until after the callback, `location.assign` on the page side, or not opening at all.
+  - The navigation proceeds and the user sees nothing. So it is taken to be not a dialog that could be sent to Yardlet
+    but CEF's internal handling of the cancelled new window. Finding out more would need the CEF source or a verbose log
+    (not in the minimal distribution).
+  - In QA, the DEBUG host logs commands and dialog handling with timestamps so they can be compared.
+- Each host logs one line `sandbox_extension_issue_file_to_process failed … Operation not permitted` at start. No effect
+  on features has been seen.
+- Shutdown hang (2026-10-24): in 3 of 8 full QA runs, a heavily used first host, on `shutdown` after the grace period,
+  ended Chromium's child processes and then did not return from `CefShutdown` (no stats line, and before the copy
+  cleanup Helper even started). Yardlet ends it with SIGKILL after 5 seconds, so only that host's copy remains. The
+  cause was not found (no sample of a hung host had been taken yet). On 2026-10-25,
+  `--ui-fixture-browser-check-only=tabs` hung the same way twice in a row when quitting with 2 tabs open (host.log ends
+  at `command shutdown`, and the `closed` for both open tabs came). This can serve as a way to reproduce it. In the
+  first sample of a hung host, taken on 2026-10-25 (a QA home under the worktree's `~/Desktop/…/.build`, `compat`), the
+  main thread was waiting inside `yardlet_cef_shutdown`, and three Chromium worker threads were blocked for the whole
+  sample on two `getxattr` calls (`NSURL getResourceValue:forKey:`) and one `link` on profile files. All five `compat`
+  runs under `~/Desktop` left copies, and running the same build with the QA home under `$TMPDIR` shut down normally
+  (stats line, no copy). The cause in QA is taken to be macOS's Desktop folder protection (section 11; the QA app's
+  `open()` also hung there). The installed app's profile is under `~/Library/Application Support`, so it is not expected
+  to be affected, but this was not verified.
+- Frame delivery: the host sends each new IOSurface in a Mach message without waiting (if the queue is full, only that
+  frame is dropped), and Yardlet receives frame events on the pipe queue as they come (section 2). Before, in tabs
+  without a panel the queue filled up and blocked the CEF UI thread for 1 second per frame, so CDP ran seconds late.
+- Copying for accelerated drawing: the IOSurface from `on_accelerated_paint` cannot be used outside the callback (CEF's
+  pool), so the host copies it into its own ring with a Metal blit and waits for it to finish. In 2026-10-22 QA
+  (840×1536 px, a 120 fps animation for 3 seconds), of 1,497 CEF UI thread samples, 399 were in the callback, 216 of
+  them waiting: about 0.6 ms per frame. Making it asynchronous with a completion handler could cut UI thread time
+  further, but this has not been done yet.
+- Scroll frame rate: on a 120 Hz display requestAnimationFrame runs at 120 fps, but wheel (precise deltas at 120 and 240
+  events/s) and Page Down scrolling run at 60 fps (QA `run-perf.sh`). CEF OSR's BeginFrame runs at 120 Hz, so this looks
+  like a rule in Chromium's compositor that halves frames for input scrolling; which feature it is (`cc` frame rate
+  estimation, `viz` FrameRateDecider and so on) has not been found.
+- The bundle is large: release 303 MiB (zip 134 MiB), 272 MiB of it the host.
 
 ## 11. QA
 
-DEBUG 번들에서 `scripts/browser-host-qa/`의 도구로 실제 패널·호스트·CDP 경로를 확인한다.
+In a DEBUG bundle, the tools in `scripts/browser-host-qa/` check the real panel, host and CDP paths.
 
 ```sh
 ./scripts/build-app.sh
@@ -452,155 +558,255 @@ QA="$TMPDIR/browser-host-qa"; mkdir -p "$QA"
 ./scripts/browser-host-qa/cleanup-qa.sh "$QA/Yardlet Browser QA.app" "Yardlet QA builds $(date +%F)"
 ```
 
-`--ui-fixture-browser-check-only=browser-use`(2026-10-26, `BrowserHostBrowserUseQA`)는 에이전트의 브라우저 사용을 본다: 화면 크기 흉내(프리셋,
-새 로드 뒤 유지, 참조 클릭, 스크린숏 크기, 색 구성, 전체 페이지 스크린숏 뒤에도 유지, desktop, 패널보다 큰 크기를 줄여 그리고 사람의 클릭이 맞는
-자리에 닿음, 턴 끝, 사람의 메뉴), iframe·shadow DOM의 읽기와 참조 클릭·입력, 넘기기(기다림, 패널 막대, 다 했어요·거절·글자·제한 시간·턴 끝),
-QA 페이지마다 snapshot 크기(`result.json`의 `snapshotSizes`).
+`--ui-fixture-browser-check-only=browser-use` (2026-10-26, `BrowserHostBrowserUseQA`) checks the agent's use of the
+browser: screen size emulation (presets, kept after a new load, reference clicks, screenshot size, color scheme, kept
+after a full-page screenshot, desktop, a size larger than the panel drawn shrunk with the person's clicks landing in the
+right place, end of turn, the person's menu), reading, reference clicks and typing in iframes and shadow DOM, handoff
+(waiting, the panel bar, I'm done, Decline, text, time limit, end of turn), and the snapshot size for each QA page
+(`snapshotSizes` in `result.json`).
 
-QA 앱은 별도 bundle ID(안쪽 호스트·helper 포함), 임시 홈, `--ui-fixture=conversation`, `open -g`와 `YARDLET_QA_BACKGROUND=1`로
-뜬다. 그 변수(`QABackground`)가 있으면 앱은 Dock·메뉴 막대·⌘Tab에 나오지 않는 accessory 앱이고, 활성 앱이 되지 않으며, 창은 모든 화면의
-왼쪽 아래 바깥에 놓인다. 알림 클릭·Dock 튀기기·업데이트 알림·패스키 창 넘김도 이 변수를 따르고, 같은 변수를 물려받은 호스트는 Chromium의
-창(패스키)을 화면 밖에 두고 활성화하지 않는다(2026-10-24, 전에는 창이 화면에 "Yardlet"으로 떠 사람이 클릭하고 키를 칠 수 있었다).
-`run-perf.sh`만은 디스플레이의 프레임을 재야 해서 창을 화면에 두되(`--ui-fixture-browser-perf`) 활성화하지 않는다. 사람이 Mac을 쓰지 않을
-때 돌린다. 쇼케이스 캡처(`scripts/showcase/capture.sh`, `--ui-fixture=showcase`와 `--ui-fixture-ignore-pointer`)도 창을 디스플레이에서
-찍으므로 창을 화면에 두고 활성화하지 않으며, 창은 사람의 창 뒤로 가고 클릭은 지나간다(2026-10-27). `run-check.sh`는 끝나든 끊기든 자기가 띄운 앱과 그 프로세스 트리를 PID로 끝내고, 번들 안의 프로세스가 남으면 실패로 적는다.
-끝난 뒤에는 이 QA 번들의 프로세스가 남긴 충돌 보고서(`~/Library/Logs/DiagnosticReports`, 보고서 첫 줄의 bundleID로 가림, `crash-reports.txt`)와
-남은 호스트 사본(8절)도 보고, fixture가 일부러 끝낸 렌더러(`result.json`의 `intentionalRendererCrashes`, `input`의 `Page.crash`) 밖의 보고서나
-남은 사본이 있으면 실패로 적는다(2026-10-24). `YARDLET_PROVISIONING_PROFILE`을 지정하면 호스트만 원래 App ID를 유지해 프로필과
-일치시키고, 앱 본체·helper는 QA ID로 바꾼다. 프로필·CEF 패치 변수는 `sign-app.sh`에 그대로 전달한다. 쿠키는 QA의 mock 키체인을
-쓰지만, Touch ID 등록·인증은 실제 팀의 키체인 그룹과 사용자의 지문을 사용한다(README "Signing and notarization"). `run-check.sh`는 단계마다 프로세스 트리의 메모리·깨어남을 재고, 끝나면 남은 프로세스가 없는지 본다.
-`cleanup-qa.sh`는 LaunchServices 등록을 해제하고 번들과 환경설정 파일을 휴지통 폴더로 옮긴다. 알림 등록은 지우지 못한다(`usernoted`의
-저장소는 공개 방법으로 지울 수 없다). 그래서 QA 번들은 처음부터 알림에 등록되지 않는다: 본체는 QA ID나 `YARDLET_QA_BACKGROUND`이면 알림
-센터를 쓰지 않고, 호스트와 helper는 위 10절대로 macOS 알림에 연결하지 않는다(2026-10-25). 사람이 볼 때는
-`qa-launch.sh`로 fixture만 띄워 창을 앞으로 가져온다. 뒤에서 뜬 QA 창은 다른 창에 가려져 있을 수 있어 `run-check.sh`와
-`run-latency.sh`는 `--ui-fixture-browser-ignore-occlusion`(DEBUG)을 넘겨 가림과 관계없이 패널이 그리게 한다(가림 자체는
-`BrowserHostVisibilityTests`와 `run-perf.sh`의 최소화 단계가 본다). 마지막 단계 바로 앞에서는 에이전트 도구가 패널 없는 탭에 `/tall`(800 px
-뷰포트에서 4,086 px, 띠마다 다른 색)을 열어 `fullPage`로 찍고, 띠마다 가운데 색이 한 번씩 순서대로 나오는지와 이미지가 페이지 크기인지, 뒤에 탭의
-크기와 페이지의 `innerHeight`·높이가 그대로인지 본다(`fullpage-screenshot.png`, 2026-10-24). `run-check.sh`의 마지막 단계는 패널이 닫힌 채 에이전트가 탭을
-열어 쓰고, 그동안 다른 탭의 크기를 30번 바꿔 표면 ID가 다시 쓰이게 한 뒤 패널을 연다. 크기마다 그 크기의 프레임이 보이는지와
-패널이 에이전트의 페이지를 패널 크기로 보이는지를 확인한다.
-"tabs: side-panel tabs"(⌘T, 에이전트가 뒤에 연 탭, 그 탭을 앞으로 가져와 닫기, ⌘⇧T, 닫기)는 2026-10-23부터 25일까지 자주 실패했다. 부하
-때문이 아니라 제품의 경쟁 조건이었다. 칸(`BrowserHostPaneController`)은 패널이 보이는 탭을 SwiftUI `.onChange(of: key)`로만 따라갔는데,
-SwiftUI는 그 동작을 한 프레임에 한 번만 돌리고 같은 프레임의 두 번째 변화는 버린다(시스템 로그 `onChange(of: UUID) action tried to update
-multiple times per frame`). 그려지지 않는 QA 창에서는 프레임이 잘 넘어가지 않아 30~60 ms 간격의 탭 전환 두 번이 한 프레임에 묶였고, 칸은
-다음 전환이 올 때까지 이전 탭이나 닫힌 탭에 남았다(실패 글의 "new tab in front false", "pane key …/-1"). 2026-10-25부터 칸은 작업 공간의
-`panels`를 `withObservationTracking`으로 직접 따라간다(`followPanel`). tabs 단독 실행에서 고치기 전 빌드는 16번 중 12번(부하 평균 5~10),
-중간 수정 빌드는 5번 중 2번 실패했고, 실패한 실행에만 그 경고가 하나씩 있었다. 고친 빌드는 8번(부하 평균 8~24)과 전체 확인 51개가 모두
-통과했다. 이 단계가 다시 실패하면 같은 시각의 `/usr/bin/log show --predicate 'eventMessage CONTAINS "multiple times per frame"'`부터 본다.
-`--ui-fixture-browser-check-only=input`(QA 경로 `/login`)은 일반 칸과 비밀번호 칸의 포커스·커서(프레임 픽셀에서 커서 열)·입력, 같은 칸이 다른
-탭을 보인 뒤의 포커스, 페이지가 바뀐 뒤의 포커스와 비밀번호 칸 커서(같은 사이트와 다른 사이트(`localhost`)의 새 문서 `/login?autofocus=pass`, 다른
-사이트 iframe `/login-frame`, 뒤로, 실제 주소 칸의 Enter)와 패널이 키보드를 갖지 않을 때의 이동(페이지가 포커스를 받지 않음), 페이지가 받은 입력 이벤트의 나이(`performance.now() - event.timeStamp`), 클릭과 Enter 뒤의 SPA 이동(pushState와 새
-내용)에도 렌더러가 남는지, 로딩 중 페이지 높이, `Page.crash` 뒤의 머리 상태와 host.log 줄을 `input.json`에 적는다. 같은 단계가 비밀번호 칸의
-보안 입력(2026-10-25, 4절)도 본다. QA 앱(`QABackground`)과 검사는 실제 보안 입력과 입력 소스를 건드리지 않고 기록기(`BrowserSecureInputRecorder`,
-창을 키 창으로 셈)로 켜고 끈 차례를 적는다: 일반 칸과 비밀번호 칸 클릭, 패널이 키보드를 잃고 되찾기, 위의 페이지 이동마다(다른 사이트 iframe의
-비밀번호 칸, 뒤로-앞으로 캐시에서 돌아온 페이지(`/login`의 `window.__restored`), 주소 칸 Enter), 칸 없는 페이지, 패널이 키보드를 갖지 않을 때의
-autofocus, 두 탭이 각자 지키는 칸, 렌더러 종료와 새로고침, 호스트 종료와 다시 열기, 패널 닫기에서 켜짐·꺼짐과 켠 횟수만큼 끈 것
-(`input.json`의 `secureInput.calls`). `run-check.sh`는 도는 동안 이 실행의 프로세스가 실제 보안 입력을 쥐는지(IORegistry 루트의
-`kCGSSessionSecureInputPID`) 보고 쥐면 실패로 적는다(`secure-input.txt`).
+The QA app starts with a separate bundle ID (including the host and helpers inside it), a temporary home,
+`--ui-fixture=conversation`, `open -g` and `YARDLET_QA_BACKGROUND=1`. With that variable (`QABackground`) set, the app
+is an accessory app that does not appear in the Dock, the menu bar or ⌘Tab, it does not become the active app, and its
+windows are placed outside the bottom left of every screen. Notification clicks, Dock bouncing, update notices and
+handing activation to the passkey window follow this variable too, and the host, which inherits the same variable, keeps
+Chromium's windows (passkey) off screen and does not activate them (2026-10-24; before, the window appeared on screen as
+"Yardlet", and the person could click it and type into it). Only `run-perf.sh` keeps the window on screen
+(`--ui-fixture-browser-perf`), because it has to measure the display's frames, but it does not activate it. Run it when
+the person is not using the Mac. The showcase capture (`scripts/showcase/capture.sh`, `--ui-fixture=showcase` and
+`--ui-fixture-ignore-pointer`) also captures the window from the display, so it keeps the window on screen without
+activating it; the window goes behind the person's windows, and clicks pass through it (2026-10-27). Whether it finishes
+or is interrupted, `run-check.sh` ends the app it started and that app's process tree by PID, and records a failure if
+any process inside the bundle remains. After it finishes, it also checks crash reports left by this QA bundle's
+processes (`~/Library/Logs/DiagnosticReports`, picked out by the bundleID in the report's first line,
+`crash-reports.txt`) and leftover host copies (section 8), and records a failure if there are reports other than for
+renderers the fixture ended on purpose (`intentionalRendererCrashes` in `result.json`, `Page.crash` in `input`) or any
+leftover copy (2026-10-24). With `YARDLET_PROVISIONING_PROFILE` set, only the host keeps its original App ID to match
+the profile, and the app itself and the helpers change to the QA ID. The profile and CEF patch variables are passed
+through to `sign-app.sh` unchanged. Cookies use QA's mock keychain, but Touch ID registration and authentication use the
+real team's keychain group and the user's fingerprint (README "Signing and notarization"). `run-check.sh` measures the
+process tree's memory and wakeups at each step, and at the end checks that no process is left. `cleanup-qa.sh` removes
+the LaunchServices registration and moves the bundle and preferences files to a trash folder. It cannot remove
+notification registrations (`usernoted`'s store cannot be cleared by any public means). So QA bundles are never
+registered for notifications in the first place: the app itself does not use Notification Center under a QA ID or with
+`YARDLET_QA_BACKGROUND`, and the host and helpers do not connect to macOS notifications, as described in section 10
+above (2026-10-25). For the person to look at it, `qa-launch.sh` starts only the fixture and brings the window to the
+front. A QA window started in the background can be covered by other windows, so `run-check.sh` and `run-latency.sh`
+pass `--ui-fixture-browser-ignore-occlusion` (DEBUG) to make the panel draw regardless of occlusion (occlusion itself is
+checked by `BrowserHostVisibilityTests` and the minimize step of `run-perf.sh`). Right before the last step, the agent
+tools open `/tall` (4,086 px in an 800 px viewport, each band a different color) in a tab without a panel and capture it
+with `fullPage`, then check that each band's center color appears once and in order, that the image is the page's size,
+and that afterwards the tab's size and the page's `innerHeight` and height are unchanged (`fullpage-screenshot.png`,
+2026-10-24). In the last step of `run-check.sh`, with the panel closed, the agent opens and uses a tab, while another
+tab's size is changed 30 times so that surface IDs are reused, and then the panel opens. For each size it checks that a
+frame of that size shows, and that the panel shows the agent's page at the panel's size. "tabs: side-panel tabs" (⌘T, a
+tab the agent opened in the background, bringing that tab to the front and closing it, ⌘⇧T, closing) often failed from
+2026-10-23 to 2026-10-25. The cause was not load but a race condition in the product. The pane
+(`BrowserHostPaneController`) followed the tab the panel shows only through SwiftUI `.onChange(of: key)`, and SwiftUI
+runs that action only once per frame and drops a second change in the same frame (system log
+`onChange(of: UUID) action tried to update multiple times per frame`). In a QA window that is not drawn, frames rarely
+advance, so two tab switches 30–60 ms apart were bundled into one frame, and the pane stayed on the previous tab or a
+closed tab until the next switch came ("new tab in front false" and "pane key …/-1" in the failure text). Since
+2026-10-25 the pane follows the workspace's `panels` directly with `withObservationTracking` (`followPanel`). Running
+tabs alone, the build before the fix failed 12 of 16 runs (load average 5–10), and an intermediate fix failed 2 of 5,
+and only the failed runs had that warning, one each. The fixed build passed all 8 runs (load average 8–24) and all 51
+checks of the full run. If this step fails again, start with
+`/usr/bin/log show --predicate 'eventMessage CONTAINS "multiple times per frame"'` for the same time.
+`--ui-fixture-browser-check-only=input` (QA path `/login`) records in `input.json`: focus, caret (the caret column in
+frame pixels) and typing in a plain field and a password field, focus after the same pane shows another tab, focus and
+the password field caret after the page changes (new documents `/login?autofocus=pass` on the same site and on another
+site (`localhost`), the cross-site iframe `/login-frame`, back, and Enter in the real address field) and navigation
+while the panel does not have the keyboard (the page does not get focus), the age of input events the page received
+(`performance.now() - event.timeStamp`), whether the renderer survives SPA navigation (pushState and new content) after
+a click and after Enter, the page height while loading, and the header status and host.log line after `Page.crash`. The
+same step also checks the password field's secure input (2026-10-25, section 4). The QA app (`QABackground`) and the
+checks do not touch real secure input or input sources; they record the order of turning on and off with a recorder
+(`BrowserSecureInputRecorder`, which counts the window as key): turning on and off, and turning off as many times as
+turned on, on clicking a plain field and a password field, when the panel loses and regains the keyboard, on each page
+navigation above (the password field in a cross-site iframe, a page restored from the back-forward cache
+(`window.__restored` of `/login`), Enter in the address field), on a page without fields, on autofocus while the panel
+does not have the keyboard, with two tabs each keeping their own field, on renderer exit and reload, on host exit and
+reopening, and on closing the panel (`secureInput.calls` in `input.json`). While it runs, `run-check.sh` checks whether
+this run's processes hold real secure input (`kCGSSessionSecureInputPID` at the IORegistry root) and records a failure
+if they do (`secure-input.txt`).
 
-성능은 `run-perf.sh <QA 앱> <출력>/perf-1`(`BrowserHostPerfFixture`)로 잰다. 창을 주사율이
-가장 높은 디스플레이로 옮겨 1400×900으로 두고(패널 420×768 pt), 패널 열기(콜드·웜·돌아가는 호스트의 새 탭)부터 첫 프레임까지,
-`/large`에서 정밀 휠 120·240 이벤트/초와 Page Down의 프레임 수·그린 뒤 화면까지 지연, `/animation`의 프레임 수와 페이지 자신의
-rAF 수, 창을 최소화한 2초와 복원 뒤, 창 높이 40번 변경(새 크기 프레임까지 시간, 전후 footprint), 패널을 닫아 탭이 숨겨진 뒤의
-footprint를 `perf.json`에 쓴다. 단계마다 프로세스 트리의 CPU·footprint(`samples/`)와 애니메이션 중 호스트 `sample`을 남긴다.
-QA 홈은 출력 폴더의 형제 `qa-home`이다. 동시에 도는 다른 QA와는
-출력 폴더의 부모를 달리해 홈이 겹치지 않게 한다(프로필 잠금).
+Performance is measured with `run-perf.sh <QA app> <output>/perf-1` (`BrowserHostPerfFixture`). It moves the window to
+the display with the highest refresh rate and sets it to 1400×900 (panel 420×768 pt), and writes to `perf.json`: from
+opening the panel (cold, warm, a new tab in a running host) to the first frame; on `/large`, the frame count and the
+delay from drawing to screen for precise wheel input at 120 and 240 events/s and for Page Down; the frame count of
+`/animation` and the page's own rAF count; 2 seconds with the window minimized and after restoring; 40 changes of the
+window height (time to a frame at the new size, footprint before and after); and the footprint after the panel is closed
+and its tab hidden. For each step it keeps the process tree's CPU and footprint (`samples/`), and a host `sample` during
+the animation. The QA home is `qa-home`, a sibling of the output folder. To keep homes from overlapping with another QA
+running at the same time, use a different parent for the output folder (profile lock).
 
-지연은 `run-latency.sh`(`--ui-fixture-browser-latency`)로 잰다. 실제 패널·호스트에서 메인 스레드가 한가할 때와 설치본이
-흐를 때만큼 바쁠 때(17 ms 막기를 초당 28번) 애니메이션 페이지의 그림→화면 지연·화면에 놓인 프레임 간격, 긴 페이지의
-휠 입력→화면 지연을 `latency.json`에 남긴다. 입력은 창 서버 이벤트처럼 다른 스레드에서 메인 큐로 넣는다.
+Latency is measured with `run-latency.sh` (`--ui-fixture-browser-latency`). On the real panel and host, both with the
+main thread idle and with it as busy as the installed app while a task streams (a 17 ms block 28 times a second), it
+records in `latency.json` the draw-to-screen delay and the interval between frames placed on screen for an animation
+page, and the wheel-input-to-screen delay for a long page. Input is put onto the main queue from another thread, like
+window server events.
 
 ```sh
 ./scripts/browser-host-qa/prepare-qa.sh .build/Yardlet.app "$QA/Yardlet Latency QA.app" com.zzunkie.yardlet.latencyqa
 ./scripts/browser-host-qa/run-latency.sh "$QA/Yardlet Latency QA.app" "$QA/latency1"
 ```
 
-`--ui-fixture-browser-check-only=many-tabs --ui-fixture-browser-limit=20`은 여러 작업의 탭과 브라우저에 자리가 없는 탭을 돈다
-(2026-10-27, 3절 "탭 수"). 패널 탭 하나, 다른 두 작업(작업마다 자기 프로필)의 탭 9개씩, 에이전트가 연 탭 하나로 20개를 연다. 16개를 넘는
-탭이 모두 페이지에 가는지와 에이전트의 20번째 탭이 답하는지 본다. 이어서 21번째 탭이 열리지 못할 때 에이전트가 기다리지 않고 이유를
-듣는지와 탭 목록이 그렇다고 하는지, 실패한 뒤에 패널이 그 탭을 보여도 카드에 이유가 나오는지, 다른 작업의 탭을 닫으면 "다시 시도"와
-`browser_navigate`가 그 탭을 그 자리에 여는지 본다. `--ui-fixture-browser-limit`(DEBUG)는 호스트의 `--browser-limit`가 되어 브리지의
-한도를 낮춘다(`yardlet_cef_set_browser_limit`). 고치기 전 빌드(16칸)는 일곱 항목 가운데 여섯이 실패했다. 탭 17~19가 페이지에 가지 못했고,
-에이전트의 20번째 탭은 "The browser tab is gone."만 받았고, 탭 목록에는 about:blank가 `responding:true`로 나왔고, 패널 카드는 비어 있었다
-(설치본 증상과 같음). 마지막 항목은 고치기 전에는 앞 단계에서 비운 자리로 탭이 그냥 열려, 실패는 했지만 같은 조건을 재현하지는 못했다.
-고친 빌드는 일곱 항목이 모두 통과했고 host.log에 `tab not opened tab=21 reason=limit`이 남았다.
+`--ui-fixture-browser-check-only=many-tabs --ui-fixture-browser-limit=20` runs through tabs of several tasks and a tab
+with no room left in the browser (2026-10-27, section 3, "Number of tabs"). It opens 20 tabs: one panel tab, 9 tabs each
+in two other tasks (each task with its own profile), and one tab the agent opened. It checks that tabs beyond 16 all
+reach their pages and that the agent's 20th tab answers. Then it checks that when a 21st tab cannot open, the agent
+hears the reason without waiting and the tab list says so, that the card shows the reason even when the panel shows that
+tab after the failure, and that after a tab of another task is closed, "Try again" and `browser_navigate` open that tab
+in its place. `--ui-fixture-browser-limit` (DEBUG) becomes the host's `--browser-limit` and lowers the bridge's limit
+(`yardlet_cef_set_browser_limit`). The build before the fix (16 slots) failed six of the seven items. Tabs 17 to 19 did
+not reach their pages, the agent's 20th tab got only "The browser tab is gone.", the tab list showed about:blank as
+`responding:true`, and the panel card was empty (the same symptoms as in the installed app). For the last item, before
+the fix the tab simply opened in the slot the previous step had freed, so it failed but did not reproduce the same
+condition. The fixed build passed all seven items, and host.log had `tab not opened tab=21 reason=limit`.
 
-`--ui-fixture-browser-check-only=resize`는 오른쪽 패널의 분할선을 사람이 끄는 것처럼 16 ms마다 폭을 바꿔 가장 넓은 폭에서 가장 좁은 폭까지,
-다시 3분의 2까지 끈다(2026-10-27, 3절 "크기를 바꾸는 중의 프레임"). QA 페이지 `/responsive`는 오른쪽 끝에 빨간 띠를 두고 폭에 따라 칸 수가
-바뀌며, `?heavy=1`은 글 카드 3,000개를 더해 배치가 무겁다. 4 ms마다 화면의 프레임에서 빨간 띠의 위치를 읽어, 그 프레임이 제 크기로
-배치된 페이지인지(검은 띠로 줄인 프레임이 아닌지)와 패널 폭과의 차이를 적고, 멈춘 뒤 페이지가 패널 폭으로 배치되기까지의 시간과 페이지의
-`innerWidth`·칸 수를 본다(`resize.json`, 끄는 도중과 멈춘 뒤의 패널 모습 `resize-*.png`). 고치기 전 빌드는 끄는 동안의 표본 404개 가운데
-가벼운 페이지 73개, 무거운 페이지 89개가 검은 띠로 줄인 프레임이었고, 고친 빌드는 둘 다 0개다.
+`--ui-fixture-browser-check-only=resize` drags the side panel's divider the way a person does, changing the width every
+16 ms, from the widest width to the narrowest, and back to two thirds (2026-10-27, section 3, "Frames during a resize").
+The QA page `/responsive` has a red strip at its right edge and changes its number of columns with the width, and
+`?heavy=1` adds 3,000 post cards to make layout heavy. Every 4 ms it reads the red strip's position in the frame on
+screen, records whether that frame is the page laid out at its own size (not a frame shrunk with black bars) and the
+difference from the panel width, and checks the time after stopping until the page is laid out at the panel width, and
+the page's `innerWidth` and number of columns (`resize.json`, and the panel during and after the drag in
+`resize-*.png`). With the build before the fix, of 404 samples taken during the drag, 73 on the light page and 89 on the
+heavy page were frames shrunk with black bars; with the fixed build both are 0.
 
-`--ui-fixture-browser-check-only=tabs`는 오른쪽 패널의 브라우저 탭만 돈다("tabs: side-panel tabs"). 끝에 탭이 열린 채 앱 종료처럼 호스트를 끝내고(`terminateHost`), 호스트가 탭마다 보낸 `closed` 수와 패널 탭·기억한 탭이 그대로인지 본다("tabs: quitting keeps the panel's tabs", 2026-10-25).
+`--ui-fixture-browser-check-only=tooltips` checks the names (tooltips) of the panel header buttons (2026-10-27). SwiftUI
+answers `.help` with AppKit's dynamic tooltips. The window's hosting view has one tracking-area owner
+(`TooltipBridge.DynamicTooltipManager`), which returns the name at the point where the pointer rests through
+`dynamicToolTipStringAtPoint:trackingRect:`. The check calls that method every 2 pt along the rows above the page and
+checks, in the panel beside the conversation, the expanded panel and the review panel, that every button name comes back
+and that a hit-test at that point reaches the button (that neither the title bar nor the page takes it). It then checks
+that the display delay AppKit uses (`NSToolTipManager`'s `_getDisplayDelay:inQuickMode:forView:`) is 0.2 seconds.
+Actually showing a tooltip needs a real pointer over an active app, so the QA app, which runs off-screen and is never
+activated, cannot show one (setting the app's activation, the key window and the pointer position inside the process
+did not make AppKit start tracking). A build from before the delay was registered had every name and hit-test right and
+only the delay at 1.5 seconds. The same step first checks a page element's `title` too: whether resting the pointer on
+`#tip` of the QA page turns CEF `on_tooltip` → the host's `tooltip` event → the panel view's `toolTip` into "Tooltip
+text". The full check's "tooltip" item passed in the 10-25 run and failed in the 10-27 run; the cause was the check, not
+the product. At the 10-27 panel width `#tip` (a `span` inside a paragraph) wrapped onto two lines, so the center of
+`getBoundingClientRect()` was the center of the box around both lines, that is, over other text of the paragraph (the
+hover reached only `P`, and Chromium sends no tooltip for text without a title). The QA's `center` now uses the center of
+the element's first box (`getClientRects()[0]`).
 
-`--ui-fixture-browser-check-only=compat`은 일반 사이트가 브라우저에 바라는 것을 QA 서버의 `/compat`에서 돈다(2026-10-25,
-`exerciseCompat`). 검사: 같은 페이지의 두 번째 다운로드부터 패널 막대가 "여러 파일 다운로드"를 묻고 허용하면 받는다(blob, data 주소,
-한 번에 둘), `target=_blank`로 연 파일 주소는 받은 뒤 그 빈 탭이 닫히고 연 탭이 앞에 온다, 알림·위치·클립보드 읽기 요청이 막대에
-뜨고 차단하면 페이지의 요청이 거부로 끝난다(`denied`, `PERMISSION_DENIED`, `NotAllowedError`), PDF가 Chromium 보기로 열린다(탭 제목이
-파일 이름), 자체 서명 인증서에 패널 카드 대신 Chromium 경고 페이지가 뜨고 고급 → 이동으로 페이지가 열린다. 2026-10-25 저녁에 더한 검사:
-`PaymentRequest`가 없고 페이지가 지갑 단추를 숨긴다, 사용자 제스처 없는 팝업이 패널의 "팝업 차단됨" 목록에 하나 남고 거기서 작업의 새 탭으로
-열린다, 카메라·마이크 요청이 막대에 뜨고 차단하면 거부로 끝나며 다시 요청하면 묻지 않고 거부된다, 다른 앱의 주소가 Chrome의 규칙대로
-간다(메일 링크는 묻지 않고 열림, 새 탭으로 여는 메일 링크는 탭을 남기지 않음, 전화 링크는 "FaceTime을(를) 여시겠습니까?"와 "항상 허용"
-상자가 뜨고 취소하면 열리지 않으며 "항상 허용"과 열기 뒤에는 묻지 않고 열림, 여는 앱이 없는 주소는 아무 일 없음, 에이전트가 누른 같은
-전화 링크는 다시 사람에게 묻고 에이전트는 그렇다고 들음), 에이전트가 HTTP 인증 창을 로그인 창으로 듣고 닫는다, Chromium의 창이 그 탭의 것이다
-(2026-10-27, "Chromium's windows belong to their tab, and show over it", `result.json`의 `compat.windowOwners`: 다른 작업의 백그라운드 탭에 뜬
-로그인 창의 탭을 찾고, 그 창은 패널이 없으니 화면 밖에서 기다리며 앱은 그 작업의 패널을 그 탭으로 열어 두라는 말을 듣는다. 이 작업의 에이전트는
-그 창을 듣지도 닫지도 못하고, 그동안 자기 탭에서 클릭·입력·이동이 되고 사람의 패널도 클릭을 받는다. 창 아래 탭에 보낸 에이전트의 클릭·입력·키는 보내지 않고 그 창을 이름 대며 실패로 답하고, 페이지의 mousedown·keydown은 0이며, snapshot은 된다.
-패널 뒤의 이 작업 탭에 뜬 창은 기다리다 패널이 그 탭을 보이면 그 패널 위, 패널 창 바로 앞에 놓이고, 사람의 클릭도 그 페이지에 닿지 않는다.
-Yardlet 창이 앞으로 온 뒤 클릭 처리 경로를 부르면 다시 앞에 온다. 탭이 숨겨지면 창도 숨고 다시 보이면 온다. 두 작업의 에이전트가 각자 자기
-창만 닫는다), 사람이 "나가기 전에 확인"을
-건 탭을 닫으면 "사이트에서 나가시겠습니까?" 시트가 뜨고 취소하면 탭이 남으며 나가기면 호스트에서 닫힌다(host.log `browser closed tab=…`).
-QA는 다른 앱을 열지 않는다: Yardlet이 열 주소를 기록기(`RecordingExternalApps`)가 받고, 앱 이름만 LaunchServices에서 읽는다. 기록만 하는 것:
-권한 상태(`navigator.permissions.query`), 전체 화면, 파일 고르기 모드(`multiple`, `webkitdirectory`, 세 File System Access 함수), 다른 사이트
-프레임의 쿠키·저장소(`localhost` 프레임의 `SameSite=None` 쿠키, `localStorage`, `hasStorageAccess`), HTTP 기본 인증(`/basic-auth`, 사용자
-qa, 비밀번호 secret: 호스트 창의 글). 결과는 `result.json`의 `compat`, 막대와 PDF·경고 페이지·팝업 표시·"사이트에서 나가시겠습니까?"는
-`compat-*.png`. 카메라 차단처럼 프로필에 남는 답이 다음 실행에 섞이지 않도록, 실행마다 출력 폴더의 부모를 달리해 QA 홈을 새로 쓴다. QA 서버는 같은 페이지를 자체 서명 인증서의 두 번째 포트(HTTPS)로도 주고(`openssl`이 출력 폴더에 인증서를 만든다), 페이지가
-그 주소를 `window.qa.tls`로 알려 준다. QA 번들, QA 홈, 출력은 모두 `$TMPDIR` 아래에 둔다(위 예시). 작업 트리가 `~/Desktop` 아래일 때 그 안의 `.build`에 두면, 새 QA 번들 ID마다 macOS가 데스크탑 폴더 접근을 묻고(2026-10-25 실제로 허용 창이 떴다), 그동안 다른 프로세스가 쓴 파일을 여는 `open()`이 `sandboxd`의 확인에서 풀리지 않아 QA 앱이 마감 시간까지 멈췄다(같은 날 두 번, 앱 표본은 `open`). 그래서 QA 앱은 작업 트리의 파일을 열지 않는다. `$TMPDIR`(`/var/folders/…`)의 번들을 LaunchServices는 `/private/var/folders/…`로 띄우므로 `qa-launch.sh`는 두 모양을 모두 찾는다. 위치, 클립보드 읽기, 카메라, 마이크는 macOS에 닿기 전에
-막대에서 차단한다(Chromium은 사이트가 허락되기 전에는 macOS에 묻지 않는다, 3절 "권한 요청"). 인쇄는 시스템 인쇄 창이 떠서 부르지 않는다.
+`--ui-fixture-browser-check-only=tabs` runs only the browser tabs of the side panel ("tabs: side-panel tabs"). At the
+end it ends the host with tabs open, as on app quit (`terminateHost`), and checks the number of `closed` events the host
+sent for its tabs and that the panel tabs and remembered tabs are unchanged ("tabs: quitting keeps the panel's tabs",
+2026-10-25).
 
-`--ui-fixture-browser-check-only=checkout`은 카드 결제와 카드사 확인(3-D Secure)만 돈다(전체 확인에도 들어 있다, 2026-10-25). QA 서버가 두 번째 포트를
-`localhost`(다른 사이트)로 열어 카드사를 흉내 낸다. 카드 폼(`/checkout`, Stripe의 공식 시험 번호 4242…, 이 루프백 페이지에만 넣음)과 배송 주소 폼을 칸마다
-입력해 제출하고 호스트가 그대로인지, 숨은 iframe의 기기 정보 POST와 iframe 안 인증(`/checkout/frame`, 확인 단추는 실제 클릭)이 카드사로 갔다
-가맹점으로 POST해 돌아와 postMessage로 알리는지, 페이지 전체가 카드사로 POST했다 돌아오는지(`/checkout/redirect`), 클릭으로 연 카드사 창이
-`window.opener.postMessage`로 답하고 스스로 닫히는지(`/checkout/popup`), 지갑 단추의 Payment Request(`/checkout/wallet`)에도 호스트가 그대로인지 본다.
-호스트를 끝낸 단계는 사람처럼 "다시 시도"로 다시 열고 다음 단계를 잇는다. 단계마다 `checkout.json`에 남는다. 고치기 전 빌드에서는 카드 폼 제출이
-호스트를 signal 11로 끝냈다(충돌 보고서의 스택이 설치본과 같음).
+`--ui-fixture-browser-check-only=compat` runs, on the QA server's `/compat`, what ordinary sites expect of a browser
+(2026-10-25, `exerciseCompat`). Checks: from the second download on the same page, the panel bar asks "Download multiple
+files" and the files arrive once allowed (blob, data addresses, two at once); for a file address opened with
+`target=_blank`, the empty tab closes after the download and the opening tab comes to the front; notification, location
+and clipboard read requests show on the bar, and blocking them ends the page's request as denied (`denied`,
+`PERMISSION_DENIED`, `NotAllowedError`); a PDF opens in Chromium's viewer (the tab title is the file name); a
+self-signed certificate shows Chromium's warning page instead of the panel card, and Advanced → Proceed opens the page.
+Checks added on the evening of 2026-10-25: there is no `PaymentRequest` and the page hides its wallet buttons; a pop-up
+without a user gesture stays as one entry in the panel's "Pop-ups blocked" list and opens from there as a new task tab;
+camera and microphone requests show on the bar, blocking ends them as denied, and a repeated request is denied without
+asking; other apps' addresses follow Chrome's rules (a mail link opens without asking, a mail link opened in a new tab
+leaves no tab, a phone link shows "Open FaceTime?" with the "always allow" box, does not open on Cancel, and opens
+without asking after "always allow" and Open, an address no app opens does nothing, and the same phone link clicked by
+the agent asks the person again and the agent is told so); the agent hears of the HTTP authentication window as a
+sign-in window and closes it; Chromium's windows belong to their tab (2026-10-27, "Chromium's windows belong to their
+tab, and show over it", `compat.windowOwners` in `result.json`: it finds the tab of a sign-in window that appeared on a
+background tab of another task, that window waits off screen because there is no panel, and the app is told to open that
+task's panel at that tab. This task's agent neither hears of that window nor closes it, and meanwhile clicks, typing and
+navigation work in its own tabs and the person's panel takes clicks too. The agent's clicks, typing and keys sent to the
+tab under a window are not sent; the tools answer with a failure naming that window, the page's mousedown and keydown
+counts are 0, and snapshot works. A window that appeared on this task's tab behind the panel waits, and when the panel
+shows that tab it is placed over that panel, just in front of the panel's window, and the person's clicks do not reach
+that page either. After a Yardlet window comes to the front, calling the click-handling path brings it to the front
+again. When the tab is hidden the window hides too, and it comes back when the tab shows. The agents of two tasks each
+close only their own windows); and when the person closes a tab that set "confirm before leaving", the "Leave site?"
+sheet appears, Cancel keeps the tab, and Leave closes it in the host (host.log `browser closed tab=…`). QA does not open
+other apps: a recorder (`RecordingExternalApps`) receives the addresses Yardlet would open, and only app names are read
+from LaunchServices. Recorded only: permission states (`navigator.permissions.query`), full screen, file chooser modes
+(`multiple`, `webkitdirectory`, the three File System Access functions), cookies and storage of cross-site frames (a
+`SameSite=None` cookie in a `localhost` frame, `localStorage`, `hasStorageAccess`), HTTP basic authentication
+(`/basic-auth`, user qa, password secret: the text of the host's window). Results are in `compat` in `result.json`; the
+bars and the PDF, the warning page, the pop-up indicator and "Leave site?" are in `compat-*.png`. So that answers kept
+in the profile, such as a camera block, do not carry over into the next run, each run uses a new QA home by using a
+different parent for the output folder. The QA server also serves the same pages on a second port with a self-signed
+certificate (HTTPS) (`openssl` creates the certificate in the output folder), and the page reports that address as
+`window.qa.tls`. The QA bundle, QA home and output all go under `$TMPDIR` (the example above). If they are put in
+`.build` inside a worktree under `~/Desktop`, macOS asks for Desktop folder access for every new QA bundle ID (on
+2026-10-25 a permission window actually appeared), and meanwhile an `open()` of a file another process wrote did not get
+past `sandboxd`'s check, so the QA app hung until the deadline (twice that day; the app's sample was in `open`). So the
+QA app does not open files in the worktree. LaunchServices launches a bundle in `$TMPDIR` (`/var/folders/…`) as
+`/private/var/folders/…`, so `qa-launch.sh` looks for both forms. Location, clipboard read, camera and microphone are
+blocked on the bar before they reach macOS (Chromium does not ask macOS before the site is allowed; section 3,
+"Permission requests"). Printing is not called, because the system print window would appear.
+
+`--ui-fixture-browser-check-only=checkout` runs only card payment and card issuer verification (3-D Secure) (it is also
+part of the full run, 2026-10-25). The QA server opens a second port as `localhost` (another site) to stand in for the
+card issuer. It fills a card form (`/checkout`, Stripe's official test number 4242…, entered only on this loopback page)
+and a shipping address form field by field, submits them and checks that the host is still there; that a device
+information POST in a hidden iframe and authentication inside an iframe (`/checkout/frame`, the confirm button actually
+clicked) go to the card issuer and come back by POST to the merchant and report through postMessage; that the whole page
+POSTs to the card issuer and comes back (`/checkout/redirect`); that a card issuer window opened by a click answers
+through `window.opener.postMessage` and closes itself (`/checkout/popup`); and that the host is still there through the
+Payment Request of a wallet button (`/checkout/wallet`). A step that ended the host reopens it with "Try again", as the
+person would, and continues with the next step. Each step is recorded in `checkout.json`. In the build before the fix,
+submitting the card form ended the host with signal 11 (the stack in the crash report was the same as in the installed
+app).
 
 
-`--ui-fixture-browser-check-only=visual-context`는 요소 고르기와 첨부 이미지 표시만 돈다(2026-10-26,
-`exerciseVisualContext`, QA 경로 `/pick`). 검사: 고르기 중 마우스를 올린 단추의 가장자리 픽셀이 Chromium 검사 모드의 칠로 바뀐다(패널
-프레임, `visual-context-hover.png`), 누르면 그 작업 입력창 초안에 요소가 붙고(선택자가 그 요소 하나만 찾음, HTML·스타일·캡처 크기) 모드가 끝난다,
-고르는 동안의 클릭은 페이지에 가지 않고 끝난 뒤의 클릭은 간다, Esc와 단추가 아무것도 붙이지 않고 끝낸다, 입력한 값·hidden·비밀번호·금고가 채운
-값(QA가 `noteVaultValues`로 알림)이 맥락 글에 없고 "[saved value]"로 바뀌며 캡처의 입력 칸에는 글자가 없다(페이지 프레임에는 있음), 표시 편집기는
-여는 함수(`ImageMarkupPresenter.open`)를 바꿔 끼워 화면에 아무것도 띄우지 않고 그려(`visual-context-markup-editor.png`) 표시한 사본이 캡처 자리에
-들어가며 원본은 남고 다음 메시지가 캡처마다 번호를 단다. 입력창 칩은 창 그림 `visual-context-composer.png`, 보낼 글은
-`visual-context-draft-message.txt`에 남는다.
+`--ui-fixture-browser-check-only=visual-context` runs only element picking and marking up attached images (2026-10-26,
+`exerciseVisualContext`, QA path `/pick`). Checks: while picking, the edge pixels of the button under the mouse change
+to the fill of Chromium's inspect mode (panel frame, `visual-context-hover.png`); a click attaches the element to that
+task's composer draft (the selector finds only that element; HTML, styles, capture size) and ends the mode; clicks while
+picking do not reach the page and clicks after it do; Esc and the button end it without attaching anything; typed
+values, hidden fields, passwords and values the vault filled (QA reports them with `noteVaultValues`) are not in the
+context text but replaced with "[saved value]", and the input fields in the capture have no text (the page frame does);
+the markup editor, with its opening function (`ImageMarkupPresenter.open`) swapped so nothing appears on screen, draws
+(`visual-context-markup-editor.png`), its marked-up copy takes the capture's place while the original stays, and the
+next message numbers each capture. The composer chip is kept in the window image `visual-context-composer.png`, and the
+text to send in `visual-context-draft-message.txt`.
 
-`--ui-fixture-browser-check-only=isolation`은 작업마다 프로필만 돈다(`BrowserHostIsolationQA`, [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) 6절).
+`--ui-fixture-browser-check-only=isolation` runs only per-task profiles (`BrowserHostIsolationQA`,
+[BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) section 6).
 
-`--ui-fixture-browser-check-only=import`는 다른 브라우저에서 로그인 가져오기만 돈다(`BrowserHostLoginImportQA`, [BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md)
-10절). QA 홈의 Application Support에 가짜 Whale 폴더(시험 비밀번호로 암호화한 쿠키), 가짜 Firefox 폴더(평문 `cookies.sqlite`를 WAL에 둔 채),
-`Local State`를 읽을 수 없게 둔 가짜 Chrome 폴더를 만들고, 키체인 대신 그 비밀번호를 넘긴다. 패널의 페이지 메뉴 항목과 시트(`import-sheet.png`),
-프로필 순서와 읽지 못한 브라우저, 기본 프로필·패널 작업·뒤에 만든 작업에 고른 사이트의 쿠키가 한 벌씩 그 브라우저가 저장한 모양(Firefox는 Chromium
-모양으로 바꾼 것)으로 들어가는지, 그 사이트의 이전 쿠키가 지워지고 다른 사이트와 Firefox 컨테이너·파티션 쿠키는 들어오지 않는지, 값이 앱·호스트
-로그에 없는지 본다.
+`--ui-fixture-browser-check-only=import` runs only importing sign-ins from another browser (`BrowserHostLoginImportQA`,
+[BROWSER_SESSION_ISOLATION](BROWSER_SESSION_ISOLATION.md) section 10). In the QA home's Application Support it creates a
+fake Whale folder (cookies encrypted with a test password), a fake Firefox folder (a plaintext `cookies.sqlite` left in
+WAL), and a fake Chrome folder whose `Local State` cannot be read, and passes that password instead of the keychain. It
+checks the panel's page menu item and sheet (`import-sheet.png`), the profile order and the browsers it could not read;
+that the chosen site's cookies go once each into the default profile, the panel's task and a task created later, in the
+shape that browser stored them (Firefox's converted to Chromium's shape); that the site's earlier cookies are deleted,
+while other sites and Firefox container and partitioned cookies do not come in; and that no values appear in the app or
+host logs.
 
-`--ui-fixture-browser-check-only=vault`는 금고만 돈다(`BrowserHostVaultQA`): 시험용 항목을 앱의 금고(QA에서는 메모리)에 넣고 Yardlet MCP 브로커를 거쳐 `/vault/*` 페이지에 채우기·코드·가림·거절·끄기, CDP 가상 인증기, Yardlet 패스키 등록과 사용, 그리고 그 작업의 패널에서 사람의 저장 막대·열쇠 단추·오른쪽 클릭 항목·머리글 표시를 확인하고 패널 화면을 PNG로 남긴다. WebAuthn이 도메인을 요구하므로 금고 페이지는 `localhost`로 연다.
+`--ui-fixture-browser-check-only=vault` runs only the vault (`BrowserHostVaultQA`): it puts test items into the app's
+vault (in memory in QA) and, through the Yardlet MCP broker, checks filling, codes, masking, refusal and turning off on
+the `/vault/*` pages, the CDP virtual authenticator, registering and using a Yardlet passkey, and, in that task's panel,
+the person's save bar, key button, right-click items and header mark, and keeps the panel screen as PNG. WebAuthn
+requires a domain, so the vault pages open as `localhost`.
 
-`run-check.sh`의 패스키 단계("passkey requests observed", `--ui-fixture-browser-check-only=passkey`면 이것만)는 `localhost`(보안 컨텍스트이고
-유효한 RP ID, 패스키 없음)의 `/passkey` 페이지에서 `getClientCapabilities()`를 읽고, 사이트가 보내는 요청을 하나씩 부른다: 로그인 칸의 조건부
-요청(부른 뒤 칸을 누른다), "패스키로 로그인"(빈 `allowCredentials`), 이 기기만 원하는 로그인, 만들기(attachment 없음), 이 기기에 만들기. 2026-10-27부터
-그 뒤에 이 기기만 원하는 로그인을 두 번 더 부르고 페이지를 다른 사이트(`127.0.0.1`)와 같은 사이트 안(`localhost/passkey?moved`)으로 옮겨, 창이
-패널 탭의 것이고 이동하면 닫히는 것을 본다("a passkey dialog is its tab's and closes when the page moves", `result.json`의 `passkeyMoves`). DEBUG 호스트가
-자기 창(제목·키 창 여부·층)을 `<출력>/host-windows/windows.jsonl`에, 창의 글을 자기 접근성으로 `window-text-N.txt`에 남긴다(Views는 합성기로 그려
-PNG는 비어 나온다. 접근성 읽기는 Chromium 전체의 접근성을 켤 수 있어 창마다 세 번까지만). 요청은 끝에 AbortController로 거둔다. 조건부 요청이
-창을 띄우면 실패다("a passkey autofill request with no passkey opens no window"). 휴대폰 QR로 먼저 가는 두 요청은 Chromium이 macOS에 블루투스를
-묻게 하고, macOS는 앱 identifier마다 처음 한 번 사람에게 자기 창으로 묻는다. 그래서 그 둘은 QA 앱의 답이 정해졌을 때만 부른다
-(`CBManager.authorization`은 묻지 않고 읽는다. 2026-10-25 `com.zzunkie.yardlet.browserqa`는 정해지지 않아 건너뜀). 전에는 전체 확인의 첫
-만들기 요청이 QR로 가며 그 창을 띄웠을 수 있다(그 창이 떠 있는 동안 대화상자는 뜨지 않아 결과에 창 0개로 남았다, 확인 못 함).
+The passkey step of `run-check.sh` ("passkey requests observed"; only this with
+`--ui-fixture-browser-check-only=passkey`) reads `getClientCapabilities()` on the `/passkey` page of `localhost` (a
+secure context and a valid RP ID, with no passkeys), and makes the requests a site sends, one at a time: a conditional
+request on the sign-in field (the field is clicked after the call), "Sign in with a passkey" (empty `allowCredentials`),
+a sign-in that wants only this device, creation (no attachment), and creation on this device. Since 2026-10-27, after
+those it makes the this-device-only sign-in twice more and moves the page to another site (`127.0.0.1`) and within the
+same site (`localhost/passkey?moved`), to check that the window belongs to the panel tab and closes on navigation ("a
+passkey dialog is its tab's and closes when the page moves", `passkeyMoves` in `result.json`). The DEBUG host writes its
+own windows (title, whether key window, level) to `<output>/host-windows/windows.jsonl`, and a window's text, read
+through its own accessibility, to `window-text-N.txt` (Views draws through the compositor, so PNGs come out empty.
+Reading accessibility can turn on accessibility for all of Chromium, so at most three times per window). The requests
+are withdrawn at the end with an AbortController. A conditional request that opens a window is a failure ("a passkey
+autofill request with no passkey opens no window"). The two requests that go to the phone QR first make Chromium ask
+macOS for Bluetooth, and macOS asks the person once, in its own window, the first time for each app identifier. So those
+two are made only when the QA app's answer has been decided (`CBManager.authorization` is read without asking; on
+2026-10-25 `com.zzunkie.yardlet.browserqa` was undecided, so they were skipped). Before, the first creation request of
+the full run may have gone to the QR and brought up that window (while it was up, no dialog appeared, so the result
+showed 0 windows; not confirmed).
 
-접근성 단계는 권한 없이 앱이 자기 패널의 접근성 트리를 직접 읽는다. `/a11y` 페이지(랜드마크, 제목, 폼 컨트롤, 목록, 표,
-이미지, iframe, 위치 지정 버튼, 아래쪽 버튼)와 `/large` 페이지(노드 약 18,000개)를 쓴다. 트리는 `accessibility-dump.json`로
-남긴다. DEBUG 호스트는 받은 CEF 접근성 값을 그대로 `<출력>/accessibility-raw/`에 저장한다. 단위 검사의 녹화 fixture
-(`Tests/NativeHarnessClientTests/Fixtures/cef-accessibility-qa-page.json`)가 여기서 나왔다.
+In the accessibility step, the app reads its own panel's accessibility tree directly, without any permission. It uses
+the `/a11y` page (landmarks, headings, form controls, lists, tables, images, iframes, positioned buttons, buttons
+further down) and the `/large` page (about 18,000 nodes). The tree is kept in `accessibility-dump.json`. The DEBUG host
+saves the CEF accessibility values it receives as they are in `<output>/accessibility-raw/`. The unit tests' recorded
+fixture (`Tests/NativeHarnessClientTests/Fixtures/cef-accessibility-qa-page.json`) came from here.

@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// A sign-in the person just made in the panel, offered for the vault (design §8.3 "저장 제안").
+/// A sign-in the person just made in the panel, offered for the vault (design §8.3 "Save prompt").
 struct BrowserVaultSaveOffer: Equatable {
     var origin: String
     var site: String

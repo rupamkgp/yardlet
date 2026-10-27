@@ -67,7 +67,7 @@ final class ConversationCardConvergenceTests: XCTestCase {
             )
         }
         let new = drawn
-        // The Codex app's words for a command it ran ("Ran …", "… 실행됨").
+        // The Codex app's words for a command it ran ("Ran …", with the verb last in Korean).
         let ran = ConversationLineWording.codex(.unknown(command: "swift test --filter Reducer"), phase: .completed).text
         XCTAssertTrue(new.contains(L10n.string("Command"), followedBy: [ran]), "\(new)")
         XCTAssertTrue(new.contains(label: ran, value: L10n.string("Collapsed")), "\(new)")
@@ -335,7 +335,7 @@ enum ConvergenceFixtures {
                                    input: "python3 test_calc.py\n\ndescription: Run the calc tests",
                                    output: "Ran 3 tests\nFAILED (failures=1)")
         return entries([
-            .user(text: "calc.py 테스트를 고쳐 줘"),
+            .user(text: "Fix the calc.py tests"),
             .activity(bash, state: .completed),
             .permission(PermissionRequest(id: "bash-1", title: "Bash", detail: "Run the calc tests",
                                           command: "python3 test_calc.py", toolCallID: "toolu_bash"), state: .allowed),

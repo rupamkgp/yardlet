@@ -8,7 +8,7 @@ import YardletAgentTools
 /// (docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow).
 /// GitHub's MCP server has no dynamic client registration, so without an app of the host's own a
 /// person pastes a personal access token; with this one they sign in. The device flow needs only
-/// the app's client ID, which is public, so the app carries no secret (docs/CONNECTORS.md, "GitHub 로그인").
+/// the app's client ID, which is public, so the app carries no secret (docs/CONNECTORS.md, "GitHub sign-in").
 ///
 /// The token is an OAuth app user token: it does not expire and has no refresh token, so the
 /// stored credential keeps the access token alone. GitHub ends it when the person revokes the app

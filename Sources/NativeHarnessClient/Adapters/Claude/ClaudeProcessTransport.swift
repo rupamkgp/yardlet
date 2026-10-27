@@ -212,7 +212,7 @@ actor ClaudeProcessTransport: ClaudeTransport {
         if configuration.keepsNoHistory {
             arguments.append("--no-session-persistence")
         }
-        // Yardlet 지침: the same text on every launch of the task until the person edits it, so the
+        // Yardlet instructions: the same text on every launch of the task until the person edits it, so the
         // CLI's recorded system prompt and its prompt cache stay as they were. CLAUDE.md still loads.
         arguments.append(contentsOf: YardletInstructionsLaunch.claudeArguments(configuration.appendSystemPrompt))
         // Merged over the account's own settings as one more source; only this process reads it.

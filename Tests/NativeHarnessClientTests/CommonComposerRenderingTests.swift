@@ -6,12 +6,12 @@ import XCTest
 @MainActor
 final class CommonComposerRenderingTests: XCTestCase {
     func testSharedOptionMenuRendersActualNativeChoicesInBothAppearances() throws {
-        let selector = ProviderCapabilitySelector(id: "permissionMode", name: "권한 모드", description: nil,
+        let selector = ProviderCapabilitySelector(id: "permissionMode", name: "Permission mode", description: nil,
             category: "mode", currentValue: "manual", choices: [
-                .init(value: "manual", name: "수동", description: nil),
-                .init(value: "plan", name: "계획", description: "이 하네스가 제공하는 계획 모드"),
-                .init(value: "acceptEdits", name: "편집 자동 허용", description: nil),
-                .init(value: "dontAsk", name: "묻지 않음", description: nil)
+                .init(value: "manual", name: "Manual", description: nil),
+                .init(value: "plan", name: "Plan", description: "The plan mode this harness provides"),
+                .init(value: "acceptEdits", name: "Accept edits automatically", description: nil),
+                .init(value: "dontAsk", name: "Don't ask", description: nil)
             ])
         let directory = try WindowlessRender.directory("common-composer-qa")
         for appearance in [ColorScheme.light, .dark] {

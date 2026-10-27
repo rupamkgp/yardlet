@@ -2,7 +2,7 @@ import Foundation
 
 /// The daily routing evaluation: once a day while Yardlet is open and no task
 /// works, while the person has it on, the models they use judge the tasks the ledger recorded since
-/// the last run, and the routing they settle on joins Yardlet 지침.
+/// the last run, and the routing they settle on joins Yardlet instructions.
 extension AppModel {
     /// Harnesses that can judge: those Yardlet can run read only.
     static let routingJudgeHarnesses: [HarnessKind] = [.claudeCode, .codex, .antigravityCLI]

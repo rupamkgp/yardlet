@@ -36,7 +36,7 @@ enum BrowserKeyCodes {
         0x4E: 0x6D, 0x4C: 0x0D, 0x51: 0xBB, 0x47: 0x0C,
         // Media.
         0x48: 0xAF, 0x49: 0xAE, 0x4A: 0xAD,
-        // Input-method keys: 한/영 on Korean keyboards reports as kVK_JIS_Kana (VKEY_HANGUL),
+        // Input-method keys: the Han/Yeong key on Korean keyboards reports as kVK_JIS_Kana (VKEY_HANGUL),
         // and 英数 as kVK_JIS_Eisu (VKEY_HANJA's neighbour, VKEY_NONCONVERT in Chromium).
         0x68: 0x15, 0x66: 0x1D,
         // JIS extras.

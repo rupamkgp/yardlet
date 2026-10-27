@@ -4,8 +4,8 @@ import Foundation
 /// what the person chose: a line or summary the person opened or folded stays so, also when it moves
 /// between the live line and the turn's listed work (`ConversationDisclosureChoices`).
 ///
-/// 2026-10-16 user decisions: "명령 실행시에 기본 상태가 접힘이면 좋겠고", then "도구 줄이 너무 많이 쌓임"
-/// and "현재 처리되고 있는 tool이라도 펼쳐서 보여주지 않으면 좋겠어". No call starts open, running or
+/// Decisions of 2026-10-16: commands start folded, tool lines piled up too much, and a call should not
+/// open even while it runs. No call starts open, running or
 /// not, and no run of calls opens because its turn runs: while a turn runs, its calls fold into
 /// their summary lines and the call that runs now is the live line's (`ConversationLiveWork`), as
 /// the Codex app keeps its activity group folded under the current item's words. What needs attention

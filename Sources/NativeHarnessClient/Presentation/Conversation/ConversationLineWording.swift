@@ -2,7 +2,7 @@ import Foundation
 
 /// The words of one status line: what was done (`verb`, drawn muted) and what it was done to, before
 /// and after it. The provider apps word a line as a sentence with the verb marked — Codex's
-/// `<verb>Read</verb> {path}`, `{path} <verb>읽음</verb>` in Korean — so a localized template marks
+/// `<verb>Read</verb> {path}`, and in Korean the path first and the verb after it — so a localized template marks
 /// the verb the same way and the words fall where the language puts them.
 struct ConversationLineWords: Equatable, Sendable {
     var leading: String

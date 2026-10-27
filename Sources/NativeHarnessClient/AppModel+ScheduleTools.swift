@@ -1,7 +1,7 @@
 import Foundation
 import YardletAgentTools
 
-// The scheduled-task tools (`ScheduleToolCatalog`, docs/AGENT_BROWSER_TOOLS.md, "예약 도구"): an agent in a Yardlet task
+// The scheduled-task tools (`ScheduleToolCatalog`, docs/AGENT_BROWSER_TOOLS.md, "Scheduled-task tools"): an agent in a Yardlet task
 // creates, lists, changes, deletes and runs the person's schedules, as the Claude app's agents do
 // through its `scheduled-tasks` server. Every call is answered here against the one scheduler the
 // person's own Scheduled tasks use, so a schedule an agent makes is the same record, runs the same

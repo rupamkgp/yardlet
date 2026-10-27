@@ -13,7 +13,7 @@ final class TaskLinkTests: XCTestCase {
     private static let taskID = UUID(uuidString: "13242C33-725C-4AC5-A49B-BA5FA470EE9E")!
     private static let desktopID = "local_0ec681f3-5b06-444b-a704-cb7d1556b843"
     private static let message = "Started [the release task](#13242C33-725C-4AC5-A49B-BA5FA470EE9E), and see "
-        + "[PRO-972 세션](#local_0ec681f3-5b06-444b-a704-cb7d1556b843) and [the parser](Sources/Parser.swift)."
+        + "[PRO-972 session](#local_0ec681f3-5b06-444b-a704-cb7d1556b843) and [the parser](Sources/Parser.swift)."
 
     func testTheLinkFormsAgentsWrite() throws {
         XCTAssertEqual(TaskLink(try XCTUnwrap(URL(string: "#13242C33-725C-4AC5-A49B-BA5FA470EE9E"))), .task(Self.taskID))
@@ -90,7 +90,7 @@ final class TaskLinkTests: XCTestCase {
         host.settle()
         let text = try XCTUnwrap(TranscriptProseRenderingTests.proseTextViews(in: host.hosting).first)
         let string = text.string as NSString
-        for words in ["the release task", "PRO-972 세션"] {
+        for words in ["the release task", "PRO-972 session"] {
             let index = string.range(of: words).location
             text.clicked(onLink: try XCTUnwrap(text.textStorage?.attribute(.link, at: index, effectiveRange: nil)), at: index)
         }

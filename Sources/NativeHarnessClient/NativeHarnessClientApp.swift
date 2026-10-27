@@ -182,6 +182,10 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
         // second kind (View › Show Tab Bar, Window › Merge All Windows) whose tabs all show the
         // same task, since every Yardlet window shows the one selection.
         NSWindow.allowsAutomaticWindowTabbing = false
+        // A button's name (`.help`) shows once the pointer rests on it for as long as the Codex app waits for its
+        // tooltips, 200 ms, not AppKit's 1.5 s, which read as no name at all (2026-10-27). Registered, so a delay
+        // the person set for their Mac still wins and nothing is saved.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 200])
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -453,7 +457,7 @@ struct NativeHarnessClientApp: App {
                     MacAgentToolService.shared.connectors.setNativeHomes { [weak model] in
                         NativeMCPHome.all(connections: model?.connections.connections ?? [])
                     }
-                    // Yardlet 지침 reach every launch from the first restored task on.
+                    // Yardlet instructions reach every launch from the first restored task on.
                     if !model.usesVisualFixture, model.yardletInstructions == nil {
                         model.yardletInstructions = YardletInstructionsStore.live()
                     }

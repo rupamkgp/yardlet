@@ -35,7 +35,7 @@ final class SentUserMessageTests: XCTestCase {
             "id": .string("turn-1"), "status": .string("completed"), "durationMs": .integer(18_000),
             "items": .array([
                 .object(["id": .string("u1"), "type": .string("userMessage"), "content": .array([
-                    .object(["type": .string("text"), "text": .string("이 화면에서 제목 표시줄이 잘리는 이유를 찾아 줘")]),
+                    .object(["type": .string("text"), "text": .string("Find out why the title bar is cut off on this screen")]),
                     .object(["type": .string("localImage"), "path": .string(screenshot.path(percentEncoded: false))]),
                     .object(["type": .string("image"), "url": .string(inline.absoluteString)]),
                     .object(["type": .string("localImage"), "path": .string(missing.path(percentEncoded: false))]),

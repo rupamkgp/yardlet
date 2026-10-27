@@ -3,7 +3,7 @@ import XCTest
 @testable import NativeHarnessClient
 @testable import YardletAgentTools
 
-/// Yardlet's scheduled-task tools (docs/AGENT_BROWSER_TOOLS.md, "예약 도구", after the Claude app's `scheduled-tasks`
+/// Yardlet's scheduled-task tools (docs/AGENT_BROWSER_TOOLS.md, "Scheduled-task tools", after the Claude app's `scheduled-tasks`
 /// server): the schemas the MCP server lists, create, list, update, delete and run-now through the
 /// broker, the defaults a schedule takes from the task that made it, continuing that task, the file
 /// the schedules live in, who asks before a change (the harness, as each app has its harness ask),

@@ -1,7 +1,7 @@
 import Foundation
 
-/// The person makes a Yardlet passkey for the page in front of them (design §5.2, §8.3 "금고 패스키
-/// 만들기"): for two minutes the tab's next passkey registration goes to an empty virtual authenticator,
+/// The person makes a Yardlet passkey for the page in front of them (design §5.2, §8.3 "Make a Vault
+/// Passkey"): for two minutes the tab's next passkey registration goes to an empty virtual authenticator,
 /// and the credential it makes, private key included, goes into the vault.
 @MainActor
 enum VaultPasskeyEnrollment {

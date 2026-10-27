@@ -2027,6 +2027,7 @@
 "Send a message to a task that runs without asking" = "Send a message to a task that runs without asking";
 "Create a task in another project" = "Create a task in another project";
 "Run a subagent outside this task's folders" = "Run a subagent outside this task's folders";
+"Open a file outside this task's folders?" = "Open a file outside this task's folders?";
 "Archive %lld tasks" = "Archive %lld tasks";
 "Archive this task" = "Archive this task";
 "%@ (this task)" = "%@ (this task)";

@@ -3,9 +3,9 @@ import SwiftUI
 import XCTest
 @testable import NativeHarnessClient
 
-/// A running turn reads as its words, folded summaries and one live line (2026-10-16 user decision:
-/// "도구 줄이 너무 많이 쌓임", "진행 중 표시가 애매함", "현재 처리되고 있는 tool이라도 펼쳐서 보여주지 않으면
-/// 좋겠어"; `ConversationLiveWork`). Drawn without a provider into `.build/composer-stream-qa/`:
+/// A running turn reads as its words, folded summaries and one live line (decision of 2026-10-16:
+/// tool lines piled up too much, the progress line was unclear, and a running call should not open;
+/// `ConversationLiveWork`). Drawn without a provider into `.build/composer-stream-qa/`:
 /// `running-turn-{light,dark}.png` (a Claude Code turn running a command after reads, searches, an
 /// edit and commands), `running-turn-thinking-{light,dark}.png` and
 /// `running-turn-waiting-{light,dark}.png`.
@@ -27,7 +27,7 @@ final class RunningTurnRenderingTests: XCTestCase {
     /// Reads, a search and an edit, then commands, the last still running.
     static func mixedEntries(last: TranscriptEntryContent? = nil) -> [TranscriptEntry] {
         var contents: [TranscriptEntryContent] = [
-            .user(text: "파서 테스트가 가끔 실패하는 이유를 찾아서 고쳐 줘"),
+            .user(text: "Find out why the parser tests sometimes fail and fix it"),
             .activity(tool("toolu_read1", "Read", "Read", detail: "Sources/Parser/Parser.swift"), state: .completed),
             .activity(tool("toolu_grep", "Grep", "Grep", detail: "pending"), state: .completed),
             .activity(tool("toolu_read2", "Read", "Read", detail: "Tests/ParserTests.swift"), state: .completed),

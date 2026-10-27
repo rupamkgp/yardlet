@@ -1,83 +1,90 @@
-# Windows 브라우저 호스트 설계 (WebView2)
+# Windows browser host design (WebView2)
 
-작성: 2026-09-28. 근거는 제품 결정(macOS는 CEF, Windows는 WebView2)과
-[이식성 점검](PLATFORM_PORTABILITY.md)이다. 이 Mac에서는 Windows 코드를 빌드하거나 실행할 수 없으므로,
-이 문서는 Windows 앱을 만들 때 그대로 따를 설계이며 아직 구현·검증되지 않았다. API 이름은 Microsoft의
-[WebView2 문서](https://learn.microsoft.com/microsoft-edge/webview2/) 기준이며 구현 때 SDK 버전에 맞춰 다시 확인한다.
+Written: 2026-09-28. It rests on the product decision (CEF on macOS, WebView2 on Windows) and the [portability
+review](PLATFORM_PORTABILITY.md). Windows code cannot be built or run on this Mac, so this document is the design to
+follow as it is when the Windows app is built, and it is not implemented or verified yet. API names follow Microsoft's
+[WebView2 documentation](https://learn.microsoft.com/microsoft-edge/webview2/) and are to be checked again against the
+SDK version at implementation time.
 
-## 1. 원칙
+## 1. Principles
 
-- 엔진의 브라우저 호스트 규약(`Sources/NativeHarnessClient/BrowserHost/BrowserHostProtocol.swift`), CDP 클라이언트,
-  에이전트 브라우저 도구, Yardlet MCP 서버는 macOS와 같은 코드를 쓴다. Windows에서 새로 만드는 것은 규약을
-  WebView2로 실행하는 호스트 구현 하나와 CDP 전송 어댑터 하나다.
-- WebView2는 운영체제가 공유하는 Chromium 런타임(Evergreen)이라 앱 크기가 늘지 않고, 브라우저·렌더러·GPU
-  프로세스를 런타임이 따로 띄운다. 그래서 macOS처럼 호스트 프로세스를 직접 만들 필요가 없다.
-- 창 방식(`CreateCoreWebView2Controller`에 패널의 HWND를 부모로 넘김)을 기본으로 한다. 이 방식에서는 입력,
-  한글 IME, 커서, `<select>` 팝업, 우클릭 메뉴, 접근성(UI Automation)을 WebView2가 스스로 처리한다. macOS에서
-  직접 만든 입력 전달과 접근성 연결이 Windows에서는 필요 없다.
-- Windows UI 기술(Swift + WinUI 3, 또는 다른 기술)은 아직 정하지 않았다. 이 설계는 패널이 HWND 하나를 줄 수 있으면
-  UI 기술과 관계없이 적용된다.
+- The engine's browser host protocol (`Sources/NativeHarnessClient/BrowserHost/BrowserHostProtocol.swift`), the CDP
+  client, the agent browser tools and the Yardlet MCP server use the same code as on macOS. What Windows adds is one
+  host implementation that runs the protocol on WebView2, and one CDP transport adapter.
+- WebView2 is a Chromium runtime the operating system shares (Evergreen), so the app does not grow, and the runtime
+  starts the browser, renderer and GPU processes on its own. So unlike macOS, there is no need to build a host process
+  ourselves.
+- Windowed hosting (passing the panel's HWND as the parent to `CreateCoreWebView2Controller`) is the default. In this
+  mode WebView2 handles input, the Korean IME, the cursor, `<select>` popups, the context menu and accessibility (UI
+  Automation) on its own. The input forwarding and accessibility bridge built by hand on macOS are not needed on
+  Windows.
+- The Windows UI technology (Swift + WinUI 3, or another technology) is not decided yet. This design applies whatever
+  the UI technology, as long as the panel can give one HWND.
 
-## 2. 규약 대응
+## 2. Protocol mapping
 
-### 명령
+### Commands
 
-| 규약 명령 | WebView2 |
+| Protocol command | WebView2 |
 |---|---|
-| `open(tab, url, viewport)` | 앱당 하나인 환경(`CreateCoreWebView2EnvironmentWithOptions`, 사용자 데이터 폴더 지정)에서 탭마다 `CreateCoreWebView2Controller(패널 HWND)`, 이어서 `Navigate(url)` |
-| `resize` | `ICoreWebView2Controller::put_Bounds`, 배율은 `put_RasterizationScale` |
+| `open(tab, url, viewport)` | In the one environment per app (`CreateCoreWebView2EnvironmentWithOptions`, with a user data folder given), `CreateCoreWebView2Controller(panel HWND)` per tab, then `Navigate(url)` |
+| `resize` | `ICoreWebView2Controller::put_Bounds`, and the scale with `put_RasterizationScale` |
 | `navigate` | `ICoreWebView2::Navigate` |
 | `navigation(back/forward/reload/stop)` | `GoBack`, `GoForward`, `Reload`, `Stop` |
 | `focus` | `ICoreWebView2Controller::MoveFocus` |
-| `visibility` | `put_IsVisible`. 오래 숨길 때는 `TrySuspend`로 렌더러를 멈출 수 있다 |
-| `devTools(message)` | `CallDevToolsProtocolMethod(method, paramsJSON)`. 이벤트 구독은 `GetDevToolsProtocolEventReceiver(eventName)` |
+| `visibility` | `put_IsVisible`. When the tab is hidden for long, `TrySuspend` can pause the renderer |
+| `devTools(message)` | `CallDevToolsProtocolMethod(method, paramsJSON)`. Event subscription is `GetDevToolsProtocolEventReceiver(eventName)` |
 | `close(tab)` | `ICoreWebView2Controller::Close` |
-| `shutdown` | 모든 컨트롤러를 닫고 환경을 해제 |
-| `mouse`, `wheel`, `key`, `composition`, `edit`, `contextMenuResult` | 창 방식에서는 쓰지 않는다(WebView2가 직접 받음). composition(Visual) 방식을 고르면 `mouse`·`wheel`만 `ICoreWebView2CompositionController::SendMouseInput`으로 옮긴다 |
+| `shutdown` | Close every controller and release the environment |
+| `mouse`, `wheel`, `key`, `composition`, `edit`, `contextMenuResult` | Not used in windowed hosting (WebView2 receives the input directly). If composition (Visual) hosting is chosen, only `mouse` and `wheel` carry over, to `ICoreWebView2CompositionController::SendMouseInput` |
 
-### 이벤트
+### Events
 
-| 규약 이벤트 | WebView2 |
+| Protocol event | WebView2 |
 |---|---|
-| `ready` | 환경 생성 완료. `engine`에는 런타임의 `BrowserVersionString`을 넣고 `acceleratedPaint`는 의미가 없어 `false` |
-| `opened` | 컨트롤러 생성 완료 |
-| `address` | `SourceChanged` 뒤 `get_Source` |
+| `ready` | The environment is created. `engine` gets the runtime's `BrowserVersionString`, and `acceleratedPaint` has no meaning, so it is `false` |
+| `opened` | The controller is created |
+| `address` | `get_Source` after `SourceChanged` |
 | `title` | `DocumentTitleChanged` |
-| `loading` | `NavigationStarting`·`NavigationCompleted`와 `HistoryChanged`에서 `CanGoBack`·`CanGoForward` |
-| `loadEnd`, `loadError` | `NavigationCompleted`의 `IsSuccess`, `WebErrorStatus`, `HttpStatusCode` |
-| `console` | CDP `Runtime.consoleAPICalled`를 DevTools 이벤트 수신기로 받는다(macOS와 같은 경로) |
-| `popupBlocked` 또는 새 창 | `NewWindowRequested`를 처리해 같은 탭에서 연다(macOS와 같은 정책) |
-| `terminated`, `failed` | `ProcessFailed`, 환경의 `BrowserProcessExited` |
-| `frame`, `popup`, `cursor`, `contextMenu`, `compositionBounds` | 창 방식에서는 생기지 않는다 |
+| `loading` | `NavigationStarting` and `NavigationCompleted`, and `CanGoBack` and `CanGoForward` on `HistoryChanged` |
+| `loadEnd`, `loadError` | `IsSuccess`, `WebErrorStatus` and `HttpStatusCode` of `NavigationCompleted` |
+| `console` | CDP `Runtime.consoleAPICalled` received through the DevTools event receiver (the same path as on macOS) |
+| `popupBlocked` or a new window | Handle `NewWindowRequested` and open it in the same tab (the same policy as on macOS) |
+| `terminated`, `failed` | `ProcessFailed`, and the environment's `BrowserProcessExited` |
+| `frame`, `popup`, `cursor`, `contextMenu`, `compositionBounds` | Do not occur in windowed hosting |
 
-macOS 제품화에서 추가되는 JS 대화상자, 파일 선택, 다운로드는 각각 `ScriptDialogOpening`(기본 대화상자를 끄고 Yardlet
-시트로), WebView2 기본 파일 선택 창, `DownloadStarting`으로 대응한다.
+JS dialogs, file choosing and downloads, which the macOS productization adds, map to `ScriptDialogOpening` (with the
+default dialog turned off, shown as a Yardlet sheet), the WebView2 default file chooser, and `DownloadStarting`
+respectively.
 
-## 3. 수명과 메모리
+## 3. Lifetime and memory
 
-- 호스트 수명 규칙은 macOS와 같다. 패널이 열려 있거나 최근 5분 안에 에이전트가 그 작업의 브라우저를 썼으면 유지하고,
-  둘 다 아니면 60초 유예 뒤 그 탭의 컨트롤러를 닫는다. 마지막 컨트롤러를 닫고 환경을 해제하면 런타임이 브라우저
-  프로세스를 끝내며, `BrowserProcessExited`로 메모리 반환을 확인한다.
-- 프로필은 모든 작업이 공유하는 `%LOCALAPPDATA%\Yardlet\Browser\Default`이다. 쿠키 암호화는 WebView2가 DPAPI로 처리하므로
-  macOS의 mock keychain 같은 절충이 필요 없다.
+- The host lifetime rules are the same as on macOS. While the panel is open, or when the agent used that task's browser
+  in the last 5 minutes, the tab stays; when neither holds, that tab's controller closes after a 60-second grace period.
+  When the last controller is closed and the environment is released, the runtime ends the browser process, and
+  `BrowserProcessExited` confirms that the memory was returned.
+- The profile is `%LOCALAPPDATA%\Yardlet\Browser\Default`, which every task shares. WebView2 handles cookie encryption
+  with DPAPI, so no compromise like the mock keychain on macOS is needed.
 
-## 4. 에이전트 도구와 MCP 서버
+## 4. Agent tools and the MCP server
 
-- 엔진의 CDP 클라이언트는 전송 방식만 바꾼다. macOS는 호스트 IPC로 CDP 메시지를 보내고, Windows는
-  `CallDevToolsProtocolMethod`와 이벤트 수신기로 보낸다. 도구(`browser_snapshot` 등)와 참조(`@e3`) 처리는 그대로다.
-- Yardlet MCP 서버는 Foundation만 쓰는 실행 파일이라 Windows용으로 다시 빌드한다. IPC의 Unix 도메인 소켓은 Windows 10
-  이후 AF_UNIX로 쓸 수 있고, 권한은 폴더 ACL로 사용자만 접근하게 한다.
-- 하네스 주입 경로(Claude `--mcp-config`, Codex `thread/start` 설정, ACP `session/new`)는 플랫폼과 무관하다.
+- The engine's CDP client changes only its transport. macOS sends CDP messages over the host IPC, and Windows sends them
+  with `CallDevToolsProtocolMethod` and the event receiver. The handling of tools (`browser_snapshot` and the others)
+  and references (`@e3`) stays the same.
+- The Yardlet MCP server is an executable that uses only Foundation, so it is rebuilt for Windows. The Unix domain
+  socket of the IPC can be used as AF_UNIX from Windows 10 on, and folder ACLs limit access to the user.
+- The harness injection paths (Claude `--mcp-config`, Codex `thread/start` settings, ACP `session/new`) do not depend on
+  the platform.
 
-## 5. 배포
+## 5. Distribution
 
-- Windows 11과 최신 Windows 10에는 Evergreen WebView2 런타임이 기본으로 있다. 앱 시작 때
-  `GetAvailableCoreWebView2BrowserVersionString`으로 확인하고, 없으면 Microsoft의 공식 설치 안내를 보여 준다. 고정
-  버전 런타임을 앱에 넣는 방식은 크기 때문에 쓰지 않는다.
+- Windows 11 and current Windows 10 have the Evergreen WebView2 runtime by default. At app start Yardlet checks with
+  `GetAvailableCoreWebView2BrowserVersionString`, and when it is missing, shows Microsoft's official install
+  instructions. Bundling a fixed-version runtime in the app is not used, because of its size.
 
-## 6. 남은 결정과 선행 작업
+## 6. Open decisions and prerequisites
 
-- Windows UI 기술 선택(패널이 HWND를 줄 수 있어야 한다).
-- [이식성 점검](PLATFORM_PORTABILITY.md)의 걸림돌 해소: 프로세스 트리 종료(job object), 실행 파일 탐색(PATHEXT·`.cmd`),
-  계정 로그인 터미널(ConPTY).
-- 실제 Windows 기기에서 위 대응표의 동작 확인.
+- Choosing the Windows UI technology (the panel must be able to give an HWND).
+- Clearing the blockers in the [portability review](PLATFORM_PORTABILITY.md): ending process trees (job object), finding
+  executables (PATHEXT and `.cmd`), and the account sign-in terminal (ConPTY).
+- Checking the behavior of the mapping tables above on a real Windows device.

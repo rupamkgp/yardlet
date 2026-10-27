@@ -183,30 +183,30 @@ final class AppleConnectorTests: XCTestCase {
         apple.answers["GET /v1/apps/123/customerReviews"] = (200, .object([
             "data": .array([.object([
                 "type": .string("customerReviews"), "id": .string("r1"),
-                "attributes": .object(["rating": .integer(2), "title": .string("느려요"), "body": .string("앱이 느립니다"),
+                "attributes": .object(["rating": .integer(2), "title": .string("Too slow"), "body": .string("The app is slow"),
                                        "territory": .string("KOR")]),
                 "relationships": .object(["response": .object(["data": .object(["type": .string("customerReviewResponses"),
                                                                                "id": .string("rr1")])])])
             ])]),
             "included": .array([.object(["type": .string("customerReviewResponses"), "id": .string("rr1"),
-                                         "attributes": .object(["responseBody": .string("고치겠습니다"),
+                                         "attributes": .object(["responseBody": .string("We will fix it"),
                                                                 "state": .string("PUBLISHED")])])])
         ]))
         let reviews = try json(try await call(center, "app_store_connect_list_customer_reviews",
                                               ["appId": .string("123"), "sort": .string("lowest"), "rating": .integer(2)]))
         XCTAssertEqual(query(try XCTUnwrap(apple.requests.last))["sort"], "rating")
         XCTAssertEqual(query(try XCTUnwrap(apple.requests.last))["filter[rating]"], "2")
-        XCTAssertEqual(reviews["reviews"]?.arrayValue?.first?["response"]?["responseBody"], .string("고치겠습니다"))
+        XCTAssertEqual(reviews["reviews"]?.arrayValue?.first?["response"]?["responseBody"], .string("We will fix it"))
 
         apple.answers["GET /v1/apps/123/betaFeedbackScreenshotSubmissions"] = (200, .object(["data": .array([
             .object(["type": .string("betaFeedbackScreenshotSubmissions"), "id": .string("s1"),
-                     "attributes": .object(["createdDate": .string("2026-10-24T01:00:00Z"), "comment": .string("버튼이 잘려요"),
+                     "attributes": .object(["createdDate": .string("2026-10-24T01:00:00Z"), "comment": .string("The button is cut off"),
                                             "screenshots": .array([.object(["url": .string("https://example.test/s.png"),
                                                                             "width": .integer(10), "expirationDate": .string("x")])])])])
         ])]))
         apple.answers["GET /v1/apps/123/betaFeedbackCrashSubmissions"] = (200, .object(["data": .array([
             .object(["type": .string("betaFeedbackCrashSubmissions"), "id": .string("c1"),
-                     "attributes": .object(["createdDate": .string("2026-10-25T01:00:00Z"), "comment": .string("켜자마자 꺼짐"),
+                     "attributes": .object(["createdDate": .string("2026-10-25T01:00:00Z"), "comment": .string("Quits right after launch"),
                                             "appUptimeInMilliseconds": .integer(12)])])
         ])]))
         let feedback = try json(try await call(center, "app_store_connect_list_beta_feedback", ["appId": .string("123")]))
@@ -217,7 +217,7 @@ final class AppleConnectorTests: XCTestCase {
 
         // Writes.
         _ = try json(try await call(center, "app_store_connect_add_beta_tester",
-                                    ["groupId": .string("g1"), "email": .string("tester@example.test"), "firstName": .string("민수")]))
+                                    ["groupId": .string("g1"), "email": .string("tester@example.test"), "firstName": .string("Minsu")]))
         let invite = try body(try XCTUnwrap(apple.requests.last))
         XCTAssertEqual(apple.requests.last?.url?.path, "/v1/betaTesters")
         XCTAssertEqual(invite["data"]?["attributes"]?["email"], .string("tester@example.test"))
@@ -232,9 +232,9 @@ final class AppleConnectorTests: XCTestCase {
         XCTAssertEqual(apple.requests.last?.url?.path, "/v1/betaGroups/g1/relationships/builds")
 
         _ = try json(try await call(center, "app_store_connect_reply_to_review",
-                                    ["reviewId": .string("r1"), "responseBody": .string("업데이트에서 고쳤습니다.")]))
+                                    ["reviewId": .string("r1"), "responseBody": .string("Fixed in the update.")]))
         let reply = try body(try XCTUnwrap(apple.requests.last))
-        XCTAssertEqual(reply["data"]?["attributes"]?["responseBody"], .string("업데이트에서 고쳤습니다."))
+        XCTAssertEqual(reply["data"]?["attributes"]?["responseBody"], .string("Fixed in the update."))
         XCTAssertEqual(reply["data"]?["relationships"]?["review"]?["data"]?["id"], .string("r1"))
 
         // Submitting reuses the app's submission not sent yet, adds the version, and sends it.
@@ -344,18 +344,18 @@ final class AppleConnectorTests: XCTestCase {
         XCTAssertTrue(submit.detail.contains("v7") && submit.detail.contains("2X9R4HXF34"), submit.detail)
         let reply = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__app_store_connect_reply_to_review",
                                                              input: .object(["reviewId": .string("r1"),
-                                                                             "responseBody": .string("고쳤습니다")]), labels: labels))
-        XCTAssertTrue(reply.detail.contains("고쳤습니다"))
+                                                                             "responseBody": .string("Fixed")]), labels: labels))
+        XCTAssertTrue(reply.detail.contains("Fixed"))
         let invite = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__app_store_connect_add_beta_tester",
                                                               input: .object(["groupId": .string("g1"),
                                                                               "email": .string("tester@example.test")]), labels: labels))
         XCTAssertTrue(invite.detail.contains("tester@example.test"))
         let event = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__apple_calendar_create_event",
-                                                             input: .object(["summary": .string("팀 회의"),
+                                                             input: .object(["summary": .string("Team meeting"),
                                                                              "startTime": .string("2026-10-27T10:00:00")]),
                                                              labels: labels))
         XCTAssertEqual(event.title, L10n.string("Allow Claude to create an event in this Mac's calendars?"))
-        XCTAssertTrue(event.detail.contains("팀 회의"))
+        XCTAssertTrue(event.detail.contains("Team meeting"))
         let done = try XCTUnwrap(GoogleToolApproval.request(toolName: "mcp__yardlet__apple_reminders_complete_reminder",
                                                             input: .object(["reminderId": .string("x")]), labels: labels))
         XCTAssertEqual(done.title, L10n.string("Allow Claude to mark a reminder done?"))
@@ -432,8 +432,8 @@ final class AppleConnectorTests: XCTestCase {
         XCTAssertEqual(holiday["endTime"], .string("2026-10-29"), "The last day, included")
 
         _ = try json(try await call(center, "apple_calendar_create_event", [
-            "summary": .string("치과"), "startTime": .string("2026-10-30T15:00:00"), "endTime": .string("2026-10-30T16:00:00"),
-            "location": .string("강남"), "alertMinutes": .array([.integer(30)]), "calendarId": .string("work")
+            "summary": .string("Dentist"), "startTime": .string("2026-10-30T15:00:00"), "endTime": .string("2026-10-30T16:00:00"),
+            "location": .string("Gangnam"), "alertMinutes": .array([.integer(30)]), "calendarId": .string("work")
         ]))
         let created = try XCTUnwrap(store.savedEvents.last)
         XCTAssertNil(created.id)
@@ -442,7 +442,7 @@ final class AppleConnectorTests: XCTestCase {
         XCTAssertEqual(created.calendarID, "work")
 
         _ = try json(try await call(center, "apple_calendar_create_event", [
-            "summary": .string("휴가"), "startTime": .string("2026-11-02"), "endTime": .string("2026-11-03"), "allDay": .bool(true)
+            "summary": .string("Vacation"), "startTime": .string("2026-11-02"), "endTime": .string("2026-11-03"), "allDay": .bool(true)
         ]))
         let vacation = try XCTUnwrap(store.savedEvents.last)
         XCTAssertEqual(vacation.start, ISO8601DateFormatter().date(from: "2026-11-01T15:00:00Z"))
@@ -476,10 +476,10 @@ final class AppleConnectorTests: XCTestCase {
             await center.waitForConnection(record.id)
         }
         let lists = try json(try await call(center, "apple_reminders_list_reminder_lists"))
-        XCTAssertEqual(lists["lists"]?.arrayValue?.first?["title"], .string("미리 알림"))
+        XCTAssertEqual(lists["lists"]?.arrayValue?.first?["title"], .string("Reminders"))
 
         _ = try json(try await call(center, "apple_reminders_create_reminder", [
-            "title": .string("우유 사기"), "dueDate": .string("2026-10-31"), "priority": .string("high")
+            "title": .string("Buy milk"), "dueDate": .string("2026-10-31"), "priority": .string("high")
         ]))
         let reminder = try XCTUnwrap(store.savedReminders.last)
         XCTAssertEqual(reminder.due?.year, 2026)
@@ -487,7 +487,7 @@ final class AppleConnectorTests: XCTestCase {
         XCTAssertNil(reminder.due?.hour, "A day without a time")
         XCTAssertEqual(reminder.priority, 1)
 
-        let listed = try json(try await call(center, "apple_reminders_list_reminders", ["query": .string("우유")]))
+        let listed = try json(try await call(center, "apple_reminders_list_reminders", ["query": .string("milk")]))
         XCTAssertEqual(store.reminderQueries.last?.status, .incomplete)
         XCTAssertEqual(listed["reminders"]?.arrayValue?.first?["dueDate"], .string("2026-10-31"))
         XCTAssertEqual(listed["reminders"]?.arrayValue?.first?["priority"], .string("high"))
@@ -496,8 +496,8 @@ final class AppleConnectorTests: XCTestCase {
         XCTAssertEqual(store.savedReminders.last?.id, "R1")
         XCTAssertEqual(store.savedReminders.last?.completed, true)
 
-        let found = try json(try await call(center, "apple_contacts_search_contacts", ["query": .string("민수")]))
-        XCTAssertEqual(found["contacts"]?.arrayValue?.first?["name"], .string("민수 김"))
+        let found = try json(try await call(center, "apple_contacts_search_contacts", ["query": .string("Minsu")]))
+        XCTAssertEqual(found["contacts"]?.arrayValue?.first?["name"], .string("Minsu Kim"))
         XCTAssertEqual(found["contacts"]?.arrayValue?.first?["emails"]?.arrayValue?.first?["value"], .string("minsu@example.test"))
         XCTAssertNil(found["contacts"]?.arrayValue?.first?["birthday"], "Search keeps it short")
         let contact = try json(try await call(center, "apple_contacts_get_contact", ["contactId": .string("C1")]))
@@ -736,10 +736,10 @@ final class FakeMacData: MacDataStoring, @unchecked Sendable {
     static let seoul = TimeZone(identifier: "Asia/Seoul")!
 
     let stored = [
-        MacEvent(id: "E1", occurrence: standupStart, calendarID: "work", calendarTitle: "업무", title: "Daily standup",
+        MacEvent(id: "E1", occurrence: standupStart, calendarID: "work", calendarTitle: "Work", title: "Daily standup",
                  start: standupStart, end: standupStart.addingTimeInterval(15 * 60), allDay: false, timeZone: seoul,
                  isRecurring: true),
-        MacEvent(id: "E2", calendarID: "home", calendarTitle: "가족", title: "연휴",
+        MacEvent(id: "E2", calendarID: "home", calendarTitle: "Family", title: "Holiday",
                  start: ISO8601DateFormatter().date(from: "2026-10-27T15:00:00Z")!,
                  end: ISO8601DateFormatter().date(from: "2026-10-29T14:59:59Z")!, allDay: true, isRecurring: false)
     ]
@@ -767,9 +767,9 @@ final class FakeMacData: MacDataStoring, @unchecked Sendable {
     func calendars(_ kind: MacDataKind) throws -> [MacCalendarInfo] {
         try allowed(kind)
         return kind == .reminders
-            ? [MacCalendarInfo(id: "L1", title: "미리 알림", account: "iCloud", allowsChanges: true, isDefault: true)]
-            : [MacCalendarInfo(id: "work", title: "업무", account: "iCloud", color: "#1BADF8", allowsChanges: true, isDefault: true),
-               MacCalendarInfo(id: "holidays", title: "대한민국 공휴일", account: "구독", allowsChanges: false, isDefault: false)]
+            ? [MacCalendarInfo(id: "L1", title: "Reminders", account: "iCloud", allowsChanges: true, isDefault: true)]
+            : [MacCalendarInfo(id: "work", title: "Work", account: "iCloud", color: "#1BADF8", allowsChanges: true, isDefault: true),
+               MacCalendarInfo(id: "holidays", title: "South Korean Holidays", account: "Subscribed", allowsChanges: false, isDefault: false)]
     }
 
     func events(from start: Date, to end: Date, calendarIDs: [String]?) throws -> [MacEvent] {
@@ -787,7 +787,7 @@ final class FakeMacData: MacDataStoring, @unchecked Sendable {
         try allowed(.calendars)
         lock.withLock { savedEvents.append(change) }
         var event = change.id.flatMap { id in stored.first { $0.id == id } }
-            ?? MacEvent(id: "NEW", calendarID: change.calendarID ?? "work", calendarTitle: "업무", title: "", start: Date(),
+            ?? MacEvent(id: "NEW", calendarID: change.calendarID ?? "work", calendarTitle: "Work", title: "", start: Date(),
                         end: Date(), allDay: false, isRecurring: false)
         if let title = change.title { event.title = title }
         if let start = change.start { event.start = start }
@@ -806,14 +806,14 @@ final class FakeMacData: MacDataStoring, @unchecked Sendable {
         lock.withLock { reminderQueries.append(query) }
         var due = DateComponents(year: 2026, month: 10, day: 31)
         due.calendar = Calendar(identifier: .gregorian)
-        return [MacReminder(id: "R1", listID: "L1", listTitle: "미리 알림", title: "우유 사기", due: due, priority: 1, completed: false),
-                MacReminder(id: "R2", listID: "L1", listTitle: "미리 알림", title: "세탁소", priority: 0, completed: false)]
+        return [MacReminder(id: "R1", listID: "L1", listTitle: "Reminders", title: "Buy milk", due: due, priority: 1, completed: false),
+                MacReminder(id: "R2", listID: "L1", listTitle: "Reminders", title: "Dry cleaning", priority: 0, completed: false)]
     }
 
     func saveReminder(_ change: MacReminderChange) throws -> MacReminder {
         try allowed(.reminders)
         lock.withLock { savedReminders.append(change) }
-        return MacReminder(id: change.id ?? "R9", listID: change.listID ?? "L1", listTitle: "미리 알림", title: change.title ?? "우유 사기",
+        return MacReminder(id: change.id ?? "R9", listID: change.listID ?? "L1", listTitle: "Reminders", title: change.title ?? "Buy milk",
                            due: change.due, priority: change.priority ?? 0, completed: change.completed ?? false)
     }
 
@@ -827,7 +827,7 @@ final class FakeMacData: MacDataStoring, @unchecked Sendable {
         return id == "C1" ? Self.minsu : nil
     }
 
-    static let minsu = MacContact(id: "C1", givenName: "민수", familyName: "김", organization: "Acme",
+    static let minsu = MacContact(id: "C1", givenName: "Minsu", familyName: "Kim", organization: "Acme",
                                   emails: [.init(label: "work", value: "minsu@example.test")],
                                   phones: [.init(label: "mobile", value: "010-0000-0000")],
                                   birthday: DateComponents(month: 3, day: 14))

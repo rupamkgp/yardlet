@@ -92,7 +92,7 @@ final class CodexMessagePredictionTests: XCTestCase {
     }
 
     func testTheSuggestionIsReadFromTheWholeFinalMessage() {
-        XCTAssertEqual(CodexMessagePrediction.suggestion(fromFinalMessage: #" {"suggestion":"  테스트 다시 돌려줘 "} "#), "테스트 다시 돌려줘")
+        XCTAssertEqual(CodexMessagePrediction.suggestion(fromFinalMessage: #" {"suggestion":"  Run the tests again "} "#), "Run the tests again")
         XCTAssertNil(CodexMessagePrediction.suggestion(fromFinalMessage: #"{"suggestion":null}"#), "The model abstained")
         XCTAssertNil(CodexMessagePrediction.suggestion(fromFinalMessage: "Run the tests"), "Not the JSON")
         XCTAssertNil(CodexMessagePrediction.suggestion(fromFinalMessage: #"{"suggestion":"Run\nthe tests"}"#), "One line only")
@@ -413,7 +413,7 @@ final class CodexMessagePredictionTests: XCTestCase {
 /// it waits in the Codex task's draft after the turn ends, never joins the conversation or the saved
 /// draft, and the next send lets it go without sending it.
 @MainActor final class CodexMessagePredictionAppModelTests: XCTestCase {
-    private static let prediction = "실패한 테스트만 다시 돌려서 통과하는지 확인해줘"
+    private static let prediction = "Rerun only the failing tests and check that they pass"
 
     func testThePredictionWaitsInTheCodexTaskDraftUntilTheNextTurn() async throws {
         let (model, task, transport) = try await makeTaskWithAPrediction()
@@ -434,7 +434,7 @@ final class CodexMessagePredictionTests: XCTestCase {
         let sent = await transport.requests.filter {
             $0.method == "turn/start" && $0.params["threadId"]?.stringValue == "thread-1"
         }.compactMap { $0.params["input"]?.arrayValue?.first?["text"]?.stringValue }
-        XCTAssertEqual(sent, ["calc.py의 실패하는 테스트를 고쳐줘", "Explain the fix first"],
+        XCTAssertEqual(sent, ["Fix the failing tests in calc.py", "Explain the fix first"],
                        "The prediction itself was never sent")
     }
 
@@ -488,10 +488,10 @@ final class CodexMessagePredictionTests: XCTestCase {
             restoresIndexOnLaunch: false)
         addTeardownBlock { await model.shutdown() }
         let created = await model.createSession(harness: .codex, workspaceURL: workspace, runtimeExecutableURL: executable,
-                                                title: "calc.py 실패 테스트 수정")
+                                                title: "Fix failing calc.py tests")
         let task = try XCTUnwrap(created, model.errorBySessionID.values.first ?? "Missing task")
 
-        let request = "calc.py의 실패하는 테스트를 고쳐줘"
+        let request = "Fix the failing tests in calc.py"
         await model.send(HarnessUserInput(text: request), to: task)
         try await waitUntil { await transport.requestMethods.contains("turn/start") }
         await transport.emit(method: "turn/started", params: .object(["threadId": .string("thread-1"),
@@ -501,8 +501,8 @@ final class CodexMessagePredictionTests: XCTestCase {
                              "content": .array([.object(["type": .string("text"), "text": .string(request)])])])]))
         await transport.emit(method: "item/completed", params: .object(["threadId": .string("thread-1"), "turnId": .string("turn-1"),
             "item": .object(["id": .string("answer-1"), "type": .string("agentMessage"), "text": .string(
-                "`divide`가 0으로 나눌 때 예외 대신 `None`을 돌려줘서 `test_divide_by_zero`가 실패했습니다. "
-                    + "`ZeroDivisionError`를 내도록 고쳤고, 그 테스트는 이제 통과합니다.")])]))
+                "`divide` returned `None` instead of raising on division by zero, so `test_divide_by_zero` failed. "
+                    + "It now raises `ZeroDivisionError`, and that test passes.")])]))
         await transport.emit(method: "turn/completed", params: .object(["threadId": .string("thread-1"),
             "turn": .object(["id": .string("turn-1"), "status": .string("completed"), "items": .array([])])]))
         try await waitUntil { model.store.sessions.first?.status == .ready }

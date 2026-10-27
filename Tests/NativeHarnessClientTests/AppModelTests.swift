@@ -87,11 +87,11 @@ final class AppModelTests: XCTestCase {
         let probes = await adapter.probeCount
         XCTAssertEqual(creates, 0)
         XCTAssertEqual(probes, 0)
-        model.composerDrafts.tasks.draft(for: child.id).text = "Side draft\n두 번째 줄"
+        model.composerDrafts.tasks.draft(for: child.id).text = "Side draft\nsecond line"
         let reopened = await model.branch(parent, placement: .sidePanel)
         XCTAssertEqual(reopened?.id, child.id)
         XCTAssertEqual(model.composerDrafts.tasks.draft(for: parent.id).text, "  Main draft 👩🏽‍💻\n")
-        XCTAssertEqual(model.composerDrafts.tasks.draft(for: child.id).text, "Side draft\n두 번째 줄")
+        XCTAssertEqual(model.composerDrafts.tasks.draft(for: child.id).text, "Side draft\nsecond line")
         await model.send("Only the side conversation", to: child)
         XCTAssertTrue(model.isAttached(child.id))
         XCTAssertFalse(model.isAttached(parent.id))
@@ -399,8 +399,8 @@ final class AppModelTests: XCTestCase {
             harness: .openCode,
             workspaceURL: URL(filePath: "/tmp/provider-title-running"),
             runtimeExecutableURL: URL(filePath: "/tmp/opencode"),
-            title: "Yardlet(`/Users/me/yardlet`, macOS SwiftUI app)의 남은",
-            initialPrompt: "Yardlet(`/Users/me/yardlet`, macOS SwiftUI app)의 남은 렉을 측정해 주세요.",
+            title: "Measure the remaining lag in Yardlet(`/Users/me/yardlet`, macOS",
+            initialPrompt: "Measure the remaining lag in Yardlet(`/Users/me/yardlet`, macOS SwiftUI app).",
             selectsSession: false
         )
         let created = try XCTUnwrap(createdResult)
@@ -429,7 +429,7 @@ final class AppModelTests: XCTestCase {
             sessionTitleResolver: { _ in providerTitle.withLock { $0 } },
             sessionTitleRetryCount: 0
         )
-        let prompt = "test_calc.py를 실행해서 실패하는 테스트를 찾고 calc.py를 고쳐줘. 시작할 때 상태를 확인해"
+        let prompt = "Run test_calc.py to find the failing tests, fix calc.py, and check the status first"
         let createdResult = await model.createSession(
             harness: .openCode,
             workspaceURL: URL(filePath: "/tmp/yardlet-sandbox"),
@@ -448,14 +448,14 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(fallback.titleOrigin, .automatic)
         XCTAssertEqual(fallback.title, "yardlet-sandbox · \(prompt)".prefix(72).description)
 
-        providerTitle.withLock { $0 = "test_calc.py 실패 테스트 수정" }
+        providerTitle.withLock { $0 = "Fix failing test_calc.py tests" }
         await adapter.emit(.turnCompleted, for: created.id, sequence: 11)
         for _ in 0..<30 where model.store.sessions.first(where: { $0.id == created.id })?.titleOrigin
             != .provider {
             try await Task.sleep(for: .milliseconds(10))
         }
         let resolved = try XCTUnwrap(model.store.sessions.first(where: { $0.id == created.id }))
-        XCTAssertEqual(resolved.title, "test_calc.py 실패 테스트 수정")
+        XCTAssertEqual(resolved.title, "Fix failing test_calc.py tests")
         XCTAssertEqual(resolved.titleOrigin, .provider)
         await model.shutdown()
     }

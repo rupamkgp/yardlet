@@ -2,7 +2,7 @@ import Foundation
 
 /// Settings › General › "Continue running work after a restart". On by default, as both apps
 /// do it without a setting: the Claude app after any quit, the Codex app after an update. Yardlet
-/// continues both after any quit (the person's choice, 2026-10-16: "Claude처럼 항상").
+/// continues both after any quit (decision of 2026-10-16: always, as the Claude app does).
 enum RestartResumePreference {
     static let key = "Yardlet.continueWorkAfterRestart"
 

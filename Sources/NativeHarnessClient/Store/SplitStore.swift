@@ -156,7 +156,7 @@ enum LegacyDeskMigration {
         return SplitSnapshot(splits: splits, selection: selection)
     }
 
-    /// Automatic names ("Workspace 2", "워크스페이스 2") carried no choice of the user's.
+    /// Automatic names ("Workspace 2", in English or Korean) carried no choice of the user's.
     private static func customName(_ name: String?) -> String? {
         guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
         let automatic = name.range(of: #"^(Workspace|워크스페이스) \d+$"#, options: .regularExpression) != nil

@@ -240,7 +240,7 @@ private struct ClaudeLookFixture {
             task("Profile page review", .codex, in: Self.otherProject, minutesAgo: 300),
             task("Summarize the meeting notes", .claudeCode, in: chat("Documents/Yardlet/2026-10-15/new-chat"),
                  minutesAgo: 8),
-            task("오늘 일정 정리", .codex, in: chat("Documents/Yardlet/2026-10-15/new-chat-2"), minutesAgo: 50)
+            task("Plan today's schedule", .codex, in: chat("Documents/Yardlet/2026-10-15/new-chat-2"), minutesAgo: 50)
         ]
         let groups = projects.visibleGroups(sessions: sessions)
         let chats = projects.chats(sessions: sessions)

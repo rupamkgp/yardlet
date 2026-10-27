@@ -33,10 +33,12 @@ protocol TaskSuggestionToolHandling: AnyObject {
 @MainActor
 protocol SessionToolHandling: AnyObject {
     func callSessionTool(named name: String, arguments: ToolJSON, callerID: UUID) async -> AgentToolResult
+    /// Whether the task's browser tools may open a file outside its folders (`BrowserAgentTools.allowsFileOutsideFolders`).
+    func allowsBrowserFile(_ path: String, callerID: UUID) async -> Bool
 }
 
 /// Yardlet's scheduled-task tools (`ScheduleToolCatalog`), answered by the app against its scheduler
-/// (docs/AGENT_BROWSER_TOOLS.md, "예약 도구"): an agent creates, lists, changes, deletes and runs the person's schedules.
+/// (docs/AGENT_BROWSER_TOOLS.md, "Scheduled-task tools"): an agent creates, lists, changes, deletes and runs the person's schedules.
 @MainActor
 protocol ScheduleToolHandling: AnyObject {
     func callScheduleTool(named name: String, arguments: ToolJSON, callerID: UUID) async -> AgentToolResult
@@ -119,6 +121,9 @@ final class AgentToolBroker: AgentToolLaunchProviding {
         self.environment = environment
         self.tools = tools
         tools.workspaceRoots = { [weak self] in self?.workspaceRoots[$0] ?? [] }
+        tools.allowsFileOutsideFolders = { [weak self] session, path in
+            await self?.sessions?.allowsBrowserFile(path, callerID: session) ?? false
+        }
     }
 
     func agentToolServer(for localSessionID: UUID, workspaceRoots roots: [URL],

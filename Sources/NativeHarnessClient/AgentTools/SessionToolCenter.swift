@@ -3,12 +3,11 @@ import Observation
 import YardletAgentTools
 import YardletRemote
 
-/// The limits of the session tools (docs/AGENT_BROWSER_TOOLS.md, "세션 도구"). One place, so a policy change is one edit.
+/// The limits of the session tools (docs/AGENT_BROWSER_TOOLS.md, "Session tools"). One place, so a policy change is one edit.
 enum SessionToolPolicy {
     /// How deep tasks and subagents the session tools start may nest: a task (depth 0) may start a
     /// child or a subagent (depth 1), and so on down to depth 3 and no further. Three, not two, since
-    /// 2026-10-23: children often offer task chips, and the person starts them under the child ("하위
-    /// 작업 깊이를 3 정도 하면 좋을 거 같아서 지금 하위 작업에서도 칩을 주는 경우가 많은데"). The
+    /// 2026-10-23: children often offer task chips, and the person starts them under the child. The
     /// harnesses' own subagents are their own (Claude Code 2.1.291–2.1.299 stops its Agent tool at
     /// depth 3 — `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, else GrowthBook `tengu_hazel_trellis` —
     /// which Yardlet leaves alone).

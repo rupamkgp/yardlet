@@ -32,9 +32,15 @@ final class BrowserAgentTools {
     private let pages: PageProvider
     private let directory: (any BrowserAgentTabDirectory)?
     private let closePage: @MainActor (UUID) -> Void
-    /// The task's project folders, for file uploads. The broker, which learns them when a task is
-    /// injected, sets this.
+    /// The task's project folders, for file uploads and the `file:` pages it opens freely. The broker, which
+    /// learns them when a task is injected, sets this.
     var workspaceRoots: @MainActor (UUID) -> [URL]
+    /// Whether the task may open a file outside its folders, given its real path: the app answers yes at once
+    /// for a task that runs without asking, whose shell reads the file anyway, and asks the person on the
+    /// task's request card otherwise (`AppModel.allowsBrowserFile`). Without the app (tests) it is refused.
+    var allowsFileOutsideFolders: @MainActor (UUID, String) async -> Bool = { _, _ in false }
+    /// The files outside its folders each task was let open, so a page that shows one asks once.
+    private var openedOutsideFolders: [UUID: Set<String>] = [:]
     /// Chromium on macOS needs editing commands with key events (see `BrowserAgentKeyPress`).
     private let usesMacEditingCommands: Bool
     /// How often text waits look again.
@@ -96,6 +102,7 @@ final class BrowserAgentTools {
 
     func closeTab(for sessionID: UUID) {
         closePage(sessionID)
+        openedOutsideFolders.removeValue(forKey: sessionID)
     }
 
     /// The task's turn ended: what the agent set on its tabs for the turn goes (screen sizes, color schemes).
@@ -245,6 +252,12 @@ final class BrowserAgentTools {
             // Answering a dialog or a file chooser needs no CDP, and CDP waits while a dialog is open.
             if page.dialog == nil, tool != AgentToolCatalog.handleDialog, tool != AgentToolCatalog.fileUpload {
                 try await enableDomains(page)
+            }
+            // A file a link, a script or an iframe brought into the page is let in as browser_navigate lets it.
+            if tool != AgentToolCatalog.navigate, tool != AgentToolCatalog.handleDialog {
+                for address in page.shownFiles().sorted() {
+                    try await allowFile(address, on: page, sessionID: sessionID, shown: true)
+                }
             }
             var result = try await perform(tool, arguments, on: page, sessionID: sessionID)
             result.content += notices(after: tool, on: page, sessionID: sessionID).map { .text($0) }
@@ -457,7 +470,7 @@ final class BrowserAgentTools {
                          sessionID: UUID?) async throws -> AgentToolResult {
         switch tool {
         case VaultToolCatalog.fillCredential: try await fillCredential(arguments, on: page, sessionID: sessionID)
-        case AgentToolCatalog.navigate: try await navigate(arguments, on: page)
+        case AgentToolCatalog.navigate: try await navigate(arguments, on: page, sessionID: sessionID)
         case AgentToolCatalog.snapshot: try await snapshot(on: page)
         case AgentToolCatalog.click: try await click(arguments, on: page)
         case AgentToolCatalog.type: try await type(arguments, on: page)
@@ -484,12 +497,30 @@ final class BrowserAgentTools {
         }
         // Frames from other sites (a payment form, an embedded sign-in) answer on sessions of their own.
         try? await page.cdp.attachFrames()
+        // The files the page shows already; the frame navigations logged since Page.enable follow.
+        let mark = page.cdp.eventLog.count
+        page.seedFrames(try await send(page, "Page.getFrameTree"), eventMark: mark)
         page.domainsEnabled = true
+    }
+
+    /// Lets a `file:` address through when its real path is in the task's folders, the task was let open it
+    /// before, or `allowsFileOutsideFolders` says yes; throws otherwise. `shown` is for a file the page
+    /// already shows.
+    private func allowFile(_ address: String, on page: BrowserAgentPage, sessionID: UUID?, shown: Bool = false) async throws {
+        guard let path = BrowserAgentWorkspaceFile.realPath(ofFileAddress: address),
+              !BrowserAgentWorkspaceFile.isInside(path, roots: page.workspaceRoots) else { return }
+        if let sessionID, openedOutsideFolders[sessionID]?.contains(path) == true { return }
+        guard let sessionID, await allowsFileOutsideFolders(sessionID, path) else {
+            throw BrowserAgentToolError(shown
+                ? "The page shows \(path), a file outside this task's folders, and the person did not allow opening it."
+                : "The person did not allow opening \(path).")
+        }
+        openedOutsideFolders[sessionID, default: []].insert(path)
     }
 
     // MARK: - Tools
 
-    private func navigate(_ arguments: JSONValue, on page: BrowserAgentPage) async throws -> AgentToolResult {
+    private func navigate(_ arguments: JSONValue, on page: BrowserAgentPage, sessionID: UUID?) async throws -> AgentToolResult {
         guard let input = arguments["url"]?.stringValue else {
             throw BrowserAgentToolError("browser_navigate needs a url.")
         }
@@ -503,6 +534,8 @@ final class BrowserAgentTools {
         } catch {
             throw BrowserAgentToolError("\(input) is not an address the browser can open.")
         }
+        // A file outside the task's folders, after `..` and symbolic links, opens only as the task's shell could read it.
+        try await allowFile(url, on: page, sessionID: sessionID)
         let mark = page.cdp.eventLog.count
         let blockedMark = page.blockedNavigations.count
         let result = try await send(page, "Page.navigate", ["url": .string(url)], timeout: loadTimeout)

@@ -53,7 +53,7 @@ final class BrowserKeyCodeTests: XCTestCase {
         XCTAssertEqual(BrowserKeyCodes.windowsKeyCode(forMacKeyCode: 0x38), 0x10)  // Shift
         XCTAssertEqual(BrowserKeyCodes.windowsKeyCode(forMacKeyCode: 0x37), 0x5B)  // Command
         XCTAssertEqual(BrowserKeyCodes.windowsKeyCode(forMacKeyCode: 0x52), 0x60)  // Keypad 0
-        XCTAssertEqual(BrowserKeyCodes.windowsKeyCode(forMacKeyCode: 0x68), 0x15)  // 한/영 (Kana)
+        XCTAssertEqual(BrowserKeyCodes.windowsKeyCode(forMacKeyCode: 0x68), 0x15)  // Han/Yeong (Kana)
         XCTAssertEqual(BrowserKeyCodes.inputMethodProcessKey, 229)
         XCTAssertEqual(Set(BrowserKeyCodes.windowsKeyCodes.keys).count, BrowserKeyCodes.windowsKeyCodes.count)
     }

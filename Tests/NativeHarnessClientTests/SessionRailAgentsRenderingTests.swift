@@ -179,11 +179,11 @@ final class SessionRailAgentsRenderingTests: XCTestCase {
         let directory = try WindowlessRender.directory(Self.folder)
         let folder = URL(filePath: "/tmp/session-rail-agents-qa/notes-app", directoryHint: .isDirectory)
         let parent = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: URL(filePath: "/tmp/claude"),
-                                   title: "출시 작업 진행 상황 확인", status: .running, providerSessionID: "saved")
+                                   title: "Check the launch progress", status: .running, providerSessionID: "saved")
         let claudeChild = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: URL(filePath: "/tmp/claude"),
-                                        title: "Steam 분류 저장", status: .waitingForApproval, parentTaskID: parent.id)
+                                        title: "Save the Steam categories", status: .waitingForApproval, parentTaskID: parent.id)
         let codexChild = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: URL(filePath: "/tmp/codex"),
-                                       title: "Apple 인증서·공증 설정", status: .ready, completionState: .completed,
+                                       title: "Set up Apple certificates and notarization", status: .ready, completionState: .completed,
                                        parentTaskID: parent.id)
         var builder = TranscriptBuilder()
         builder.appendUser("Save the screenshot categories")
@@ -192,11 +192,11 @@ final class SessionRailAgentsRenderingTests: XCTestCase {
         let request = try XCTUnwrap(TranscriptConversationProjection.presentation(
             from: builder.entries, harness: .claudeCode, status: .waitingForApproval, latestTurnIsComplete: false
         ).turns.last?.requests.first)
-        let questions = [CodexAsyncQuestion(title: "App Store Connect의 새 약관에 동의할까요?",
-                                            options: ["동의하고 진행", "API 키 단계 건너뛰기"],
+        let questions = [CodexAsyncQuestion(title: "Accept the new App Store Connect terms?",
+                                            options: ["Accept and continue", "Skip the API key step"],
                                             itemID: CodexAsyncQuestionReply.itemID(messageID: "q1", index: 0))]
         let queuedChild = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: URL(filePath: "/tmp/claude"),
-                                        title: "스크린샷 캡션 번역", createdAt: Date(), parentTaskID: parent.id)
+                                        title: "Translate the screenshot captions", createdAt: Date(), parentTaskID: parent.id)
         let queuedRun = SessionRailAgents.Run(id: UUID(), harness: .codex, model: "gpt-5.5", prompt: "Check the release notes",
                                               state: .queued, startedAt: Date())
         let children = [
@@ -249,13 +249,13 @@ final class SessionRailAgentsRenderingTests: XCTestCase {
             XCTAssertEqual(decisions.value.map(\.0), [claudeChild.id], "It goes to the child, not the task")
             XCTAssertEqual(decisions.value.map(\.1), ["perm-push"])
 
-            XCTAssertTrue(host.hosting.pressElement { $0 == "API 키 단계 건너뛰기" })
+            XCTAssertTrue(host.hosting.pressElement { $0 == "Skip the API key step" })
             host.settle(passes: 8, interval: 0.04)
             XCTAssertTrue(host.hosting.pressElement { $0 == L10n.string("Send") })
             host.settle(passes: 8, interval: 0.04)
             XCTAssertEqual(replies.value.map(\.0), [codexChild.id])
             let answered = CodexAsyncQuestionReply.answers(in: replies.value.first?.1 ?? "")
-            XCTAssertEqual(answered?.map(\.answer), ["API 키 단계 건너뛰기"])
+            XCTAssertEqual(answered?.map(\.answer), ["Skip the API key step"])
             XCTAssertEqual(answered?.map(\.questionItemID), [questions[0].itemID])
         }
     }
@@ -316,7 +316,7 @@ private final class AgentsRailFixture {
         self.runBuilder = runBuilder
 
         var builder = TranscriptBuilder()
-        builder.appendUser("파서 작업을 나눠서 해 줘")
+        builder.appendUser("Split up the parser work")
         let base = try SessionRailAgentsTests.claudeEntries()
         builder.apply(.activityStarted(HarnessActivity(
             id: "ra1", kind: "mcp__yardlet__run_agent", title: "run_agent",

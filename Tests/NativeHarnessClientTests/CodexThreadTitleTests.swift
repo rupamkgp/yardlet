@@ -4,7 +4,7 @@ import XCTest
 /// A thread Yardlet starts is named from its first request the way the official Codex app names
 /// one: a short turn on an ephemeral read-only thread, then `thread/name/set`.
 final class CodexThreadTitleTests: XCTestCase {
-    private let request = "test_calc.py를 실행해서 실패하는 테스트를 찾고 calc.py를 고쳐줘."
+    private let request = "Run test_calc.py, find the failing tests, and fix calc.py."
 
     func testFirstRequestNamesTheThreadThroughAnEphemeralSideTurn() async throws {
         let transport = scriptedTransport(nameResponses: 1)
@@ -14,7 +14,7 @@ final class CodexThreadTitleTests: XCTestCase {
             localSessionID: UUID(), workspaceURL: URL(filePath: "/tmp/yardlet-sandbox"), initialPrompt: request))
 
         try await waitUntil { await transport.requestMethods.filter { $0 == "turn/start" }.count == 2 }
-        await finishSideTurn(on: transport, finalMessage: #"{"title":"calc.py 실패 테스트 수정"}"#)
+        await finishSideTurn(on: transport, finalMessage: #"{"title":"Fix failing calc.py tests"}"#)
         try await waitUntil { await transport.requestMethods.contains("thread/name/set") }
 
         let requests = await transport.requests
@@ -34,10 +34,10 @@ final class CodexThreadTitleTests: XCTestCase {
         XCTAssertTrue(sideTurn["input"]?.arrayValue?.first?["text"]?.stringValue?.contains(request) == true)
         XCTAssertEqual(requests[6].params["threadId"]?.stringValue, "title-thread")
         XCTAssertEqual(requests[7].params["threadId"]?.stringValue, "thread-1")
-        XCTAssertEqual(requests[7].params["name"]?.stringValue, "calc.py 실패 테스트 수정")
+        XCTAssertEqual(requests[7].params["name"]?.stringValue, "Fix failing calc.py tests")
 
         let state = try await adapter.presentationState(for: handle)
-        XCTAssertEqual(state.thread?.name, "calc.py 실패 테스트 수정")
+        XCTAssertEqual(state.thread?.name, "Fix failing calc.py tests")
         XCTAssertFalse(state.thread?.turns.contains { $0.id == "title-turn" } ?? false,
             "The side turn never reaches the task's own timeline")
     }
@@ -51,7 +51,7 @@ final class CodexThreadTitleTests: XCTestCase {
         try await waitUntil { await transport.requestMethods.filter { $0 == "turn/start" }.count == 2 }
 
         try await adapter.setThreadName("Calculator", for: handle)
-        await finishSideTurn(on: transport, finalMessage: #"{"title":"calc.py 실패 테스트 수정"}"#)
+        await finishSideTurn(on: transport, finalMessage: #"{"title":"Fix failing calc.py tests"}"#)
         try await waitUntil { await transport.requestMethods.contains("thread/unsubscribe") }
         try await Task.sleep(for: .milliseconds(50))
 

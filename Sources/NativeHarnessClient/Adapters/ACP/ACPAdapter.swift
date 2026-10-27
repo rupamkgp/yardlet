@@ -87,7 +87,7 @@ actor ACPAdapter:
         agentToolServerByLocalSessionID[localSessionID] = server
     }
 
-    /// Yardlet 지침 for the session this task creates or loads, as Grok's `_meta.rules` on the
+    /// Yardlet instructions for the session this task creates or loads, as Grok's `_meta.rules` on the
     /// session request. The other ACP agents document no per-session route and receive nothing.
     func setYardletInstructions(_ instructions: YardletInstructionsDelivery?, for localSessionID: UUID) {
         yardletInstructionsByLocalSessionID[localSessionID] = instructions

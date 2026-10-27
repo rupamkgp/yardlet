@@ -50,7 +50,7 @@ enum ClaudeConversationFixture {
         ])
         return [
             entry(.compaction(HarnessContextCompaction(phase: .completed, tokensBefore: 167_012, tokensAfter: 41_230))),
-            entry(.user(text: "calc.py 테스트를 고쳐 줘")),
+            entry(.user(text: "Fix the calc.py tests")),
             entry(.reasoning(text: "The add function subtracts.", isStreaming: false)),
             entry(.assistant(text: "I'll run the tests first.", isStreaming: false)),
             entry(.activity(HarnessActivity(id: "toolu_bash", kind: "Bash", title: "Bash", input: "python3 test_calc.py",

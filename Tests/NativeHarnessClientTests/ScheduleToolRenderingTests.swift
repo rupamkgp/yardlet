@@ -107,7 +107,7 @@ final class ScheduleToolRenderingTests: XCTestCase {
                                         toolCallID: "toolu_create")
         let start = Self.now
         let entries = [
-            TranscriptEntry(createdAt: start, content: .user(text: "평일 아침 9시에 밤사이 빌드를 확인해 줘")),
+            TranscriptEntry(createdAt: start, content: .user(text: "Check the overnight build at 9 every weekday morning")),
             TranscriptEntry(createdAt: start.addingTimeInterval(4),
                             content: .assistant(text: "I'll schedule that.", isStreaming: false)),
             TranscriptEntry(createdAt: start.addingTimeInterval(6), content: .activity(HarnessActivity(
@@ -165,7 +165,7 @@ final class ScheduleToolRenderingTests: XCTestCase {
             return TranscriptEntry(createdAt: Self.now.addingTimeInterval(offset - 600), content: content)
         }
         var entries = [
-            entry(.user(text: "평일 아침 9시에 밤사이 빌드를 확인해 줘")),
+            entry(.user(text: "Check the overnight build at 9 every weekday morning")),
             entry(.assistant(text: "I'll look at how the builds report first.", isStreaming: false)),
             entry(.activity(HarnessActivity(id: "toolu_read", kind: "Read", title: "Read",
                                             input: "scripts/nightly.sh", output: "…"), state: .completed))
@@ -189,7 +189,7 @@ final class ScheduleToolRenderingTests: XCTestCase {
         turn.items = [
             decoder.item(from: .object([
                 "id": .string("u1"), "type": .string("userMessage"),
-                "content": .array([.object(["type": .string("text"), "text": .string("평일 아침 9시에 빌드 확인 예약해 줘")])])
+                "content": .array([.object(["type": .string("text"), "text": .string("Schedule a build check for 9 every weekday morning")])])
             ]), fallbackID: "u1", lifecycle: .completed),
             decoder.item(from: .object([
                 "id": .string("mcp-1"), "type": .string("mcpToolCall"), "server": .string("yardlet"),

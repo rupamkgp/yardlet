@@ -245,7 +245,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
         let calendars = try json(try await call(center, "calendar_list_calendars"))
         XCTAssertEqual(calendars["calendars"]?.arrayValue?.compactMap { $0["id"]?.stringValue },
                        ["person@example.test", FakeGoogleWorkspace.holidays])
-        XCTAssertEqual(calendars["calendars"]?.arrayValue?.last?["summary"], .string("공휴일"), "The person's own name for it")
+        XCTAssertEqual(calendars["calendars"]?.arrayValue?.last?["summary"], .string("Days off"), "The person's own name for it")
         XCTAssertEqual(calendars["nextPageToken"], .string("calendars-2"))
         XCTAssertNil(calendars["calendars"]?.arrayValue?.first?["etag"])
         XCTAssertEqual(google.calls("GET", "/calendar/v3/users/me/calendarList").last?.value("maxResults"), "100")

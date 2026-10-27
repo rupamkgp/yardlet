@@ -200,7 +200,7 @@ struct VisualFixtureScenario: Sendable {
                 (.claudeCode, "anthropic", 4, 0.40, 60)
             ]
             for (index, row) in rows.enumerated() {
-                let connection = ProviderConnection(id: "fixture-account-\(index)", name: "계정 \(row.account)",
+                let connection = ProviderConnection(id: "fixture-account-\(index)", name: "Account \(row.account)",
                     harness: row.harness, providerID: row.provider, homePath: "/tmp/yardlet-account-fixture-\(index)", credentialSelector: nil)
                 try? connections.save(connection)
                 connections.publish(HarnessAccountSnapshot(id: connection.id, harness: row.harness, providerID: row.provider,
@@ -322,7 +322,7 @@ struct VisualFixtureScenario: Sendable {
                 .deletingLastPathComponent()
                 .appending(path: "yardlet-worktree-blue", directoryHint: .isDirectory),
             runtimeExecutableURL: URL(filePath: "/usr/bin/true"),
-            title: "워크트리에서 만든 작업 — 원래 프로젝트 아래에 표시",
+            title: "Task made in a worktree, shown under its original project",
             titleOrigin: .automatic,
             status: .completed,
             updatedAt: sessions.map(\.updatedAt).min() ?? Date(),
@@ -365,11 +365,11 @@ struct VisualFixtureScenario: Sendable {
                 id: UUID(uuidString: String(format: "00000000-0000-0000-0002-%012d", number))!,
                 harness: HarnessCatalog.builtIns[(number - 3) % HarnessCatalog.builtIns.count].id,
                 workspaceURL: number <= 24 ? workspaceURL
-                    : workspaceURL.appending(path: number <= 32 ? "모바일 클라이언트 화면 검토" : "Release Studio"),
+                    : workspaceURL.appending(path: number <= 32 ? "Mobile Client Screen Review" : "Release Studio"),
                 runtimeExecutableURL: URL(filePath: "/usr/bin/true"),
                 title: number == 40
-                    ? "최종 검색 복귀 — 긴 작업 제목과 하네스 표시를 함께 확인하는 작업 40"
-                    : "작업 \(number) · 대화와 프로젝트 화면의 긴 제목을 확인합니다",
+                    ? "Final search return: task 40 checks a long task title next to the harness label"
+                    : "Task \(number) · checks long titles in the conversation and project views",
                 status: .completed,
                 updatedAt: date.addingTimeInterval(-Double(number)),
                 hasUnreadUpdate: number.isMultiple(of: 5),
@@ -1400,7 +1400,7 @@ struct VisualFixtureScenario: Sendable {
                     @@ -12,7 +12,8 @@ struct CodexTaskReducer {
                          func apply(_ event: Event) {
                     -        state.items.append(event.item)
-                    +        // 같은 항목이 다시 오면 교체한다.
+                    +        // Replace the item when the same one arrives again.
                     +        state.items.upsert(event.item)
                              publish()
                          }

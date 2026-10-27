@@ -300,7 +300,7 @@ final class AppleConnectorsRenderingTests: XCTestCase {
         let request = PermissionRequest(id: "perm-asc", title: text.title, detail: text.detail, command: nil, toolCallID: "toolu_submit")
         let start = Date(timeIntervalSince1970: 1_793_000_000)
         let entries = [
-            TranscriptEntry(createdAt: start, content: .user(text: "1.2.0 심사 제출해줘")),
+            TranscriptEntry(createdAt: start, content: .user(text: "Submit 1.2.0 for review")),
             TranscriptEntry(createdAt: start.addingTimeInterval(4),
                             content: .assistant(text: "I'll submit version 1.2.0 for App Review.", isStreaming: false)),
             TranscriptEntry(createdAt: start.addingTimeInterval(6), content: .activity(HarnessActivity(

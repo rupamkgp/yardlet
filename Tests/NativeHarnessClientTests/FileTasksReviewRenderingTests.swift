@@ -64,14 +64,14 @@ final class FileTasksReviewRenderingTests: XCTestCase {
 
     private static let now = Date()
     private static let edited = [
-        FileTasks.Item(id: UUID(), title: "홈 화면 재설계", harness: .claudeCode, at: now, callID: "toolu_home"),
-        FileTasks.Item(id: UUID(), title: "Google 쿠키 정리", harness: .codex, at: now.addingTimeInterval(-86_400),
+        FileTasks.Item(id: UUID(), title: "Redesign the home screen", harness: .claudeCode, at: now, callID: "toolu_home"),
+        FileTasks.Item(id: UUID(), title: "Clean up Google cookies", harness: .codex, at: now.addingTimeInterval(-86_400),
                        callID: "call_cookies"),
-        FileTasks.Item(id: UUID(), title: "공개 저장소 준비", harness: .claudeCode, at: now.addingTimeInterval(-4 * 86_400),
+        FileTasks.Item(id: UUID(), title: "Prepare the public repository", harness: .claudeCode, at: now.addingTimeInterval(-4 * 86_400),
                        callID: "toolu_release")
     ]
     private static let readOnly = [
-        FileTasks.Item(id: UUID(), title: "Yardlet 병합 담당", harness: .claudeCode, at: now, callID: "toolu_read")
+        FileTasks.Item(id: UUID(), title: "Yardlet merge duty", harness: .claudeCode, at: now, callID: "toolu_read")
     ]
 
     private func folder() throws -> URL {

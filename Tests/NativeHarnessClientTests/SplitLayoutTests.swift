@@ -243,9 +243,9 @@ final class SplitLayoutTests: XCTestCase {
         store.combine(b, with: a)
         let split = try XCTUnwrap(store.activeSplit)
 
-        store.rename(split.id, to: "  리뷰  ")
+        store.rename(split.id, to: "  Review  ")
         store.togglePinned(split.id)
-        XCTAssertEqual(store.splits.first?.customName, "리뷰")
+        XCTAssertEqual(store.splits.first?.customName, "Review")
         XCTAssertEqual(store.splits.first?.isPinned, true)
         store.rename(split.id, to: " ")
         XCTAssertNil(store.splits.first?.customName)
@@ -307,11 +307,11 @@ final class SplitLayoutTests: XCTestCase {
         store.adopt(selection: nil, knownSessionIDs: [], isFinal: true)
         let a = UUID(), b = UUID()
         store.combine(b, with: a)
-        store.rename(try XCTUnwrap(store.activeSplit).id, to: "검토")
+        store.rename(try XCTUnwrap(store.activeSplit).id, to: "Review")
         store.persistNow()
 
         let restored = SplitStore(repository: repository)
-        XCTAssertEqual(restored.splits.first?.customName, "검토")
+        XCTAssertEqual(restored.splits.first?.customName, "Review")
         XCTAssertEqual(restored.splits.first?.sessionIDs, [a, b])
         XCTAssertEqual(restored.selection, store.selection)
 
@@ -329,7 +329,7 @@ final class SplitLayoutTests: XCTestCase {
         let review = UUID(), release = UUID(), focused = UUID()
         let desks = """
         {"version":1,"activeDeskID":"\(review.uuidString)","desks":[
-          {"id":"\(review.uuidString)","name":"검토","focusedPaneID":"\(focused.uuidString)","panes":[
+          {"id":"\(review.uuidString)","name":"Review","focusedPaneID":"\(focused.uuidString)","panes":[
             {"id":"\(UUID().uuidString)","column":0,"row":0,"sessionID":"\(a.uuidString)"},
             {"id":"\(focused.uuidString)","column":1,"row":0,"sessionID":"\(b.uuidString)"},
             {"id":"\(UUID().uuidString)","column":1,"row":1,"sessionID":"\(c.uuidString)"}]},
@@ -342,7 +342,7 @@ final class SplitLayoutTests: XCTestCase {
         let snapshot = try XCTUnwrap(repository.load())
         XCTAssertEqual(snapshot.splits.count, 1)
         let split = try XCTUnwrap(snapshot.splits.first)
-        XCTAssertEqual(split.customName, "검토")
+        XCTAssertEqual(split.customName, "Review")
         XCTAssertEqual(split.sessionIDs, [a, b, c])
         XCTAssertEqual(split.focusedSessionID, b)
         XCTAssertEqual(snapshot.selection, .split(split.id))

@@ -1,7 +1,7 @@
 import Foundation
 import YardletAgentTools
 
-// Suggested tasks (`spawn_task`, docs/AGENT_BROWSER_TOOLS.md, "작업 제안 도구"): the agent's call is answered here, a chip's
+// Suggested tasks (`spawn_task`, docs/AGENT_BROWSER_TOOLS.md, "Task suggestion tools"): the agent's call is answered here, a chip's
 // Start and Do it here act here, and a task started from a chip or its draft is that suggestion's.
 
 extension AppModel: TaskSuggestionToolHandling {

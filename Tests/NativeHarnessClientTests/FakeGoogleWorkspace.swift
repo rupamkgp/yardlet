@@ -115,7 +115,7 @@ final class FakeGoogleWorkspace: ConnectorHTTPTransport, @unchecked Sendable {
                 .object(["id": .string(account), "summary": .string(account), "timeZone": .string("Asia/Seoul"),
                          "accessRole": .string("owner"), "primary": .bool(true), "etag": .string("\"1\"")]),
                 .object(["id": .string(Self.holidays), "summary": .string("Holidays in South Korea"),
-                         "summaryOverride": .string("공휴일"), "timeZone": .string("Asia/Seoul"), "accessRole": .string("reader")])
+                         "summaryOverride": .string("Days off"), "timeZone": .string("Asia/Seoul"), "accessRole": .string("reader")])
             ]), "nextPageToken": .string("calendars-2")])
         case ("GET", "users/me/calendarList/primary"):
             return reply(url, 200, ["id": .string(account), "timeZone": .string("Asia/Seoul"), "primary": .bool(true)])

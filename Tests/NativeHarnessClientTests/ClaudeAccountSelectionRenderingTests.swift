@@ -32,7 +32,7 @@ final class ClaudeAccountSelectionRenderingTests: XCTestCase {
                 usage: usage, canLogin: false, canLogout: true), for: connection)
         }
         let session = SessionRecord(harness: .claudeCode, workspaceURL: root, runtimeExecutableURL: URL(filePath: "/tmp/claude"),
-            title: "Yardlet 계정 전환", connection: accounts[0])
+            title: "Switch Yardlet account", connection: accounts[0])
         let directory = try WindowlessRender.directory("claude-account-qa")
         for appearance in [ColorScheme.light, .dark] {
             // The sheet lists these rows inside a ScrollView, which ImageRenderer does not draw.

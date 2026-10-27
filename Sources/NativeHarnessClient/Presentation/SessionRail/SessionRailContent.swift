@@ -366,7 +366,7 @@ struct SessionRailContent: Equatable {
     }
 
     /// A window's name without its "limit" word, for a folded header: `5 hour limit` → `5 hour`,
-    /// `5시간 한도` → `5시간`, `5h limit` → `5h`.
+    /// the Korean "limit" word likewise, `5h limit` → `5h`.
     static func shortWindowName(_ name: String) -> String {
         var short = name.trimmingCharacters(in: .whitespaces)
         for suffix in [" limit", " Limit", " 한도", "한도"] where short.hasSuffix(suffix) {

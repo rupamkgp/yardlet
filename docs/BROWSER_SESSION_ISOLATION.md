@@ -1,284 +1,394 @@
-# 작업마다 브라우저 세션 격리
+# Browser session isolation per task
 
-상태: 구현(2026-10-24, 같은 날 디스크 프로필 경로를 고침: 7절. 2026-10-25 쿠키 복사가 쿠키 모양을 바꾸던 것을 고침: 8절. 2026-10-26 다른 브라우저에서 로그인 가져오기: 10절). 브라우저 호스트 계약은 [BROWSER_HOST](BROWSER_HOST.md)
-3절 "프로필", 금고는 [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)에 있다.
+Status: implemented (2026-10-24; the disk profile path was fixed the same day: section 7. On 2026-10-25 the cookie copy
+that changed the shape of cookies was fixed: section 8. On 2026-10-26, importing sign-ins from another browser: section
+10). The browser host contract is in [BROWSER_HOST](BROWSER_HOST.md) section 3, "Profiles", and the vault is in
+[BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md).
 
-## 1. 계기와 목표
+## 1. Background and goals
 
-사용자: "ai 브라우저는 자격증명같은 건 공유하면서도 쿠키,세션,로컬스토리지로 공유되는 현재 로그인계정 같은 값들을 각 세션별로 격리해야 원활한
-작업이 되잖아 이것도 필요할듯".
+The need: an AI browser should share things like credentials, but keep values such as the currently signed-in account,
+which cookies, sessions and local storage carry, separate for each session, so that work goes smoothly.
 
-전에는 모든 작업의 탭이 프로필 하나(`~/Library/Application Support/Yardlet/Browser/Default`)를 함께 썼다. 쿠키·저장소·캐시가 작업 사이에
-섞였고, 두 작업이 같은 사이트에 다른 계정으로 로그인하면 서로 덮어썼다. 이제 금고의 자격 증명(비밀번호·TOTP·Yardlet 패스키)과 Touch ID
-패스키는 모든 작업이 함께 쓰고, "지금 로그인 상태"(쿠키, localStorage, sessionStorage, IndexedDB, 캐시)는 작업마다 따로 둔다.
+Before, the tabs of all tasks shared one profile (`~/Library/Application Support/Yardlet/Browser/Default`). Cookies,
+storage and cache mixed between tasks, and when two tasks signed in to the same site with different accounts, they
+overwrote each other. Now all tasks share the vault's credentials (passwords, TOTP, Yardlet passkeys) and Touch ID
+passkeys, and each task keeps its own "current sign-in state" (cookies, localStorage, sessionStorage, IndexedDB, cache).
 
-## 2. 두 앱과 다른 브라우저는 어떻게 하나
+## 2. How the two apps and other browsers do it
 
-번들은 바이트로만 읽었다(실행하지 않음). Aside·Ego는 제작사 문서로 읽었다.
+The bundles were read as bytes only (not run). Aside and Ego were read through their makers' docs.
 
-| 제품 | 작업마다 로그인 상태 | 근거 |
+| Product | Sign-in state per task | Evidence |
 |---|---|---|
-| Claude 앱 3.1623.3 | 설정 "Keep cookies"로 고른다: "Until quit"(기본, 비영속, 작업 폴더별), "Shared"(모든 세션 공유, `persist:launch-preview-cowork-shared`), "Per session"(세션마다 `persist:launch-preview-session-<세션 ID>`). 세션을 분기하면 부모의 쿠키를 복사한다(`seedForkedPreviewCookies`). 세션을 지우면 그 세션의 저장소를 지우고(`clearData`), 보관은 지우지 않는다. 에이전트와 사람은 같은 탭의 저장소를 쓴다 | `app.asar` `index.chunk-DylQWxwC.js`(`launchPreviewStorage: "none" \| "shared" \| "session"`), `ion-dist` 설정 문구 |
-| Codex 앱 26.1016 | 없음. 로컬 내장 브라우저의 모든 스레드가 `persist:codex-browser-app` 하나를 쓴다. 스레드마다 다른 것은 탭 소유와 복원 정보뿐이고, 보관·삭제가 로그인 저장소를 지우지 않는다 | `main-JI9qDiXp.js`(`session.fromPartition(Vu("app"))`), `src-CSKkIr_z.js` |
-| Aside | 작업은 기본 프로필을 함께 쓰고, "시크릿" 작업만 프로필 상태 없이 돈다. 금고(Aside Vault)가 자격 증명을 함께 쓴다 | 도움말 Run tasks |
-| Claude 앱 3.6556.2(가져오기) | 기능 플래그 `desktop_ccd_chrome_import` 뒤에 "Chrome에서 로그인 가져오기"가 있다: Chrome·Edge·Brave·Chromium·Firefox의 프로필을 고르고 사이트(등록 도메인)를 골라 그 쿠키와 localStorage를 미리보기 저장소에 넣는다. 기존 쿠키는 지우지 않고 덮어쓰며, 가져온 사이트 목록과 지우기가 있다(10절) | `app.asar` `index.chunk-TCY6lWOp.js`(`runChromeImport`, `listChromeImportSites`) |
-| ego(lite) | Space(작업)마다 BrowserContext 하나, 자기 쿠키와 저장소. 그러면서도 브라우저에 있는 로그인을 에이전트가 이어 받는다(옮기는 방법은 문서에 없음). 작업에 Profile을 지정할 수도 있다 | 문서 Space, 변경 기록 0.4.4.15 |
+| Claude app 3.1623.3 | Chosen with the "Keep cookies" setting: "Until quit" (default, not persistent, per working folder), "Shared" (shared by all sessions, `persist:launch-preview-cowork-shared`), "Per session" (`persist:launch-preview-session-<session ID>` for each session). Forking a session copies the parent's cookies (`seedForkedPreviewCookies`). Deleting a session clears that session's storage (`clearData`); archiving does not. The agent and the person use the same tab's storage | `app.asar` `index.chunk-DylQWxwC.js` (`launchPreviewStorage: "none" \| "shared" \| "session"`), the setting text in `ion-dist` |
+| Codex app 26.1016 | None. All threads of the local built-in browser use the single `persist:codex-browser-app`. Only tab ownership and restore information differ per thread, and archiving or deleting does not clear the sign-in storage | `main-JI9qDiXp.js` (`session.fromPartition(Vu("app"))`), `src-CSKkIr_z.js` |
+| Aside | Tasks share the default profile, and only "Incognito" tasks run without profile state. The vault (Aside Vault) shares credentials | Help page Run tasks |
+| Claude app 3.6556.2 (import) | Behind the feature flag `desktop_ccd_chrome_import` there is "Import sign-ins from Chrome": choose a Chrome, Edge, Brave, Chromium or Firefox profile and then sites (registrable domains), and their cookies and localStorage go into the preview storage. Existing cookies are overwritten, not cleared, and there is a list of imported sites with a way to remove them (section 10) | `app.asar` `index.chunk-TCY6lWOp.js` (`runChromeImport`, `listChromeImportSites`) |
+| ego(lite) | One BrowserContext per Space (task), with its own cookies and storage. Even so, the agent picks up the sign-ins already in the browser (the docs do not say how they are carried over). A Profile can also be assigned to a task | Docs Space, changelog 0.4.4.15 |
 
-Yardlet은 Claude 앱의 "Per session"과 ego(lite)의 Space를 합친 모양이다: 작업마다 저장소를 두고, 새 작업은 로그인된 채로 시작하며, 자격 증명은
-금고로 함께 쓴다.
+Yardlet combines the Claude app's "Per session" and ego(lite)'s Space: storage per task, new tasks start signed in, and
+credentials are shared through the vault.
 
-## 3. 정한 것(사용자가 자리를 비운 동안 추천안으로)
+## 3. Decisions (the recommended options, taken while the user was away)
 
-| 질문 | 정한 것 | 이유 |
+| Question | Decision | Reason |
 |---|---|---|
-| 디스크 폴더인가 메모리인가 | 디스크 폴더(`Browser/Task-<키>`, `CefRequestContext`의 `cache_path`). Chromium은 root cache 바로 아래 폴더만 디스크 프로필로 연다 | 호스트는 탭이 없으면 60초 뒤 끝난다. 메모리 컨텍스트면 그때마다 로그인이 사라진다 |
-| 새 작업은 빈 상태로 시작하나 | 기본 프로필의 쿠키를 복사해 시작한다. 하위 작업은 부모 작업의 쿠키로 시작한다 | 매번 다시 로그인하면 새 기기 알림·2단계 인증이 작업마다 생긴다. Claude 앱도 분기 때 부모 쿠키를 복사한다. localStorage·IndexedDB는 복사하지 않는다(그런 사이트는 금고가 다시 로그인한다) |
-| 사람이 패널에서 로그인하면 | 그 작업에 남고, 그 사이트(등록 도메인)의 쿠키를 기본 프로필에도 복사한다. 이미 돌고 있는 다른 작업은 바뀌지 않는다 | 기본 프로필이 "사람이 지금 쓰는 계정"을 따라가야 새 작업이 그 계정으로 시작한다. 에이전트가 금고로 한 로그인은 그 작업에만 남는다 |
-| 하위 작업은 물려받나 | 처음 열 때 부모의 쿠키를 복사한다. 그 뒤로는 따로다 | Claude 앱의 분기와 같다 |
-| 새 작업 화면의 탭 | 새 작업 화면은 자기 프로필 키를 갖고, 그 탭이 넘어간 작업은 그 키를 이어 쓴다. 새 작업 화면은 새 키를 받는다 | 넘어간 탭의 페이지가 그대로이므로 저장소도 같아야 한다 |
-| 보관·삭제 | 둘 다 그 작업의 폴더를 지운다. 호스트가 폴더를 열고 있지 않을 때(호스트가 끝날 때) 남은 작업에 속하지 않는 폴더를 지우고, Chromium이 `Local State`에 남긴 그 프로필의 기록도 지운다 | 지운 뒤 흔적이 남지 않게. Claude 앱은 삭제 때만 지운다 |
-| 켜고 끄기 | 설정 › 일반 "쿠키 보관": "작업마다"(기본) / "모든 작업이 함께"(전과 같음) | Claude 앱의 "Keep cookies"와 같은 자리의 설정. "Until quit"은 호스트가 자주 끝나는 Yardlet에서 뜻이 달라 두지 않았다 |
-| 다른 브라우저의 로그인(2026-10-26) | 사람이 브라우저 패널의 페이지 메뉴에서 고른 사이트의 쿠키를 기본 프로필과 그 작업의 프로필에 넣는다. 그 사이트에 있던 쿠키는 지운다 | 패스키가 다른 브라우저에만 있는 사이트를 Yardlet에서 쓰게. 이미 돌고 있는 다른 작업은 사람의 로그인 복사처럼 그대로 둔다(10절) |
-| Touch ID 패스키 | 새 작업 프로필에 기본 프로필의 `webauthn.touchid.metadata_secret`를 넣는다 | Chromium은 Touch ID 패스키의 메타데이터를 프로필마다 이 키로 읽는다. 없으면 작업마다 패스키가 보이지 않는다 |
+| Disk folder or memory | A disk folder (`Browser/Task-<key>`, the `cache_path` of `CefRequestContext`). Chromium opens as a disk profile only a folder directly under the root cache | The host ends 60 seconds after it has no tabs. With an in-memory context, sign-ins would be lost every time |
+| Does a new task start empty | It starts with a copy of the default profile's cookies. A child task starts with the parent task's cookies | Signing in again every time would bring new-device alerts and two-step verification in every task. The Claude app also copies the parent's cookies on fork. localStorage and IndexedDB are not copied (on such sites the vault signs in again) |
+| When the person signs in in the panel | The sign-in stays in that task, and that site's (registrable domain's) cookies are also copied to the default profile. Other tasks that are already running do not change | The default profile must follow "the account the person uses now" so that new tasks start with that account. A sign-in the agent made with the vault stays only in its task |
+| Do child tasks inherit | When first opened, they copy the parent's cookies. After that they are separate | Same as the Claude app's fork |
+| Tabs on the new task screen | The new task screen has its own profile key, and the task its tab moves to keeps using that key. The new task screen gets a new key | The moved tab's page stays as it is, so its storage must stay the same too |
+| Archive and delete | Both delete that task's folder. When the host does not have the folders open (when the host ends), folders that belong to no remaining task are deleted, along with the record of that profile that Chromium left in `Local State` | So that nothing is left behind after removal. The Claude app deletes only on delete |
+| Turning it on and off | Settings › General "Keep cookies": "Per task" (default) / "Shared by all tasks" (as before) | A setting in the same place as the Claude app's "Keep cookies". "Until quit" was left out, because it would mean something different in Yardlet, whose host ends often |
+| Sign-ins from another browser (2026-10-26) | The cookies of the sites the person chose from the page menu of the browser panel go into the default profile and that task's profile. The cookies those sites had before are deleted | So that sites whose passkey exists only in another browser can be used in Yardlet. Other tasks that are already running stay as they are, as with copying the person's sign-in (section 10) |
+| Touch ID passkeys | The default profile's `webauthn.touchid.metadata_secret` is put into each new task profile | Chromium reads Touch ID passkey metadata per profile with this key. Without it, the passkeys would not show in each task |
 
-## 4. 구조
+## 4. Structure
 
-- **CEF 브리지:** 요청 컨텍스트를 폴더 경로마다 하나 만들고(`cef_request_context_create_context`, 세션 쿠키도 저장), 그 폴더를 쓰는 브라우저와
-  쿠키 복사가 있는 동안 둔다. 마지막이 끝나면 놓는다. 쿠키 복사는 원본의 쿠키를 모두 읽고(`visit_all_cookies`), 쿠키마다의 주소로 원본에 다시
-  물어(`visit_url_cookies`, 파티션 없는 쿠키만 답함) 답에 든 쿠키만 대상에 넣는다(`set_cookie`, 호스트 전용 쿠키는 도메인을 비워 호스트 전용으로).
-  끝나면 대상 저장소를 디스크에 반영한 뒤(`flush_store`) 알린다(8절). 브라우저는 모두 합쳐 16개(호스트 상한), 컨텍스트는 32개까지다.
-- **호스트:** `open` 명령의 `profile`(`key`, `seedFrom`)을 받아 `<root cache>/Task-<key>`에서 탭을 연다. 키는 UUID 꼴만 받아 다른 폴더를 가리키지 못한다.
-  Chromium이 디스크 프로필을 비동기로 읽으므로, 그 프로필이 준비된 뒤(`on_request_context_initialized`) 브라우저를 만든다. 폴더가 새로 생기면 Touch ID
-  키를 넣고, 탭을 about:blank로 연 뒤 시작 쿠키를 복사하고 나서 요청한 주소를 연다(프로필을 기다리거나 복사하는 사이에 온 이동과 DevTools 메시지는 그 뒤로 미룬다).
-  `copyCookies` 명령은 한 프로필의 한 사이트 쿠키를 다른 프로필로 옮긴다. `importCookies` 명령은 다른 브라우저에서 가져온 쿠키로 한 프로필의 고른
-  사이트 쿠키를 바꾼다(10절).
-- **Yardlet:** `BrowserTaskProfiles`가 작업의 키(작업 ID, 새 작업 화면에서 넘어온 작업은 그 화면의 키), 시작 쿠키의 출처(부모 작업의 폴더가 있으면
-  그것, 없으면 기본 프로필), 설정, 정리를 맡는다. `BrowserHostClient`는 작업의 탭을 열 때마다 프로필을 붙이고, 탭이 다른 작업으로 옮겨 가면 알리고,
-  호스트가 끝나면 정리를 부른다. 정리는 저장된 작업 목록을 다 읽은 뒤에만 한다. Chromium은 연 프로필을 모두 `Local State`(`profile.info_cache`,
-  `profile.profiles_order`, `variations_google_groups`)에 적고 폴더가 없어져도 지우지 않으므로, 정리가 폴더 없는 `Task-` 이름도 거기서 지운다.
-- **사람의 로그인:** 금고의 저장 제안이 쓰는 감시(사람이 입력한 비밀번호 칸이 있는 폼의 제출)가 알려 주면, 4초와 12초 뒤 그 사이트의 쿠키를
-  기본 프로필로 복사한다. 금고가 꺼져 있어도 "작업마다"이면 감시는 돈다.
+- **CEF bridge:** It creates one request context per folder path (`cef_request_context_create_context`, which also
+  stores session cookies) and keeps it while browsers or cookie copies use that folder. When the last one ends, it
+  releases the context. A cookie copy reads all of the source's cookies (`visit_all_cookies`), asks the source again
+  with each cookie's address (`visit_url_cookies`, which answers only unpartitioned cookies) and puts only the cookies
+  in that answer into the target (`set_cookie`; a host-only cookie goes in with an empty domain, so it stays host-only).
+  When done, it writes the target store to disk (`flush_store`) and then reports (section 8). There are at most 16
+  browsers in total (the host limit) and 32 contexts.
+- **Host:** It takes the `profile` (`key`, `seedFrom`) of the `open` command and opens the tab in
+  `<root cache>/Task-<key>`. It accepts only keys in UUID form, so a key cannot point at another folder. Chromium reads
+  disk profiles asynchronously, so the browser is created after that profile is ready
+  (`on_request_context_initialized`). When the folder is new, it puts in the Touch ID key, opens the tab at about:blank,
+  copies the starting cookies and then opens the requested address (navigation and DevTools messages that arrive while
+  it waits for the profile or copies wait until it is done). The `copyCookies` command moves one site's cookies from
+  one profile to another. The `importCookies` command replaces the chosen sites' cookies in one profile with cookies
+  imported from another browser (section 10).
+- **Yardlet:** `BrowserTaskProfiles` handles the task's key (the task ID; for a task that came from the new task screen,
+  that screen's key), the source of the starting cookies (the parent task's folder if there is one, otherwise the
+  default profile), the setting and cleanup. `BrowserHostClient` attaches the profile every time it opens a task's tab,
+  reports when a tab moves to another task, and calls cleanup when the host ends. Cleanup runs only after the saved task
+  list has been read in full. Chromium writes every profile it opens into `Local State` (`profile.info_cache`,
+  `profile.profiles_order`, `variations_google_groups`) and does not remove them when the folder disappears, so cleanup
+  also removes `Task-` names without a folder from there.
+- **The person's sign-in:** When the watcher that the vault's save offer uses (submission of a form with a password
+  field the person typed into) reports one, the site's cookies are copied to the default profile 4 and 12 seconds later.
+  With "Per task", the watcher runs even when the vault is off.
 
-## 5. 비용과 한계
+## 5. Costs and limits
 
-- **메모리(2026-10-24 QA, 7절의 고침 뒤 디스크 프로필, 창 없는 탭 8개, 같은 QA 페이지):** 작업마다 프로필이면 프로세스 트리 합 1,162 MiB(브라우저
-  프로세스 232), 같은 탭을 기본 프로필 하나에 열면 1,113 MiB(브라우저 프로세스 197). 차이는 약 49 MiB, 프로필 하나에 6 MiB 안팎이고 대부분 브라우저
-  프로세스(프로필마다의 서비스)다. 렌더러는 두 경우 모두 탭마다 하나(10개)였다. 고치기 전의 첫 측정(1,134 MiB)은 메모리 프로필로 잰 것이다.
-  탭이 늘 때 크게 느는 것은 탭이 그리는 프레임 표면(헬퍼 하나의 footprint 86 → 504 MiB, 상주 메모리는 그대로)이고 격리와 관계없다.
-- **상한:** 브라우저는 모두 합쳐 16개(호스트 상한, 작업마다 9개), 프로필 컨텍스트는 32개까지다. 브라우저 프로세스 하나가 맡는다.
-- 새 작업은 쿠키만 받는다. localStorage·IndexedDB에 로그인 토큰을 두는 사이트는 새 작업에서 다시 로그인해야 한다(금고의 "항상" 항목이면 에이전트가 한다).
-- 파티션 쿠키(CHIPS, 다른 사이트에 끼워진 페이지가 그 최상위 사이트 아래에만 두는 쿠키)는 옮기지 않는다. CEF의 쿠키 관리자는 파티션 키를 받지 않아,
-  넣으면 모든 최상위 사이트가 받는 쿠키가 된다(8절). 새 작업에서 끼워진 위젯은 처음 보는 것처럼 시작한다.
-- 옮긴 쿠키에는 그 쿠키를 심은 scheme과 포트 대신 복사가 쓴 주소의 것(Secure면 https:443, 아니면 http:80)이 남는다. CEF가 원래 값을 알려 주지
-  않는다. CEF 154는 쿠키를 scheme에 묶지 않아(QA `schemeBoundCookies: false`) 보내는 데는 차이가 없다. Claude 앱의 복사도 같은 주소를 쓴다.
-- 사람의 로그인 감지는 비밀번호를 입력한 경우뿐이다. "Google로 로그인" 같은 팝업·OAuth 로그인은 기본 프로필로 옮기지 않는다.
-- 보관한 작업을 되살리면 그 작업의 브라우저는 기본 프로필의 쿠키로 다시 시작한다.
-- 설정을 바꿔도 이미 열린 탭은 그대로다. 그 뒤에 여는 탭부터 따른다.
+- **Memory (2026-10-24 QA, disk profiles after the fix in section 7, 8 windowless tabs, the same QA page):** With a
+  profile per task, the process tree total was 1,162 MiB (browser process 232); with the same tabs opened in the single
+  default profile, 1,113 MiB (browser process 197). The difference is about 49 MiB, around 6 MiB per profile, and most
+  of it is in the browser process (per-profile services). There was one renderer per tab (10) in both cases. The first
+  measurement, before the fix (1,134 MiB), was taken with in-memory profiles. What grows a lot as tabs increase is the
+  frame surfaces the tabs draw (one helper's footprint 86 → 504 MiB, resident memory unchanged), which has nothing to do
+  with isolation.
+- **Limits:** At most 16 browsers in total (the host limit, 9 per task) and 32 profile contexts. One browser process
+  handles them.
+- New tasks receive only cookies. Sites that keep sign-in tokens in localStorage or IndexedDB need a new sign-in in a
+  new task (with an "Always" vault item, the agent does it).
+- Partitioned cookies (CHIPS: cookies that a page embedded in another site keeps only under that top-level site) are not
+  moved. CEF's cookie manager does not take a partition key, so inserting one would make a cookie that every top-level
+  site receives (section 8). In a new task, embedded widgets start as if seen for the first time.
+- A moved cookie keeps, instead of the scheme and port of whatever set it, those of the address the copy used (https:443
+  if Secure, otherwise http:80). CEF does not report the original values. CEF 154 does not bind cookies to schemes (QA
+  `schemeBoundCookies: false`), so sending them makes no difference. The Claude app's copy uses the same addresses.
+- The person's sign-in is detected only when a password was typed. Popup and OAuth sign-ins such as "Sign in with
+  Google" are not moved to the default profile.
+- When an archived task is restored, that task's browser starts again with the default profile's cookies.
+- Changing the setting leaves already open tabs as they are. Tabs opened after that follow it.
 
 ## 6. QA
 
-`run-check.sh … --ui-fixture-browser-check-only=isolation`(`BrowserHostIsolationQA`)이 실제 CEF 호스트에서 확인한다: 새 작업이 기본 프로필의 쿠키로
-시작하는지, 두 작업이 같은 사이트에서 쿠키·localStorage를 따로 갖는지, 작업의 로그인이 기본 프로필에 새지 않는지, 하위 작업이 부모의 쿠키로
-시작하는지, 사람의 로그인 복사가 뒤에 시작한 작업에만 가는지, Touch ID 키가 새 프로필에 들어가는지, 호스트가 끝났다 다시 떠도 작업의 쿠키(세션
-쿠키 포함)와 localStorage가 남고 시작 쿠키를 다시 받지 않는지, "모든 작업이 함께"로 바꾸면 기본 프로필을 쓰는지, 남지 않은 작업의 폴더와 그
-`Local State` 기록을 지우는지. 쿠키가 Chromium이 저장한 모양대로 옮겨지는지(8절): QA 서버의 두 사이트 로그인 확인(`/cookie-check`, 콘솔 127.0.0.1과 계정 사이트 localhost)이 기본
-프로필과 새 작업에서 모두 `ok`인지, DevTools로 기본 프로필에 심은 Google 모양의 쿠키(`accounts.example.com`의 호스트 전용 쿠키와 `__Host-` 쿠키,
-`.example.com`의 Secure·비Secure 쿠키, 다른 최상위 사이트 아래의 파티션 쿠키)가 새 작업에 같은 도메인·Secure로 들어가고 파티션 쿠키는 최상위 쿠키가
-되지 않는지, 작업에서 다시 로그인한 쿠키를 기본 프로필로 옮기면 계정 사이트가 같은 이름을 한 번씩 새 값으로 받는지(기본 프로필과 그 뒤 작업 모두).
-`--ui-fixture-isolation-cookies`를 더하면 이 확인만 돈다.
-확인마다 새 작업을 쓰고 읽을 값을 먼저 정하므로(쿠키 확인은 앞선 실행의 같은 이름 쿠키를 먼저 지운다), 앞선 QA가 같은 QA 홈에 남긴 상태와 상관없다. 단계마다 프로세스
-트리의 메모리를 잰다(`--ui-fixture-isolation-shared`를 더하면 같은 탭을 기본 프로필 하나에 열어 잰다).
-2026-10-24 결과(7절의 고침 뒤): 새 QA 홈에서 9개 모두 통과, 전체 확인과 격리 확인을 먼저 돌린 QA 홈에서도 9개 모두 통과, 금고 QA 30개 통과,
-전체 `run-check.sh`의 "profile keeps cookies across host restarts" 통과.
+`run-check.sh … --ui-fixture-browser-check-only=isolation` (`BrowserHostIsolationQA`) checks on a real CEF host: whether
+a new task starts with the default profile's cookies; whether two tasks keep separate cookies and localStorage on the
+same site; whether a task's sign-in does not leak into the default profile; whether a child task starts with the
+parent's cookies; whether copying the person's sign-in reaches only tasks started afterwards; whether the Touch ID key
+goes into a new profile; whether, after the host ends and starts again, a task's cookies (session cookies included) and
+localStorage remain and it does not receive the starting cookies again; whether switching to "Shared by all tasks" uses
+the default profile; whether the folders of tasks that no longer exist and their `Local State` records are deleted.
+Whether cookies move in the shape Chromium stored them (section 8): whether the QA server's sign-in check across two
+sites (`/cookie-check`, console 127.0.0.1 and account site localhost) is `ok` both in the default profile and in a new
+task; whether Google-shaped cookies planted with DevTools in the default profile (a host-only cookie and a `__Host-`
+cookie on `accounts.example.com`, Secure and non-Secure cookies on `.example.com`, a partitioned cookie under another
+top-level site) go into a new task with the same domain and Secure flag, and the partitioned cookie does not become a
+top-level cookie; whether, after a sign-in done again in a task is moved to the default profile, the account site
+receives each name once with the new value (both in the default profile and in tasks after it). Adding
+`--ui-fixture-isolation-cookies` runs only this check. Every check uses a new task and decides first which values it
+will read (the cookie check first deletes cookies of the same name from earlier runs), so state that earlier QA left in
+the same QA home does not matter. Each step measures the process tree's memory (adding `--ui-fixture-isolation-shared`
+opens the same tabs in the single default profile and measures that). 2026-10-24 results (after the fix in section 7):
+all 9 passed in a new QA home; all 9 also passed in a QA home where the full check and the isolation check had run
+first; the 30 vault QA checks passed; "profile keeps cookies across host restarts" in the full `run-check.sh` passed.
 
-## 7. 고침: 작업 프로필이 메모리에 있었다(2026-10-24)
+## 7. Fix: task profiles were in memory (2026-10-24)
 
-- **증상:** 이 기능을 합친 뒤 전체 QA의 "profile keeps cookies across host restarts"가 `cookies ""`로 실패했다. 패널의
-  탭이 작업(`…F401`)의 프로필을 쓰기 때문이다.
-- **원인:** CEF 154(Chrome 부트스트랩)는 요청 컨텍스트의 `cache_path`가 root cache와 같거나 그 바로 아래일 때만 디스크 프로필을 열고, 그 밖이면
-  "Cannot create profile at path"를 남기고 메모리(OffTheRecord) 프로필을 쓴다. 처음 구현의 `Browser/Tasks/<키>`는 한 단계 더 깊어 모든 작업
-  프로필이 메모리에 있었다. 한 호스트 안에서는 격리와 시작 쿠키 복사가 그대로 되어 격리 QA 8개가 통과했지만, 호스트가 끝나면 작업의 로그인이
-  모두 사라졌다(폴더에는 Yardlet이 쓴 `Preferences`만 있었다). 5절의 첫 메모리 측정도 메모리 프로필로 잰 것이었다.
-- **고친 것:** 폴더를 `Browser/Task-<키>`로 옮겼다(호스트 `TaskProfiles`, 앱 `BrowserTaskProfiles`, 저장 파일 `Browser/TaskProfiles.json`). 디스크
-  프로필은 비동기로 읽히고 `create_browser_sync`는 읽히기 전의 컨텍스트에서 브라우저를 만들지 못하므로(NULL을 돌려줌), 브리지가 컨텍스트마다
-  `on_request_context_initialized`를 받은 뒤 브라우저를 만들고, 호스트는 그 사이의 탭을 시작 쿠키를 복사하는 탭처럼 다룬다. Chromium이 디스크
-  프로필마다 `Local State`에 남기는 기록(프로필 하나에 약 400바이트, 폴더를 지워도 남음)은 정리 때 지운다. 격리 QA에 호스트 재시작과 `Local State`
-  확인을 더했다.
-- **옛 `Browser/Tasks` 폴더:** 이 기능은 설치본에 나간 적이 없어(main에 없음, 이 Mac 설치본의 `Browser`에 `Tasks` 없음) 옮기거나 지우는 코드는
-  넣지 않았다. `integration` 개발 빌드를 쓴 홈에는 쓰이지 않는 `Browser/Tasks`가 남을 수 있고, 지워도 된다.
+- **Symptom:** After this feature was merged, "profile keeps cookies across host restarts" in the full QA failed with
+  `cookies ""`. The reason is that the panel's tab uses the task's (`…F401`) profile.
+- **Cause:** CEF 154 (Chrome bootstrap) opens a disk profile only when the request context's `cache_path` is the root
+  cache or directly under it; otherwise it logs "Cannot create profile at path" and uses an in-memory (OffTheRecord)
+  profile. The first implementation's `Browser/Tasks/<key>` was one level deeper, so every task profile was in memory.
+  Within one host, isolation and the starting cookie copy still worked, and 8 isolation QA checks passed, but when the
+  host ended, all of a task's sign-ins were gone (the folder held only the `Preferences` that Yardlet wrote). The first
+  memory measurement in section 5 was also taken with in-memory profiles.
+- **Fix:** The folder moved to `Browser/Task-<key>` (host `TaskProfiles`, app `BrowserTaskProfiles`, saved file
+  `Browser/TaskProfiles.json`). Disk profiles are read asynchronously, and `create_browser_sync` cannot create a browser
+  in a context that has not been read yet (it returns NULL), so the bridge creates the browser after it receives
+  `on_request_context_initialized` for each context, and the host treats tabs in between like tabs that copy the
+  starting cookies. The record that Chromium leaves in `Local State` for each disk profile (about 400 bytes per profile,
+  kept even when the folder is deleted) is removed at cleanup. A host restart and a `Local State` check were added to
+  the isolation QA.
+- **The old `Browser/Tasks` folder:** This feature never shipped in an installed build (not on main, and no `Tasks` in
+  `Browser` of this Mac's installed app), so no code to move or delete the folder was added. Homes that used an
+  `integration` development build may have an unused `Browser/Tasks`, which can be deleted.
 
-## 8. 고침: 복사가 쿠키 모양을 바꿨다(2026-10-25)
+## 8. Fix: copying changed the shape of cookies (2026-10-25)
 
-- **증상:** 사용자가 Google 계정에 로그인한 작업의 패널에서 Google Cloud 콘솔(`console.cloud.google.com/auth/…`)과 OAuth 동의
-  주소(`accounts.google.com/o/oauth2/v2/auth?…prompt=select_account`)를 열면 매번 `accounts.google.com/CookieMismatch`("쿠키 설정에 문제가 있음을
-  발견했습니다")로 넘어갔다. 같은 탭에서 Search Console은 열렸다. 그 단계는 다른 브라우저에서 했다.
-- **원인:** 복사가 쿠키를 넣을 때 원본의 도메인 값을 그대로 넘겼다. Chromium은 호스트 전용 쿠키의 도메인을 점 없이(`accounts.google.com`) 저장하는데,
-  CEF의 `set_cookie`는 도메인이 비어 있어야 호스트 전용 쿠키를 만들고 무엇이든 주면 도메인 쿠키(`.accounts.google.com`, 하위 도메인에도 감)를
-  만든다(`cef_types.h`의 `cef_cookie_t.domain` 설명). 그래서 호스트 전용 쿠키는 모두 도메인 쿠키가 됐고, 도메인 속성이 없어야 하는 `__Host-` 쿠키는
-  Chromium이 거절해 빠졌다. 또 쿠키를 모두 읽는 `visit_all_cookies`는 파티션 쿠키도 돌려주는데 CEF의 쿠키 구조체에는 파티션 키가 없어, 파티션
-  쿠키가 파티션 없는 쿠키로 들어갔다.
-- **Google에서 일어난 일(설치본 기록, 값은 보지 않음):** 그 작업의 프로필이 생긴 00:37에 기본 프로필에서 복사하며 `accounts.google.com`의
-  호스트 전용 로그인 쿠키 3개가 `.accounts.google.com`이 되고 `__Host-` 쿠키 3개가 빠졌다. 17:20에 그 패널에서 Google이 새 로그인 쿠키(호스트 전용
-  2개, `__Host-` 3개)를 심자, 그 뒤 `accounts.google.com`에는 같은 이름의 쿠키가 두 벌(00:37 복사본, 17:20 원본)씩 갔다. Google 계정 사이트를 거치는
-  흐름(콘솔의 로그인 확인, OAuth 동의)은 이것을 `CookieMismatch`로 돌려보냈다. Search Console은 `.google.com` 도메인 쿠키로 열려(그 쿠키는 그대로
-  복사됨) 되었다고 본다(추정). 같은 17:20에 사람의 로그인 복사가 기본 프로필에도 두 벌을 만들어(기본 프로필의 호스트 전용 원본은 10-23, 복사본은
-  17:20), 그 뒤에 만드는 작업도 같은 상태로 시작한다. 16:49 업데이트 재시작은 계기가 아니다: 폴더가 새로 생기지 않았고(쿠키 DB 생성 00:37, 별칭
-  없음), 다시 복사한 쿠키가 없으며(복사본은 모두 00:37), Google 쿠키는 모두 영속 쿠키다.
-- **설치본의 다른 사실:** 쿠키 DB는 Chromium 154의 스키마 24(`top_frame_site_key`, `source_scheme`, `source_port`, `source_type` 등)다. 복사로 생긴
-  쿠키는 `source_type` 3(API로 넣은 쿠키)으로 남아 원본(1: HTTP 응답, 2: 스크립트)과 구별된다. 기본 프로필에서 복사한 작업은 호스트
-  전용 쿠키 0개, `__Host-` 쿠키 0개였고, 기본 프로필의 파티션 쿠키 7개가 모두 파티션 없이 들어 있었다. 기본 프로필에는 다른 사이트에서도 호스트
-  전용 원본과 도메인 복사본이 같은 이름으로 함께 있고(Google 3, 다른 사이트 3), 원본이 호스트 전용인 것으로 보이는 도메인 복사본이 45개 있다.
-  `Preferences`의 쿠키 설정(`profile.cookie_controls_mode`, 서드파티 차단, 쿠키 예외)은 기본 프로필과 작업 프로필 모두 적혀 있지 않아 Chrome
-  기본값이고, `chromium.log`에는 쿠키 줄이 없다.
-- **서드파티 쿠키·사용자 에이전트는 원인이 아니다(QA):** 다른 사이트 프레임에서 `SameSite=None; Secure` 쿠키와 파티션 쿠키가 모두 저장·읽히고
-  `hasStorageAccess()`가 true다(Chrome의 일반 프로필 기본과 같음). 사이트가 받는 것은 `Chrome/154.0.0.0` 사용자 에이전트와 `Sec-CH-UA: "Not A(Brand";v="99",
-  "Chromium";v="154"`이다(Chrome의 "Google Chrome" 브랜드 대신 Chromium. Search Console이 같은 탭에서 된 것과 맞음).
-- **고친 것:** `YardletCEFBridge.c`의 쿠키 복사. 호스트 전용 쿠키는 도메인을 비우고 주소의 호스트로만 넣는다(Claude 앱의 복사와 같은 방법). 원본의
-  쿠키를 모두 읽은 뒤 쿠키마다의 주소로 원본에 다시 물어(`visit_url_cookies`, CEF가 파티션 없는 쿠키만 돌려줌) 답에 든 쿠키만 넣는다. 파티션 쿠키는
-  옮기지 않는다(5절). 쿠키 300개(호스트 150곳, Chromium의 사이트당 상한으로 약 186개가 남음)를 가진 기본 프로필에서 새 작업이 페이지를 열기까지
-  0.21초였다(임시 측정, 커밋하지 않음).
-- **두 앱(번들 바이트, 실행하지 않음):** Claude 앱 3.1623.3은 세션을 분기할 때 `cookies.get({})`로 읽어 `cookies.set`으로 넣으며 호스트 전용 쿠키는
-  `domain`을 뺀다(`bgi`: `...e.hostOnly?{}:{domain:e.domain}`, 주소는 `secure`면 https 아니면 http). 파티션 키는 다루지 않는다. Codex 앱 26.1016은 모든
-  스레드가 저장소 하나(`persist:codex-browser-app`)라 프로필 사이 복사가 없다. 두 앱 모두 서드파티 쿠키 정책을 바꾸는 스위치·설정을 찾지 못했다.
-- **이미 바뀐 쿠키(한 번 정리, `BrowserCookieCopyRepair`):** 고친 복사는 이미 저장된 복사본을 고치지 않으므로, Yardlet이 브라우저 호스트를 처음
-  띄우기 직전에 한 번 정리한다(호스트가 쿠키 DB를 열고 있으면 할 수 없다). 기본 프로필과 `Task-<UUID>` 프로필의 `Cookies`에서, 복사로 생긴
-  도메인 쿠키(`source_type` 3, `.호스트`) 가운데 사이트가 직접 만든(`source_type` 1·2) 같은 이름·경로·파티션의 호스트 전용 쿠키와 두 벌인 것만
-  지운다. 고치기 전 복사는 등록 도메인의 호스트 전용 쿠키를 만든 적이 없어, 그 두 벌의 호스트 전용 쪽은 언제나 사이트의 것이다. 사이트 자신의
-  두 벌, 짝 없는 복사본, 고친 복사가 옮긴 사이트의 두 벌(둘 다 복사본)은 남는다. 지울 것이 있는 DB만 먼저 `Cookies`와 `-journal`·`-wal`을
-  `~/.Trash/Yardlet cookie backup <날짜 시각>/<프로필>/`에 복사하고, 백업이 실패한 프로필은 그대로 둔다. 한 트랜잭션으로 지운다. 모두 끝나면
-  root cache에 `CookieCopyRepair.json`(실행 시각과 프로필별 지운 개수만)을 남겨 다시 돌지 않는다. 호스트가 잡고 있거나(`SingletonLock`의 PID가 살아
-  있음), 읽을 수 없거나(롤백이 필요한 저널 등), 백업·삭제가 실패하면 기록을 남기지 않아 다음 시작에 다시 한다. 휴지통은 `NSHomeDirectory()`의
-  것이다(FileManager의 휴지통은 QA가 준 홈을 따르지 않아, 첫 QA에서 백업이 사람의 휴지통에 갔다). 그 사이트들에 다시 로그인해야 할 수 있다.
-- **QA:** 6절의 쿠키 확인. 고치기 전 빌드(QA만 더함)에서 새 작업의 두 사이트 확인은 `CookieMismatch`(`__Host-qa_signin` 빠짐, 파티션
-  쿠키가 최상위 사이트로 샘), 새 작업의 `qa_signin`은 `.accounts.example.com`, 다시 로그인을 옮긴 기본 프로필의 `qa_signin`은 두 벌(A, B)이었다. 고친
-  빌드에서 4개 모두 통과하고, 격리 QA 전체 13개가 통과했다. 한 번 정리는 `BrowserCookieCopyRepairTests`(임시 폴더의 DB)와 QA 홈에서 앱을 다섯 번
-  띄워 확인했다: 빈 홈에서 기록만 남음, 두 벌을 심고 기록을 지우면 그 두 벌만 지우고 QA 홈의 휴지통에 백업, 기록이 있으면 다시 돌지 않음.
+- **Symptom:** In the panel of a task where the user was signed in to a Google account, opening the Google Cloud console
+  (`console.cloud.google.com/auth/…`) and the OAuth consent address
+  (`accounts.google.com/o/oauth2/v2/auth?…prompt=select_account`) went to `accounts.google.com/CookieMismatch` every
+  time ("found a problem with your cookie settings"). Search Console opened in the same tab. That step was done in
+  another browser.
+- **Cause:** When the copy inserted a cookie, it passed the source's domain value as it was. Chromium stores the domain
+  of a host-only cookie without a dot (`accounts.google.com`), but CEF's `set_cookie` makes a host-only cookie only when
+  the domain is empty, and with any value it makes a domain cookie (`.accounts.google.com`, which also goes to
+  subdomains) (the description of `cef_cookie_t.domain` in `cef_types.h`). So every host-only cookie became a domain
+  cookie, and the `__Host-` cookies, which must not have a domain attribute, were rejected by Chromium and went missing.
+  Also, `visit_all_cookies`, which reads all cookies, returns partitioned cookies too, but CEF's cookie struct has no
+  partition key, so the partitioned cookies went in as unpartitioned cookies.
+- **What happened with Google (installed build records; values not looked at):** At 00:37, when that task's profile was
+  created, the copy from the default profile turned 3 host-only sign-in cookies of `accounts.google.com` into
+  `.accounts.google.com` and dropped 3 `__Host-` cookies. At 17:20, when Google set new sign-in cookies in that panel (2
+  host-only, 3 `__Host-`), two copies of each same-name cookie (the 00:37 copy and the 17:20 original) went to
+  `accounts.google.com` from then on. Flows that pass through the Google account site (the console's sign-in check,
+  OAuth consent) sent this back as `CookieMismatch`. Search Console opens with `.google.com` domain cookies (those
+  cookies were copied as they were), which is taken to be why it worked (inferred). At the same 17:20, copying the
+  person's sign-in also made duplicates in the default profile (the default profile's host-only original is from 10-23,
+  the copy from 17:20), so tasks created after that start in the same state. The 16:49 update restart was not the
+  trigger: the folder was not newly created (cookie DB created at 00:37, no alias), no cookies were copied again (every
+  copy is from 00:37), and all the Google cookies are persistent cookies.
+- **Other facts from the installed build:** The cookie DB is Chromium 154's schema 24 (`top_frame_site_key`,
+  `source_scheme`, `source_port`, `source_type` and others). Cookies that a copy created stay as `source_type` 3
+  (cookies set through the API), which tells them apart from originals (1: HTTP response, 2: script). A task copied from
+  the default profile had 0 host-only cookies and 0 `__Host-` cookies, and all 7 partitioned cookies of the default
+  profile were in it without partitions. In the default profile, other sites also have a host-only original and a domain
+  copy with the same name side by side (Google 3, other sites 3), and there are 45 domain copies whose originals appear
+  to be host-only. The cookie settings in `Preferences` (`profile.cookie_controls_mode`, third-party blocking, cookie
+  exceptions) are not written in the default profile or in the task profiles, so they are Chrome's defaults, and
+  `chromium.log` has no cookie lines.
+- **Third-party cookies and the user agent are not the cause (QA):** In a frame of another site, a
+  `SameSite=None; Secure` cookie and a partitioned cookie are both stored and read, and `hasStorageAccess()` is true
+  (the same as the default of a regular Chrome profile). What sites receive is the `Chrome/154.0.0.0` user agent and
+  `Sec-CH-UA: "Not A(Brand";v="99", "Chromium";v="154"` (Chromium instead of Chrome's "Google Chrome" brand; this fits
+  Search Console working in the same tab).
+- **Fix:** The cookie copy in `YardletCEFBridge.c`. Host-only cookies are inserted with an empty domain, by the
+  address's host alone (the same method as the Claude app's copy). After reading all of the source's cookies, it asks
+  the source again with each cookie's address (`visit_url_cookies`; CEF returns only unpartitioned cookies) and inserts
+  only the cookies in that answer. Partitioned cookies are not moved (section 5). With a default profile holding 300
+  cookies (150 hosts; about 186 remain because of Chromium's per-site limit), a new task took 0.21 seconds to open a
+  page (a temporary measurement, not committed).
+- **The two apps (bundle bytes, not run):** The Claude app 3.1623.3 reads with `cookies.get({})` when it forks a session
+  and inserts with `cookies.set`, leaving out `domain` for host-only cookies (`bgi`:
+  `...e.hostOnly?{}:{domain:e.domain}`; the address is https when `secure`, otherwise http). It does not handle
+  partition keys. In the Codex app 26.1016 all threads share one store (`persist:codex-browser-app`), so there is no
+  copy between profiles. In neither app was a switch or setting found that changes the third-party cookie policy.
+- **Cookies already changed (one-time cleanup, `BrowserCookieCopyRepair`):** The fixed copy does not repair copies that
+  are already stored, so Yardlet cleans up once, just before it first starts the browser host (it cannot while the host
+  has the cookie DB open). In the `Cookies` of the default profile and of the `Task-<UUID>` profiles, it deletes only
+  the domain cookies that a copy created (`source_type` 3, `.host`) that duplicate a host-only cookie with the same
+  name, path and partition that the site created itself (`source_type` 1 or 2). The copy before the fix never created
+  host-only cookies of a registrable domain, so the host-only side of such a duplicate is always the site's own. The
+  site's own duplicates, copies with no pair, and duplicates of sites that the fixed copy moved (both sides are copies)
+  remain. Only for DBs with something to delete, it first copies `Cookies` and `-journal` and `-wal` to
+  `~/.Trash/Yardlet cookie backup <date time>/<profile>/`, and leaves a profile untouched if its backup fails. It
+  deletes in a single transaction. When everything is done, it leaves `CookieCopyRepair.json` (only the run time and the
+  number deleted per profile) in the root cache, so it does not run again. If the host holds the DB (the PID in
+  `SingletonLock` is alive), the DB cannot be read (a journal that needs a rollback and the like), or the backup or
+  deletion fails, it leaves no record and runs again at the next start. The Trash is the one of `NSHomeDirectory()`
+  (FileManager's Trash does not follow the home that QA sets, so in the first QA the backup went to the person's Trash).
+  Those sites may need a new sign-in.
+- **QA:** The cookie checks in section 6. In a build before the fix (with only the QA added), a new task's two-site
+  check gave `CookieMismatch` (`__Host-qa_signin` missing, the partitioned cookie leaking to the top-level site), the
+  new task's `qa_signin` was on `.accounts.example.com`, and the default profile's `qa_signin` after a new sign-in was
+  moved there had two copies (A, B). In the fixed build all 4 passed, and all 13 isolation QA checks passed. The
+  one-time cleanup was verified with `BrowserCookieCopyRepairTests` (DBs in a temporary folder) and by starting the app
+  five times in a QA home: in an empty home only the record is left; after planting duplicates and deleting the record,
+  it deletes only those duplicates and backs up to the QA home's Trash; with the record present, it does not run again.
 
-## 9. 고침: 정리한 뒤에도 두 벌이 다시 퍼졌다(2026-10-26)
+## 9. Fix: duplicate copies spread again after the cleanup (2026-10-26)
 
-- **증상:** 사용자가 한 작업에서 Sentry에 Google로 로그인하자 다시 `/CookieMismatch`였다. 8절의 한 번 정리(10-26 03:48 KST,
-  기본 프로필 3개·작업 둘 5개)가 끝난 뒤였다.
-- **원인:** 8절의 고친 복사는 쿠키 모양을 지켰지만 두 가지를 하지 않았다. (1) 보내는 프로필에 예전 복사가 만든 도메인 쿠키
-  (`.accounts.google.com`의 `LSID`·`ACCOUNT_CHOOSER`·`OTZ`, `source_type` 3)가 사이트의 호스트 전용 쿠키 옆에 있으면 둘 다 옮겼다.
-  (2) 받는 프로필에 다른 모양의 같은 쿠키가 있어도 지우지 않고 더했다. 한 번 정리는 짝이 있는 프로필에서만 지웠으므로, 짝 없이
-  도메인 쿠키만 남은 프로필에서 다시 로그인이 옮겨지면 기본 프로필에 두 벌이 생겼고(10-26 14:17), 그 뒤 만든 작업이 두 벌로 시작했다.
-  10-26 14시 기준 기본 프로필, ERP 작업, 오픈소스 작업(40F6679B)에 두 벌이 있었다.
-- **고침:** 복사(`set_copied_cookies`)가 보내는 쪽에서 같은 호스트·이름·경로의 호스트 전용 쿠키가 있는 도메인 쿠키를 빼고, 쿠키마다
-  받는 쪽의 다른 모양(호스트 전용이면 도메인 쿠키, 도메인 쿠키면 호스트 전용)을 먼저 지운다. CEF에는 정확히 하나를 지우는 호출이 없어서,
-  같은 이름·도메인·경로의 쿠키를 이미 만료된 채로 쓴다. Chromium은 그 쿠키 하나만 지운다(`cookie_monster.cc`
-  `DELETE_COOKIE_EXPIRED_OVERWRITE`, 154.0.8037.58 원본). 한 번 정리는 2회차(`CookieCopyRepair.json`의 `round` 2)로 다시 한 번 돈다.
-- **QA:** 6절 마지막 단계에 기본 프로필과 작업 F 양쪽에 예전 복사의 도메인 쿠키(`.accounts.example.com` `qa_signin=OLD`)를 심었다.
-  기본 프로필과 뒤에 만든 작업 G가 `qa_signin`을 `B` 하나만 보내 격리 QA 13개가 통과했다. 비밀번호 QA 22개도 통과했다.
-- **3회차(같은 날):** 2회차는 22:57 KST에 ERP 작업과 Mobi CS 작업에서 3개씩 지웠지만, 기본 프로필 6쌍과 작업 둘(5쌍, 3쌍)을 남겼다.
-  남은 쌍은 호스트 전용 쪽도 복사본(`source_type` 3)이었다. 정리 전의 두 벌이 프로필 사이를 오가며 양쪽 모두 복사본이 된 것이다. 예전 복사는
-  호스트 전용 쿠키를 만들지 않았으므로 쌍의 호스트 전용 쪽은 출처가 무엇이든 사이트의 모양이다. 그래서 3회차는 호스트 전용 쿠키와 짝인
-  복사된 도메인 쿠키를 모두 지운다. 사이트가 직접 둘 다 만든 쌍(예: `search.google.com`의 `_ga`)은 남긴다.
+- **Symptom:** When the user signed in to Sentry with Google in a task, it was `/CookieMismatch` again. This was after
+  the one-time cleanup of section 8 (10-26 03:48 KST, 3 in the default profile and 5 in two tasks).
+- **Cause:** The fixed copy of section 8 kept the shape of cookies but did not do two things. (1) When the sending
+  profile had domain cookies that the old copy made (`LSID`, `ACCOUNT_CHOOSER` and `OTZ` on `.accounts.google.com`,
+  `source_type` 3) next to the site's host-only cookies, it moved both. (2) When the receiving profile had the same
+  cookie in another shape, it did not delete it but added the new one. The one-time cleanup deleted only in profiles
+  that had pairs, so when a sign-in was moved again from a profile left with only the domain cookies and no pair, the
+  default profile got duplicates (10-26 14:17), and tasks created after that started with duplicates. As of 10-26 14:00,
+  the default profile, the ERP task and the open-source task (40F6679B) had duplicates.
+- **Fix:** The copy (`set_copied_cookies`) leaves out, on the sending side, domain cookies that have a host-only cookie
+  with the same host, name and path, and for each cookie first deletes the other shape on the receiving side (a domain
+  cookie for a host-only one, a host-only cookie for a domain one). CEF has no call that deletes exactly one cookie, so
+  it writes a cookie with the same name, domain and path that has already expired. Chromium deletes just that one cookie
+  (`cookie_monster.cc` `DELETE_COOKIE_EXPIRED_OVERWRITE`, 154.0.8037.58 source). The one-time cleanup runs once more as
+  round 2 (`round` 2 in `CookieCopyRepair.json`).
+- **QA:** In the last step of section 6, domain cookies of the old copy (`.accounts.example.com` `qa_signin=OLD`) were
+  planted in both the default profile and task F. The default profile and task G, created after it, sent only one
+  `qa_signin`, `B`, and all 13 isolation QA checks passed. The 22 password QA checks also passed.
+- **Round 3 (same day):** Round 2 deleted 3 each in the ERP task and the Mobi CS task at 22:57 KST, but left 6 pairs in
+  the default profile and pairs in two tasks (5 pairs, 3 pairs). In the remaining pairs the host-only side was a copy
+  too (`source_type` 3). Duplicates from before the cleanup had moved back and forth between profiles until both sides
+  were copies. The old copy never created host-only cookies, so the host-only side of a pair has the site's shape,
+  whatever its source. So round 3 deletes every copied domain cookie that pairs with a host-only cookie. Pairs where the
+  site itself created both (for example `_ga` on `search.google.com`) stay.
 
-## 10. 다른 브라우저에서 로그인 가져오기(2026-10-26, 2026-10-27 브라우저 넓힘)
+## 10. Importing sign-ins from another browser (2026-10-26; more browsers on 2026-10-27)
 
-- **계기:** 패스키로만 로그인되는 사이트는 패스키가 다른 브라우저(iCloud 키체인, Whale, Chrome)에만
-  있어 Yardlet 브라우저에서 로그인할 수 없다. 그 브라우저의 로그인 쿠키를 가져오면 Yardlet에서 그 사이트에 들어갈 수 있고, 그 사이트 설정에서
-  Yardlet 패스키를 하나 더 등록하면 그 뒤로는 Yardlet만으로 된다. [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)의 "Aside와 Ego 비교"에서 미뤄 둔 ④다.
-- **사람이 하는 것:** 브라우저 패널의 페이지에서 오른쪽 클릭 → "다른 브라우저에서 로그인 가져오기…" → 브라우저·프로필 고르기 → 사이트 체크(지금
-  페이지의 사이트는 맨 위에 체크된 채) → 가져오기 → macOS의 키체인 허용 창("Yardlet이 키체인의 'Whale Safe Storage'를 사용하려고 합니다")에서
-  허용. 끝나면 패널이 "Whale에서 … 로그인을 가져왔습니다"를 보이고, 페이지가 그 사이트면 다시 읽는다.
-- **찾는 브라우저(2026-10-27 넓힘):** `~/Library/Application Support`에서 Chromium 계열 Whale, Chrome, Edge, Brave, Arc, Comet, Vivaldi, Opera,
-  Opera GX, Yandex, Helium, Chromium과 Firefox 계열 Firefox, Zen, Floorp, LibreWolf, Waterfox 순서로 찾는다. 폴더·키체인 이름과 근거는 아래 표.
-  이 Mac에 쿠키 DB가 있는 프로필만 보이고, 시트는 그 브라우저 앱이 있으면 앱 번들의 아이콘을, 없으면 지구본 기호를 붙인다
-  (`NSWorkspace.urlForApplication(withBundleIdentifier:)`, 앱을 실행하지 않음).
-  - Chromium 계열: `Local State`(`profile.info_cache`의 이름, `profiles_order`, `last_used`가 먼저)에서 프로필을 읽고, 쿠키 DB(`<프로필>/Network/Cookies`,
-    없으면 `<프로필>/Cookies`: Whale·Comet은 뒤쪽)가 있는 프로필만 보인다. Opera처럼 브라우저 폴더 자체가 첫 프로필이면(폴더 바로 아래 쿠키 DB) 그것도
-    브라우저 이름만으로 보인다. 키체인 항목은 서비스 이름만으로 찾는다(브라우저마다 한 항목이고, 계정 이름은 브라우저마다 달라 확인하지 못한 것이 있다).
-  - Firefox 계열: `profiles.ini`의 `[Profile…]` 절(`Name`, `Path`, `IsRelative=1`이면 브라우저 폴더 아래)에서 `cookies.sqlite`가 있는 프로필만 보인다.
-    그 설치가 쓰는 프로필(`[Install…]`의 `Default`)이 먼저, 다음이 `Default=1`, 나머지는 파일 순서다. 키체인은 쓰지 않는다.
-- **macOS 27의 브라우저 폴더 보호(2026-10-27 확인):** macOS 27의 `/usr/libexec/sandboxd`에 들어 있는 규칙(`defaultRules-3`)이 Chrome(`Google/Chrome`),
-  Brave(`BraveSoftware/Brave-Browser`), Edge(`Microsoft Edge`), Firefox(`Firefox`) 폴더를 그 브라우저 자신의 팀 ID·서명 ID와 Safari의 가져오기 서비스
-  (`com.apple.Safari.BrowserDataImportingService`, Chrome·Firefox만)에게만 연다. 다른 앱이 읽으면 허용 창 없이 `Operation not permitted`가 난다(이 작업의
-  셸에서 Chrome 폴더 목록을 읽어 보고 `sandboxd` 로그 "TCC denied kTCCServiceSystemPolicyAppDataDetailed for com.google.Chrome"로 확인, Apple 개발자 포럼
-  847030의 DTS 답 "intentional change"). 같은 보고에서 전체 디스크 접근을 받은 앱은 읽힌다. 그래서 목록 파일(`Local State`, `profiles.ini`)이 있는데
-  읽히지 않는 브라우저는 목록에 넣지 않고, 시트 아래에 "Chrome의 데이터는 macOS가 전체 디스크 접근 권한이 있는 앱에만 열어 주어 목록에 없습니다"로
-  이름만 적는다. 권한을 묻는 창이나 설정 단추는 두지 않았다. `NativeMessagingHosts`와 Chrome의 `ChromeFeatureState`·`Crashpad`는 규칙에서 빠져 있다.
-  Whale·Arc·Comet·Vivaldi·Opera·Yandex·Helium과 Firefox 밖의 Gecko 브라우저 폴더는 규칙에 없다. Yardlet(서명된 앱)이 읽을 때도 허용 창 없이 거절되는지는
-  사용자 화면에 창이 뜰 수 있어 시험하지 않았다(포럼과 Claude Code 이슈 81453의 보고는 둘 다 "창 없이 거절").
-- **Safari는 넣지 않았다:** Safari의 쿠키(`~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`)는 macOS가 "전체 디스크
-  접근"을 받은 앱에만 열어 준다. 그 권한은 다른 앱의 데이터 전부에 미치므로 이 기능 하나를 위해 Yardlet에 달라고 하지 않는다.
-- **사이트 목록:** 쿠키 DB 사본에서 `host_key`와 마지막 사용 시각만 읽는다(값은 읽지 않음). 파티션 쿠키(`top_frame_site_key`가 빈 값이 아닌 것)와
-  만료된 쿠키는 세지 않는다. 호스트를 등록 도메인(Public Suffix List, 금고와 같은 목록)으로 묶고, IP 주소와 `localhost`는 그대로 둔다. 최근 쓴 순서다.
-- **복호화(Chromium macOS):** 키체인 비밀번호에서 PBKDF2-HMAC-SHA1(salt "saltysalt", 1003회, 16바이트)로 AES-128 키를 만들고, `v10` 접두사 뒤를
-  AES-128-CBC(IV는 공백 16개, PKCS#7)로 푼다. `meta` 버전이 24 이상이면 푼 값 앞 32바이트가 `host_key`의 SHA-256이어야 하고(다르면 그 쿠키는 뺀다),
-  그 뒤가 값이다. 하나도 풀리지 않으면 키가 그 프로필의 것이 아니라고 보고 아무것도 넣지 않는다. 암호화되지 않은 `value`도 받는다.
-- **Firefox 읽기(2026-10-27):** `cookies.sqlite`(WAL 모드라 최근 쿠키는 `-wal`에 있다)를 같은 방법으로 복사해 `moz_cookies`를 평문으로 읽는다.
-  Firefox 158 소스 `netwerk/cookie/CookiePersistentStorage.cpp`(스키마 17) 기준으로 바꾼다: `host`의 앞 점은 도메인 쿠키, `isSecure`·`isHttpOnly`는
-  그대로, `expiry`는 스키마 16부터 1970년 기준 **밀리초**(그전은 초, `PRAGMA user_version`으로 가름)라 Chromium의 1601년 기준 마이크로초로 바꾼다.
-  SameSite는 `nsICookie`의 0 None·1 Lax·2 Strict·256 미지정을 CEF의 1·2·3·0으로 옮기고, Secure가 아닌 None은 Chromium이 받지 않아 미지정으로 둔다
-  (스키마 15 전의 `rawSameSite` None·`sameSite` Lax도 미지정). 우선순위는 없어 보통이다. `originAttributes`가 빈 값인 쿠키만 받는다: `partitionKey`
-  (파티션), `userContextId`(컨테이너), `privateBrowsingId`가 붙은 것은 다른 정체성이라 넣지 않는다. Firefox는 세션 쿠키를 파일에 두지 않아 브라우저를
-  닫으면 끝나는 로그인은 가져올 수 없다. `lastAccessed`(1970년 기준 마이크로초)는 사이트 순서에만 쓴다.
-- **넣기:** 앱이 고른 사이트(와 그 하위 도메인)의 쿠키를 `importCookies` 명령으로 호스트에 보낸다. 호스트는 대상 프로필의 그 사이트 쿠키를 모두
-  지우고(`visit_all_cookies`의 삭제 표시, 파티션 쿠키 포함), 8·9절의 넣기 경로(`set_copied_cookies`)로 넣는다: 호스트 전용 쿠키는 도메인을 비워
-  호스트 전용으로, Secure·HttpOnly·SameSite·우선순위·만료(Chromium의 1601년 기준 마이크로초 그대로)를 지키고, 같은 호스트·이름·경로의 호스트 전용
-  쿠키가 있는 도메인 쿠키는 빼며, 쿠키마다 받는 쪽의 다른 모양을 지운다. 9절 3회차와 같이 짝이면 호스트 전용 쪽이 남는다. 그 뒤 저장소를 디스크에
-  반영하고(`flush_store`) 답한다. 대상은 기본
-  프로필과 패널 작업의 프로필이다. 작업 프로필 폴더가 아직 없으면 건드리지 않는다(첫 탭이 열릴 때 기본 프로필에서 받는다). "모든 작업이 함께"이면
-  기본 프로필 하나다.
-- **지우고 넣는 이유:** 다른 브라우저의 로그인과 Yardlet에 있던 같은 사이트 쿠키가 섞이면 두 세션의 쿠키가 한 사이트에 간다. Google 계정 사이트는
-  그런 상태를 `/CookieMismatch`로 막았다(8·9절). Claude 앱의 가져오기는 지우지 않고 덮어쓴다.
-- **보안:** Chromium 계열의 키체인은 가져오기를 누른 그때 한 번 읽고(`SecItemCopyMatching`, 서비스 이름만, 백그라운드 스레드), 비밀번호와 키는
-  메모리에서만 쓰고 0으로 지운다. Firefox 계열은 키체인을 읽지 않는다.
-  쿠키 DB는 브라우저가 쓰는 중일 수 있어 `-journal`·`-wal`과 함께 `$TMPDIR`의 개인 폴더(0700)에 복사해 읽기 전용으로 열고, 쓰는 도중의 사본이라
-  열리지 않으면 0.3초 뒤 다시 복사한다(세 번). 사본은 읽은 뒤 바로 지운다(값이 암호화된 채라도 휴지통으로 보내지 않는다). 원본은 열지 않는다.
-  쿠키 값은 앱과 호스트 사이 파이프로만 가고, 화면·로그·모델·파일에 남지 않는다(호스트의 명령 기록은 명령 이름만 적는다). 에이전트 도구는 없다.
-- **한계:** localStorage·IndexedDB에 로그인을 두는 사이트는 따라오지 않는다(Claude 앱은 localStorage도 옮긴다). Chromium은 넣는 쿠키의 만료를
-  넣은 때부터 최대 400일로 줄인다(원본 근거, QA로 재지 않음). 가져온 쿠키는 그 브라우저의 세션을 함께 쓰는 것이라, 사이트에 따라 한쪽에서
-  로그아웃하면 다른 쪽도 끊긴다. 이미 돌고 있는 다른 작업은 바뀌지 않는다.
-- **QA:** `run-check.sh … --ui-fixture-browser-check-only=import`(`BrowserHostLoginImportQA`). QA 홈의 Application Support에 가짜 Whale 폴더(프로필 둘,
-  시험 비밀번호로 암호화한 쿠키: `accounts.example.com`의 호스트 전용·`__Host-` 쿠키, `.example.com`의 Secure·비Secure 쿠키, 파티션 쿠키, 만료된 쿠키,
-  `localhost` 쿠키, 고르지 않을 `www.other.test` 쿠키)를 만들고, 키체인 대신 그 비밀번호를 넘긴다. 기본 프로필에는 예전 복사의 도메인 쿠키와 사이트의
-  다른 쿠키를, 패널 작업에는 그 작업의 로그인을 먼저 심는다. 2026-10-27 결과(ad-hoc 디버그 번들, 새 QA 홈): 9개 모두 통과. 사이트 목록은
-  `example.com`·`localhost`·`other.test`(파티션·만료 쿠키만 있는 사이트 없음), 페이지 메뉴에 항목이 있고 시트가 `localhost`를 체크한 채 열림(그림
-  `import-sheet.png`), 기본 프로필·패널 작업·뒤에 만든 작업 모두 `accounts.example.com`에 `qa_signin`·`__Host-qa_signin`·`qa_session`을 가져온 값 하나씩
-  보내고 이전의 `OLD`·`Y`·`T`와 `qa_leftover`가 없음, 저장 모양은 `__Host-qa_signin accounts.example.com Secure HttpOnly Lax`, `qa_plain .example.com
-  비Secure Lax 세션`, `qa_session .example.com Secure HttpOnly None`, `qa_signin accounts.example.com Secure HttpOnly None`, `keep.test`는 그대로이고
-  `other.test`는 들어오지 않음, 패널 페이지가 다시 읽혀 `qa_local`을 봄, 앱·호스트 로그에 값 없음. 남은 프로세스·충돌 보고서 없음.
-  **2026-10-27 넓힘:** 같은 QA 홈에 가짜 Firefox 폴더(`profiles.ini`의 프로필 둘, 설치가 쓰는 것과 `Default=1`이 다름, 스키마 17의 `cookies.sqlite`를
-  WAL에 둔 채: `accounts.example.net`의 호스트 전용 Strict, `.example.net`의 SameSite 미지정·Secure None·비Secure None, 같은 이름의 컨테이너 쿠키,
-  파티션 쿠키, 만료된 쿠키)와 `Local State`를 읽을 수 없게 둔 가짜 Chrome 폴더를 더했다. Whale 다음에 Firefox를 키체인 없이 가져온다. 결과(ad-hoc
-  디버그 번들, `$TMPDIR/browser-host-qa/import-more-browsers/`): 밝은 화면 `run-import`·어두운 화면 `run-import-dark` 모두 13개 통과. 프로필 순서
-  `Whale · Work`, `Whale · Person 1`, `Firefox · default-release`, `Firefox · old`와 읽지 못한 브라우저 `Chrome`, Firefox 사이트는 WAL까지 읽어
-  `example.net`, 기본 프로필의 Firefox 쿠키 저장 모양 `qa_ff_signin accounts.example.net Secure HttpOnly Strict`, `qa_ff_session .example.net Secure
-  HttpOnly (미지정)`, `qa_ff_cross .example.net Secure HttpOnly None`, `qa_ff_plain .example.net 비Secure (미지정)`(모두 만료 있음), 패널 작업은 같은 네
-  값을 보내고 컨테이너 값은 없음, 패널 알림 "Firefox에서 example.net 로그인을 가져왔습니다.", 앱·호스트 로그에 값 없음, 남은 프로세스·충돌 보고서
-  없음. 시트 그림(`import-sheet.png`)에 Whale 설치본의 아이콘과 Chrome 안내 줄이 보인다. 지구본 기호는 메뉴를 열어야 보여 그리지 않았다.
+- **Background:** Sites that sign in only with passkeys cannot be signed in to in the Yardlet browser when the passkey
+  exists only in another browser (iCloud Keychain, Whale, Chrome). Importing that browser's sign-in cookies lets Yardlet
+  enter the site, and after one more Yardlet passkey is registered in the site's settings, Yardlet alone is enough from
+  then on. This is ④, which "Aside and Ego compared" in [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md) deferred.
+- **What the person does:** Right-click on the page in the browser panel → "Import Sign-ins from Another Browser…" →
+  choose the browser and profile → check the sites (the current page's site is at the top, already checked) → Import →
+  allow in the macOS keychain prompt ("Yardlet wants to use your confidential information stored in 'Whale Safe Storage'
+  in your keychain."). When it is done, the panel shows "Imported the sign-in for … from Whale", and reloads the page if
+  it is on that site.
+- **Browsers it looks for (more on 2026-10-27):** In `~/Library/Application Support` it looks, in this order, for the
+  Chromium family Whale, Chrome, Edge, Brave, Arc, Comet, Vivaldi, Opera, Opera GX, Yandex, Helium and Chromium, and the
+  Firefox family Firefox, Zen, Floorp, LibreWolf and Waterfox. Folder and keychain names and the evidence are in the
+  table below. Only profiles with a cookie DB on this Mac are shown, and the sheet shows the app bundle's icon when that
+  browser app is on the Mac, and a globe symbol otherwise (`NSWorkspace.urlForApplication(withBundleIdentifier:)`,
+  without running the app).
+  - Chromium family: profiles are read from `Local State` (the names in `profile.info_cache`, `profiles_order`,
+    `last_used` first), and only profiles with a cookie DB (`<profile>/Network/Cookies`, otherwise `<profile>/Cookies`:
+    Whale and Comet use the latter) are shown. When the browser folder itself is the first profile, as with Opera (a
+    cookie DB directly under the folder), it is shown too, under the browser name alone. Keychain items are found by
+    service name only (one item per browser; the account name differs per browser, and some could not be confirmed).
+  - Firefox family: from the `[Profile…]` sections of `profiles.ini` (`Name`, `Path`, under the browser folder when
+    `IsRelative=1`), only profiles with `cookies.sqlite` are shown. The profile that the install uses (`Default` in
+    `[Install…]`) comes first, then `Default=1`, then the rest in file order. The keychain is not used.
+- **macOS 27's browser folder protection (confirmed 2026-10-27):** A rule set in macOS 27's `/usr/libexec/sandboxd`
+  (`defaultRules-3`) opens the Chrome (`Google/Chrome`), Brave (`BraveSoftware/Brave-Browser`), Edge (`Microsoft Edge`)
+  and Firefox (`Firefox`) folders only to that browser's own team ID and signing ID and to Safari's import service
+  (`com.apple.Safari.BrowserDataImportingService`, Chrome and Firefox only). When another app reads them, it gets
+  `Operation not permitted` with no prompt (confirmed by listing the Chrome folder from this task's shell and by the
+  `sandboxd` log "TCC denied kTCCServiceSystemPolicyAppDataDetailed for com.google.Chrome"; the DTS answer "intentional
+  change" in Apple Developer Forums 847030). The same report says apps with Full Disk Access can read them. So a browser
+  whose list file (`Local State`, `profiles.ini`) exists but cannot be read is not put in the list, and below the sheet
+  only its name is given, as "macOS lets only apps with Full Disk Access read Chrome's data, so it is not listed." There
+  is no prompt that asks for the permission and no settings button. `NativeMessagingHosts` and Chrome's
+  `ChromeFeatureState` and `Crashpad` are left out of the rule. The folders of Whale, Arc, Comet, Vivaldi, Opera,
+  Yandex, Helium and the Gecko browsers other than Firefox are not in the rule. Whether Yardlet (a signed app) is also
+  refused without a prompt when it reads them was not tested, because a prompt might appear on the user's screen (the
+  forum and Claude Code issue 81453 both report "refused without a prompt").
+- **Safari is not included:** macOS opens Safari's cookies
+  (`~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`) only to apps with "Full Disk
+  Access". That permission covers all of other apps' data, so Yardlet does not ask for it just for this one feature.
+- **Site list:** From the copy of the cookie DB, only `host_key` and the last-used time are read (values are not read).
+  Partitioned cookies (those with a non-empty `top_frame_site_key`) and expired cookies are not counted. Hosts are
+  grouped by registrable domain (the Public Suffix List, the same list the vault uses), and IP addresses and `localhost`
+  stay as they are. The order is most recently used first.
+- **Decryption (Chromium on macOS):** An AES-128 key is derived from the keychain password with PBKDF2-HMAC-SHA1 (salt
+  "saltysalt", 1003 iterations, 16 bytes), and what follows the `v10` prefix is decrypted with AES-128-CBC (an IV of 16
+  spaces, PKCS#7). When the `meta` version is 24 or higher, the first 32 bytes of the decrypted value must be the
+  SHA-256 of `host_key` (otherwise that cookie is dropped), and the rest is the value. If none decrypts, the key is
+  taken not to belong to that profile and nothing is inserted. An unencrypted `value` is accepted too.
+- **Reading Firefox (2026-10-27):** `cookies.sqlite` (in WAL mode, so recent cookies are in `-wal`) is copied the same
+  way, and `moz_cookies` is read as plain text. The conversion follows Firefox 158's source
+  `netwerk/cookie/CookiePersistentStorage.cpp` (schema 17): a leading dot in `host` means a domain cookie, `isSecure`
+  and `isHttpOnly` carry over as they are, and `expiry` is **milliseconds** since 1970 from schema 16 on (seconds before
+  that, told apart by `PRAGMA user_version`), so it is converted to Chromium's microseconds since 1601. SameSite maps
+  `nsICookie`'s 0 None, 1 Lax, 2 Strict and 256 unspecified to CEF's 1, 2, 3 and 0, and a None that is not Secure is
+  left unspecified, because Chromium does not accept it (before schema 15, `rawSameSite` None and `sameSite` Lax are
+  also left unspecified). Firefox has no priority, so it is medium. Only cookies with an empty `originAttributes` are
+  accepted: those with `partitionKey` (partitioned), `userContextId` (containers) or `privateBrowsingId` are a different
+  identity and are not inserted. Firefox does not keep session cookies in the file, so sign-ins that end when the
+  browser closes cannot be imported. `lastAccessed` (microseconds since 1970) is used only to order the sites.
+- **Inserting:** The app sends the cookies of the chosen sites (and their subdomains) to the host with the
+  `importCookies` command. The host deletes all cookies of those sites in the target profile (the delete flag of
+  `visit_all_cookies`, partitioned cookies included) and inserts them through the insert path of sections 8 and 9
+  (`set_copied_cookies`): host-only cookies go in with an empty domain, so they stay host-only; Secure, HttpOnly,
+  SameSite, priority and expiry (Chromium's microseconds since 1601, unchanged) are kept; domain cookies that have a
+  host-only cookie with the same host, name and path are left out; and, for each cookie, the other shape on the
+  receiving side is deleted. As in round 3 of section 9, the host-only side of a pair remains. Then the host writes the
+  store to disk (`flush_store`) and replies. The targets are the default profile and the profile of the panel's task. A
+  task profile whose folder does not exist yet is not touched (it receives the cookies from the default profile when its
+  first tab opens). With "Shared by all tasks", the target is the default profile alone.
+- **Why delete and then insert:** If the other browser's sign-in mixes with cookies of the same site already in Yardlet,
+  the cookies of two sessions go to one site. The Google account site blocked such a state with `/CookieMismatch`
+  (sections 8 and 9). The Claude app's import overwrites without deleting.
+- **Security:** For the Chromium family, the keychain is read once, at the moment the person presses Import
+  (`SecItemCopyMatching`, service name only, on a background thread), and the password and key are used only in memory
+  and then zeroed. The Firefox family does not read the keychain. The browser may be writing to the cookie DB, so the DB
+  is copied with `-journal` and `-wal` to a private folder (0700) in `$TMPDIR` and opened read-only; if the copy was
+  taken mid-write and does not open, it is copied again after 0.3 seconds (up to three times). The copy is deleted right
+  after reading (it is not sent to the Trash, even though the values are still encrypted). The original is never opened.
+  Cookie values travel only through the pipe between the app and the host, and stay out of the screen, logs, the model
+  and files (the host's command log records only command names). There is no agent tool.
+- **Limits:** Sites that keep the sign-in in localStorage or IndexedDB do not come along (the Claude app's import moves
+  localStorage as well). Chromium shortens the expiry of inserted cookies to at most 400 days from insertion (source
+  evidence, not measured with QA). Imported cookies share that browser's session, so on some sites signing out on one
+  side also ends the other. Other tasks that are already running do not change.
+- **QA:** `run-check.sh … --ui-fixture-browser-check-only=import` (`BrowserHostLoginImportQA`). It creates a fake Whale
+  folder in the QA home's Application Support (two profiles, cookies encrypted with a test password: a host-only cookie
+  and a `__Host-` cookie on `accounts.example.com`, Secure and non-Secure cookies on `.example.com`, a partitioned
+  cookie, an expired cookie, a `localhost` cookie, and a `www.other.test` cookie that will not be chosen) and passes
+  that password in place of the keychain. It first plants the old copy's domain cookies and other cookies of the site in
+  the default profile, and that task's sign-in in the panel's task. 2026-10-27 results (ad-hoc debug bundle, new QA
+  home): all 9 passed. The site list is `example.com`, `localhost` and `other.test` (no site with only partitioned or
+  expired cookies); the page menu has the item, and the sheet opens with `localhost` checked (image `import-sheet.png`);
+  the default profile, the panel's task and a task created afterwards all send one imported value each of `qa_signin`,
+  `__Host-qa_signin` and `qa_session` to `accounts.example.com`, and the earlier `OLD`, `Y` and `T` and `qa_leftover`
+  are gone; the stored shapes are `__Host-qa_signin accounts.example.com Secure HttpOnly Lax`,
+  `qa_plain .example.com non-Secure Lax session`, `qa_session .example.com Secure HttpOnly None`,
+  `qa_signin accounts.example.com Secure HttpOnly None`; `keep.test` stays as it was and `other.test` does not come in;
+  the panel page reloads and sees `qa_local`; no values in the app or host logs. No leftover processes or crash reports.
+  **More browsers on 2026-10-27:** In the same QA home it adds a fake Firefox folder (two profiles in `profiles.ini`,
+  where the one the install uses differs from `Default=1`; a schema 17 `cookies.sqlite` left in WAL: a host-only Strict
+  cookie on `accounts.example.net`, SameSite-unspecified, Secure None and non-Secure None cookies on `.example.net`, a
+  container cookie with the same name, a partitioned cookie, an expired cookie) and a fake Chrome folder whose
+  `Local State` cannot be read. After Whale, it imports Firefox without the keychain. Results (ad-hoc debug bundle,
+  `$TMPDIR/browser-host-qa/import-more-browsers/`): 13 passed in both the light screen `run-import` and the dark screen
+  `run-import-dark`. The profile order is `Whale · Work`, `Whale · Person 1`, `Firefox · default-release`,
+  `Firefox · old`, and the unreadable browser `Chrome`; the Firefox site, read through the WAL, is `example.net`; the
+  Firefox cookie shapes stored in the default profile are `qa_ff_signin accounts.example.net Secure HttpOnly Strict`,
+  `qa_ff_session .example.net Secure HttpOnly (unspecified)`, `qa_ff_cross .example.net Secure HttpOnly None`,
+  `qa_ff_plain .example.net non-Secure (unspecified)` (all with an expiry); the panel's task sends the same four values
+  and no container value; the panel notice is "Imported the sign-in for example.net from Firefox."; no values in the app
+  or host logs; no leftover processes or crash reports. The sheet image (`import-sheet.png`) shows the installed Whale's
+  icon and the Chrome notice line. The globe symbol shows only when the menu is open, so it is not in the image.
 
-### 지원 브라우저와 근거(2026-10-27)
+### Supported browsers and evidence (2026-10-27)
 
-폴더는 `~/Library/Application Support/` 아래, 키체인은 서비스(괄호는 같은 자리에서 본 계정)다. "배포본"은 그 회사 서버에서 받은 dmg·tar.xz·pkg를
-읽기 전용으로 붙이거나 설치 없이 풀어 Info.plist와 바이트만 읽은 것이고(앱은 실행하지 않음), "설치본"은 이 Mac의 앱 번들이다. Chromium 계열의
-바이트 근거는 Chromium의 쿠키 키 소금 `saltysalt` 바로 뒤에 놓이는 서비스·계정 상수, 또는 `chrome_paths` 옆의 기본 폴더 값이다. 여러 브라우저가
-다른 브라우저의 가져오기 표를 품고 있어(Brave 소스, Comet·Dia·Vivaldi·Yandex·Opera 바이트) 교차 확인에 썼다.
+Folders are under `~/Library/Application Support/`, and keychain entries are services (in parentheses, the account seen
+in the same place). "Download" means a dmg, tar.xz or pkg from the vendor's server, attached read-only or unpacked
+without installing, with only Info.plist and bytes read (the app was not run); "installed" means the app bundle on this
+Mac. For the Chromium family, the byte evidence is the service and account constants placed right after Chromium's
+cookie key salt `saltysalt`, or the default folder value next to `chrome_paths`. Several browsers carry import tables
+for other browsers (Brave source; Comet, Dia, Vivaldi, Yandex and Opera bytes), and these were used to cross-check.
 
-| 브라우저 | 폴더 | 키체인 | 번들 ID | 근거 |
+| Browser | Folder | Keychain | Bundle ID | Evidence |
 |---|---|---|---|---|
-| Whale | `Naver/Whale` | Whale Safe Storage (Whale) | `com.naver.Whale` | 설치본 5.39.412.57 바이트, 이 Mac의 폴더(`<프로필>/Cookies`) |
-| Chrome | `Google/Chrome` | Chrome Safe Storage (Chrome) | `com.google.Chrome` | 설치본 155.0.8059.86 바이트, Chromium 소스. macOS 27 보호 |
-| Edge | `Microsoft Edge` | Microsoft Edge Safe Storage (Microsoft Edge) | `com.microsoft.edgemac` | 배포본 pkg 156.0.4314.42 바이트, 폴더는 `sandboxd` 규칙과 Dia·Yandex 표. macOS 27 보호 |
-| Brave | `BraveSoftware/Brave-Browser` | Brave Safe Storage | `com.brave.Browser` | 배포본 156.1.98.60 `CrProductDirName`, brave-core `keychain_password_mac.mm` 기본값. macOS 27 보호 |
-| Arc | `Arc/User Data` | Arc Safe Storage | `company.thebrowser.Browser` | 배포본 1.170.0 ArcCore 바이트(`%s Safe Storage`와 arc→Arc), Comet·Vivaldi·Opera 표, 이 Mac의 `Arc/User Data/Local State` |
-| Comet | `Comet` | Comet Safe Storage | `ai.perplexity.comet` | 배포본 155.0.8059.148 바이트, 이 Mac의 `Comet/Local State`·`Default/Cookies` |
-| Vivaldi | `Vivaldi` | Vivaldi Safe Storage (Vivaldi) | `com.vivaldi.Vivaldi` | 배포본 8.2.4133.94 바이트, 폴더는 Dia 표와 Vivaldi 포럼 |
-| Opera | `com.operasoftware.Opera`(폴더 자체가 첫 프로필) | Opera Safe Storage (Opera) | `com.operasoftware.Opera` | 배포본 138.0.6044.24 바이트, 폴더는 Dia·Yandex 표, 첫 프로필 자리는 Opera 포럼 운영진 답 |
-| Opera GX | `com.operasoftware.OperaGX` | Opera Safe Storage (Opera) | `com.operasoftware.OperaGX` | 배포본 138.0.6044.45 바이트(GX 빌드도 같은 상수, `com.operasoftware.OperaGX` 9회), Dia·Yandex 표. Vivaldi 표만 "Opera GX Safe Storage"라 적어 GX 자신의 바이트를 따랐다 |
-| Yandex | `Yandex/YandexBrowser` | Yandex Safe Storage (Yandex) | `ru.yandex.desktop.yandex-browser` | 배포본 26.8.3.1016 바이트, Brave 소스. 쿠키가 `v10`으로 암호화되는지는 확인 못 함(아니면 "풀지 못했습니다"로 끝남) |
-| Helium | `net.imput.helium` | Helium Storage Key (Helium) | `net.imput.helium` | 배포본 0.20.1.1 바이트, helium-macos 패치 `change-keychain-name`·`change-product-dir-name` |
-| Chromium | `Chromium` | Chromium Safe Storage (Chromium) | `org.chromium.Chromium` | Chromium 소스 `keychain_password_mac.mm`·`chrome_paths_mac.mm`·`BRANDING` |
-| Firefox | `Firefox` | 없음 | `org.mozilla.firefox` | 배포본 158.0.1 `application.ini`(`Name=Firefox`), Gecko `nsXREDirProvider::AppendProfilePath`(macOS는 `Profile`, 없으면 `Name`). macOS 27 보호 |
-| Zen | `zen` | 없음 | `app.zen-browser.zen` | 배포본 1.23.4b `Profile=zen` |
-| Floorp | `Floorp` | 없음 | `app.floorp.Floorp` | 배포본 12.20.2 `Profile=Floorp` |
-| LibreWolf | `librewolf` | 없음 | `net.librewolf.librewolf` | 배포본 158.0.1-2 `Profile=librewolf` |
-| Waterfox | `Waterfox` | 없음 | `net.waterfox.waterfox` | 배포본 6.7.6 `Profile=Waterfox` |
+| Whale | `Naver/Whale` | Whale Safe Storage (Whale) | `com.naver.Whale` | Installed 5.39.412.57 bytes, this Mac's folder (`<profile>/Cookies`) |
+| Chrome | `Google/Chrome` | Chrome Safe Storage (Chrome) | `com.google.Chrome` | Installed 155.0.8059.86 bytes, Chromium source. macOS 27 protection |
+| Edge | `Microsoft Edge` | Microsoft Edge Safe Storage (Microsoft Edge) | `com.microsoft.edgemac` | Download pkg 156.0.4314.42 bytes; the folder from the `sandboxd` rule and the Dia and Yandex tables. macOS 27 protection |
+| Brave | `BraveSoftware/Brave-Browser` | Brave Safe Storage | `com.brave.Browser` | Download 156.1.98.60 `CrProductDirName`, brave-core `keychain_password_mac.mm` default. macOS 27 protection |
+| Arc | `Arc/User Data` | Arc Safe Storage | `company.thebrowser.Browser` | Download 1.170.0 ArcCore bytes (`%s Safe Storage` and arc→Arc), the Comet, Vivaldi and Opera tables, this Mac's `Arc/User Data/Local State` |
+| Comet | `Comet` | Comet Safe Storage | `ai.perplexity.comet` | Download 155.0.8059.148 bytes, this Mac's `Comet/Local State` and `Default/Cookies` |
+| Vivaldi | `Vivaldi` | Vivaldi Safe Storage (Vivaldi) | `com.vivaldi.Vivaldi` | Download 8.2.4133.94 bytes; the folder from the Dia table and the Vivaldi forum |
+| Opera | `com.operasoftware.Opera` (the folder itself is the first profile) | Opera Safe Storage (Opera) | `com.operasoftware.Opera` | Download 138.0.6044.24 bytes; the folder from the Dia and Yandex tables; the first profile's location from an Opera forum moderator's answer |
+| Opera GX | `com.operasoftware.OperaGX` | Opera Safe Storage (Opera) | `com.operasoftware.OperaGX` | Download 138.0.6044.45 bytes (the GX build has the same constants, and `com.operasoftware.OperaGX` 9 times), the Dia and Yandex tables. Only the Vivaldi table says "Opera GX Safe Storage", so GX's own bytes were followed |
+| Yandex | `Yandex/YandexBrowser` | Yandex Safe Storage (Yandex) | `ru.yandex.desktop.yandex-browser` | Download 26.8.3.1016 bytes, Brave source. Whether its cookies are encrypted with `v10` is not confirmed (if not, the import ends with "The browser's cookies could not be decrypted with its key.") |
+| Helium | `net.imput.helium` | Helium Storage Key (Helium) | `net.imput.helium` | Download 0.20.1.1 bytes, the helium-macos patches `change-keychain-name` and `change-product-dir-name` |
+| Chromium | `Chromium` | Chromium Safe Storage (Chromium) | `org.chromium.Chromium` | Chromium source `keychain_password_mac.mm`, `chrome_paths_mac.mm` and `BRANDING` |
+| Firefox | `Firefox` | None | `org.mozilla.firefox` | Download 158.0.1 `application.ini` (`Name=Firefox`), Gecko `nsXREDirProvider::AppendProfilePath` (on macOS `Profile`, otherwise `Name`). macOS 27 protection |
+| Zen | `zen` | None | `app.zen-browser.zen` | Download 1.23.4b `Profile=zen` |
+| Floorp | `Floorp` | None | `app.floorp.Floorp` | Download 12.20.2 `Profile=Floorp` |
+| LibreWolf | `librewolf` | None | `net.librewolf.librewolf` | Download 158.0.1-2 `Profile=librewolf` |
+| Waterfox | `Waterfox` | None | `net.waterfox.waterfox` | Download 6.7.6 `Profile=Waterfox` |
 
-넣지 않은 것: **Dia**(배포본 1.54.2 `company.thebrowser.dia`의 ArcCore에 `%s Safe Storage` 형식만 있고 자기 폴더·서비스 문자열이 없다. Comet의 표가
-"Dia Safe Storage"라 적지만 폴더는 확인하지 못했다), **ChatGPT Atlas**(OpenAI 도움말 "ChatGPT Atlas retirement": 은퇴해 업데이트가 끝났고 쿠키는
-새 브라우저에서 다시 로그인하라고 안내한다. 참고로 1.2026.189.1 번들의 내장 Chromium은 `com.openai.atlas.web`, "ChatGPT Safe Storage"/"ChatGPT"),
-**Sidekick**(2025-08-03 서비스 종료, 팀은 Perplexity로), **Thorium**(Thorium-MacOS 릴리스가 M144(2026-06)부터 macOS 파일 없이 나오고 마지막
-M138은 2026-02, Homebrew cask도 비활성), **Safari**(위).
+Not included: **Dia** (the ArcCore in download 1.54.2, `company.thebrowser.dia`, has only the `%s Safe Storage` format
+and no folder or service string of its own. Comet's table says "Dia Safe Storage", but the folder could not be
+confirmed), **ChatGPT Atlas** (OpenAI help "ChatGPT Atlas retirement": it is retired and no longer updated, and for
+cookies the help says to sign in again in the new browser. For reference, the built-in Chromium of the 1.2026.189.1
+bundle is `com.openai.atlas.web`, "ChatGPT Safe Storage"/"ChatGPT"), **Sidekick** (service ended on 2025-08-03, and the
+team moved to Perplexity), **Thorium** (Thorium-MacOS releases ship without macOS files from M144 (2026-06), the last
+M138 was in 2026-02, and the Homebrew cask is disabled too), **Safari** (above).

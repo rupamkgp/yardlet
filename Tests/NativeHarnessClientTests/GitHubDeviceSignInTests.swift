@@ -3,7 +3,7 @@ import XCTest
 @testable import NativeHarnessClient
 @testable import YardletAgentTools
 
-/// GitHub's device sign-in with Yardlet's own GitHub OAuth app (docs/CONNECTORS.md, "GitHub 로그인"): the code
+/// GitHub's device sign-in with Yardlet's own GitHub OAuth app (docs/CONNECTORS.md, "GitHub sign-in"): the code
 /// request, polling through `authorization_pending` and `slow_down`, the refusals, and a GitHub
 /// connector that signs in this way instead of taking a pasted token. GitHub and the MCP server
 /// are local fakes: no request leaves the machine.

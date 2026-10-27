@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// The single project editing surface: the name, which folders belong to the project, which one
-/// is the primary folder new tasks run in, and the project's Yardlet 지침. Instruction files are
+/// is the primary folder new tasks run in, and the project's Yardlet instructions. Instruction files are
 /// never created, copied, or merged here — adding a root only tells the harness the folder exists,
 /// and the project's instructions stay in Yardlet's own folder.
 struct ProjectEditSheet: View {

@@ -14,11 +14,11 @@ import XCTest
 /// - `progress-*`: one being started ("Starting…"), one whose start failed (why, under its summary,
 ///   with Options, Do it here and Start again), one sent here ("Sent to this session").
 /// - `places-*`: where the agent said each starts — "Starts in web-app · In a worktree" and
-///   "As a subtask of ‘CS 응대’" — before the summary, and a worktree asked for outside Git: "Local",
+///   "As a subtask of ‘<parent>’" — before the summary, and a worktree asked for outside Git: "Local",
 ///   quietly, with the settings.
 /// - `options-popover-*`: Options — harness, account, where, Local or New worktree, model and
 ///   permissions, each a one-level menu, and Start — for a Claude task that bypasses permissions,
-///   nested under ‘CS 응대’.
+///   nested under ‘<parent>’.
 /// - `options-outside-git-*`: the same for a folder outside Git the agent wanted a worktree in:
 ///   Local, quietly, with no menu to choose another.
 @MainActor
@@ -126,7 +126,7 @@ final class TaskSuggestionRenderingTests: XCTestCase {
         let places: [String: TaskSuggestionStartPlace] = [
             chip(1).id: TaskSuggestionStartPlace(label: L10n.format("Starts in %@", "web-app"), startsInWorktree: true,
                                                  settings: "Claude Code · Opus High · " + L10n.string("Bypass permissions")),
-            chip(2).id: TaskSuggestionStartPlace(label: L10n.format("As a subtask of ‘%@’", "CS 응대"), startsInWorktree: false),
+            chip(2).id: TaskSuggestionStartPlace(label: L10n.format("As a subtask of ‘%@’", "CS replies"), startsInWorktree: false),
             // The agent asked for a worktree in a folder outside Git (`suggestedTaskSettingsLabel`).
             chip(3).id: TaskSuggestionStartPlace(startsInWorktree: false,
                                                  settings: L10n.string("Local") + " · Claude Code · Opus High")
@@ -141,7 +141,7 @@ final class TaskSuggestionRenderingTests: XCTestCase {
             let texts = drawing.elements.map(\.description).joined(separator: "\n")
             for drawn in [L10n.format("Starts in %@", "web-app") + " · " + L10n.string("In a worktree") + " · "
                             + "Claude Code · Opus High · " + L10n.string("Bypass permissions") + " · The retry flag",
-                          L10n.format("As a subtask of ‘%@’", "CS 응대") + " · The queue file"] {
+                          L10n.format("As a subtask of ‘%@’", "CS replies") + " · The queue file"] {
                 XCTAssertTrue(texts.contains(drawn), "\(drawn) is not drawn:\n\(texts)")
             }
         }
@@ -203,7 +203,7 @@ final class TaskSuggestionRenderingTests: XCTestCase {
             id: "claude-code", harness: .claudeCode, providerID: nil, state: .signedIn, accountLabel: "you@example.com",
             detail: "", credentialOwner: "Claude Code", checkedAt: Date(), usage: [], canLogin: false, canLogout: false))
         var context = TaskSuggestionOptionsContext(
-            choice: { choice }, parentLabel: L10n.format("As a subtask of ‘%@’", "CS 응대"), projects: [project],
+            choice: { choice }, parentLabel: L10n.format("As a subtask of ‘%@’", "CS replies"), projects: [project],
             harnesses: HarnessCatalog.builtIns.filter { [.claudeCode, .codex].contains($0.id) },
             models: NewTaskModelSource(catalogs: HarnessModelCatalogStore(locations: HarnessModelSettingsLocations(
                 claudeConfigDirectory: URL(filePath: "/tmp/suggestion-options-none/claude"),
@@ -223,7 +223,7 @@ final class TaskSuggestionRenderingTests: XCTestCase {
             try WindowlessRender.writePNG(try host.capture().bitmap,
                                           to: directory.appending(path: "options-popover-\(appearance.suffix).png"))
             let texts = host.accessibilityElements().map(\.description).joined(separator: "\n")
-            for drawn in [L10n.format("As a subtask of ‘%@’", "CS 응대"), L10n.string("Harness"), L10n.string("Account"),
+            for drawn in [L10n.format("As a subtask of ‘%@’", "CS replies"), L10n.string("Harness"), L10n.string("Account"),
                           "you@example.com", L10n.string("taskSuggestion.where"), "uploader", L10n.string("Where to run"),
                           L10n.string("New worktree"), L10n.string("Permissions"), L10n.string("Bypass permissions"),
                           L10n.string("Start")] {
@@ -294,7 +294,7 @@ final class TaskSuggestionRenderingTests: XCTestCase {
             return TranscriptEntry(createdAt: start.addingTimeInterval(offset), content: content)
         }
         var entries = [
-            entry(.user(text: "업로드 큐의 재시도 버그를 고쳐 줘")),
+            entry(.user(text: "Fix the retry bug in the upload queue")),
             entry(.assistant(text: "I'll read the queue first.", isStreaming: false)),
             entry(.activity(HarnessActivity(id: "toolu_read", kind: "Read", title: "Read",
                                             input: "Sources/Uploader/UploadQueue.swift", output: "…"), state: .completed))

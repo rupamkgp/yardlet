@@ -2,7 +2,7 @@ import Foundation
 
 /// Keeping Yardlet's task list in step with the Claude app's Code sessions and the Codex threads a
 /// person started, the way the Codex app shows every thread in `~/.codex` without an import step
-/// (docs/NATIVE_SESSION_STORAGE.md, "세션 목록 따라가기"). The
+/// (docs/NATIVE_SESSION_STORAGE.md, "Following the session list"). The
 /// sources are only read. What changes is Yardlet's own index: a new task through the import path,
 /// a task's last activity moved forward, a provider title, a task archived in Yardlet. These are
 /// the rules; `AppModel.followSessionLists` reads the sources and applies them.

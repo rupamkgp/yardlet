@@ -253,7 +253,7 @@ private struct TaskRailFixture {
                                 runtimeExecutableURL: URL(filePath: "/tmp/claude"), title: "Build the session rail",
                                 status: .ready, providerSessionID: "saved", providerOptions: ["permissionMode": "acceptEdits"])
         var builder = TranscriptBuilder()
-        builder.appendUser("오른쪽 세부정보를 팝오버 말고 사이드바로 바꿔 줘")
+        builder.appendUser("Show the details in a sidebar on the right, not a popover")
         entries = builder.entries + (try SessionRailTests.claudeEntries())
         if panel { workspace.setPanels(TaskSurfaceNavigationProjection.showing("files", in: workspace.panels)) }
         if raised { window.toggle(for: session.id) }

@@ -4,7 +4,7 @@ import YardletAgentTools
 
 // Suggested tasks: an agent's `spawn_task` call is a chip in its task's conversation. Start starts
 // the task under the one that suggested it, Do it here sends the suggestion to that task, and
-// Options opens a new task draft holding it (docs/AGENT_BROWSER_TOOLS.md, "작업 제안 도구").
+// Options opens a new task draft holding it (docs/AGENT_BROWSER_TOOLS.md, "Task suggestion tools").
 // The conversation's own record says what was suggested; Yardlet keeps only what became of each
 // suggestion, per task, as the Claude app keeps `resolvedBackgroundTaskSuggestions` with a session.
 

@@ -3,7 +3,7 @@ import XCTest
 @testable import NativeHarnessClient
 
 /// "Unavailable" and the error card belong to the tab on screen and to the move that failed, and go
-/// once a page commits (2026-10-23, the person's report of "사용할 수 없음" while moving between pages).
+/// once a page commits (2026-10-23, a report of "Unavailable" staying while moving between pages).
 /// The host's events are played to the panel's controller as Chromium sends them.
 @MainActor
 final class BrowserLoadErrorTests: XCTestCase {

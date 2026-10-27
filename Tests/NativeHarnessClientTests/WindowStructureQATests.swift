@@ -33,13 +33,13 @@ final class WindowStructureQATests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let cli = URL(filePath: "/usr/bin/true")
         let running = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
-                                    title: "오른쪽 위 버튼으로 패널 열기 점검", status: .running)
+                                    title: "Check panels from top-right buttons", status: .running)
         let left = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
-                                 title: "분할 화면 왼쪽 작업", hasUnreadUpdate: true)
+                                 title: "Split view left task", hasUnreadUpdate: true)
         let right = SessionRecord(harness: .claudeCode, workspaceURL: folder, runtimeExecutableURL: cli,
-                                  title: "분할 화면 오른쪽 작업")
+                                  title: "Split view right task")
         let third = SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
-                                  title: "세 번째 구획")
+                                  title: "Third pane")
         let sessions = [running, left, right, third]
         let model = AppModel(
             store: SessionStore(sessions: sessions, repository: InMemorySessionRepository(sessions: sessions)),
@@ -206,11 +206,11 @@ final class WindowStructureQATests: XCTestCase {
         report.append("")
         let lines = controls.map { control -> String in
             let clipped = control.frame.maxX > width + 0.5 || control.frame.minX < -0.5 || control.frame.width < 4
-            return "- \(control.label.isEmpty ? "(이름 없음)" : control.label) [\(control.role)] "
-                + "x \(Int(control.frame.minX))–\(Int(control.frame.maxX))\(clipped ? " **잘림/창 밖**" : "")"
+            return "- \(control.label.isEmpty ? "(no name)" : control.label) [\(control.role)] "
+                + "x \(Int(control.frame.minX))–\(Int(control.frame.maxX))\(clipped ? " **clipped/outside window**" : "")"
         }
-        report.append(contentsOf: lines.isEmpty ? ["- (버튼 없음)"] : lines)
-        for note in notes { report.append("- 확인: \(note)") }
+        report.append(contentsOf: lines.isEmpty ? ["- (no buttons)"] : lines)
+        for note in notes { report.append("- Check: \(note)") }
         report.append("")
     }
 
@@ -241,7 +241,7 @@ final class WindowStructureQATests: XCTestCase {
 
     private func writeReport() throws {
         let directory = try WindowlessRender.directory(Self.folder)
-        try (["# 창 상태별 머리 버튼과 적용 대상", ""] + report).joined(separator: "\n")
+        try (["# Header buttons per window state and what they act on", ""] + report).joined(separator: "\n")
             .write(to: directory.appending(path: "report.md"), atomically: true, encoding: .utf8)
     }
 
@@ -266,7 +266,7 @@ final class WindowStructureQATests: XCTestCase {
                                              appearance: appearance)
             host.settle(passes: 20, interval: 0.03)
             try draw(host, "single", appearance)
-            if light { describe("작업 하나 (1280×760)", titleBarControls(in: host), width: Self.size.width) }
+            if light { describe("One task (1280×760)", titleBarControls(in: host), width: Self.size.width) }
 
             // The side panel and the terminal open from the title bar, at the Codex app's sizes.
             if light {
@@ -289,7 +289,7 @@ final class WindowStructureQATests: XCTestCase {
                 // 1280 × 760 beside a 240 sidebar: the Codex app's default, max(320, min(1216, 539), min(640, 687)).
                 XCTAssertEqual(panelWidth, 640, accuracy: 1)
                 XCTAssertEqual(terminalHeight, 280, accuracy: 1)
-                var notes = ["오른쪽 패널 폭 \(Int(panelWidth)) (Codex 공식, 이전 420), 터미널 \(Int(terminalHeight)) (이전 240)"]
+                var notes = ["Side panel width \(Int(panelWidth)) (Codex formula, was 420), terminal \(Int(terminalHeight)) (was 240)"]
                 orderIn(host)
 
                 // A drag past half the panel's minimum closes it, keeping the width it had.
@@ -297,7 +297,7 @@ final class WindowStructureQATests: XCTestCase {
                 let panelClosed = panels(model, fixture.running.id).trailingSurfaceID == nil
                 XCTAssertTrue(panelClosed, "a drag narrower than 160 closes the side panel")
                 XCTAssertNil(model.taskWorkspaces.sizes.sizes.panelWidthRatio, "closing keeps the width it had")
-                notes.append("오른쪽 패널 손잡이를 폭 120까지 끎 → \(panelClosed ? "닫힘" : "그대로"), 저장 폭 그대로")
+                notes.append("Side panel handle dragged to width 120 → \(panelClosed ? "closed" : "unchanged"), saved width unchanged")
                 XCTAssertTrue(press(sidePanel, in: host))
                 // A drag that stays wide sets the share; a double click returns to the default.
                 let reopened = try XCTUnwrap(handle(L10n.string("Resize side panel"), in: host))
@@ -305,12 +305,12 @@ final class WindowStructureQATests: XCTestCase {
                 let ratio = model.taskWorkspaces.sizes.sizes.panelWidthRatio
                 XCTAssertNotNil(ratio, "a drag keeps the width as a share")
                 let draggedWidth = Self.size.width - (handle(L10n.string("Resize side panel"), in: host)?.frame.maxX ?? 0)
-                notes.append("오른쪽으로 100 끎 → 폭 \(Int(draggedWidth)), 비율 \(ratio.map { String(format: "%.3f", $0) } ?? "없음") 저장")
+                notes.append("Dragged 100 right → width \(Int(draggedWidth)), share \(ratio.map { String(format: "%.3f", $0) } ?? "none") saved")
                 if let dragged = handle(L10n.string("Resize side panel"), in: host) { doubleClick(dragged, in: host) }
                 let resetWidth = Self.size.width - (handle(L10n.string("Resize side panel"), in: host)?.frame.maxX ?? 0)
                 XCTAssertNil(model.taskWorkspaces.sizes.sizes.panelWidthRatio, "a double click returns to the default")
                 XCTAssertEqual(resetWidth, 640, accuracy: 1)
-                notes.append("손잡이 두 번 누름 → 폭 \(Int(resetWidth)) (기본으로)")
+                notes.append("Handle double-clicked → width \(Int(resetWidth)) (default)")
 
                 // The terminal: lower than 80 closes it, keeping its height.
                 let terminalNow = try XCTUnwrap(handle(L10n.string("Resize terminal"), in: host))
@@ -318,19 +318,19 @@ final class WindowStructureQATests: XCTestCase {
                 let terminalClosed = !panels(model, fixture.running.id).isTerminalPresented
                 XCTAssertTrue(terminalClosed, "a drag lower than 80 closes the terminal")
                 XCTAssertEqual(model.taskWorkspaces.sizes.sizes.terminalHeight, 280, "closing keeps the height it had")
-                notes.append("터미널 손잡이를 높이 60까지 끎 → \(terminalClosed ? "닫힘" : "그대로"), 저장 높이 \(Int(model.taskWorkspaces.sizes.sizes.terminalHeight))")
+                notes.append("Terminal handle dragged to height 60 → \(terminalClosed ? "closed" : "unchanged"), saved height \(Int(model.taskWorkspaces.sizes.sizes.terminalHeight))")
                 XCTAssertTrue(press(terminal, in: host))
                 let shortened = try XCTUnwrap(handle(L10n.string("Resize terminal"), in: host))
                 drag(shortened, by: CGSize(width: 0, height: 180), in: host)
                 let floor = Self.size.height - (handle(L10n.string("Resize terminal"), in: host)?.frame.maxY ?? 0)
                 XCTAssertTrue(panels(model, fixture.running.id).isTerminalPresented)
                 XCTAssertEqual(floor, 160, accuracy: 1)
-                notes.append("터미널을 높이 100까지 끎 → 열린 채 \(Int(floor))(최소)")
+                notes.append("Terminal dragged to height 100 → stays open at \(Int(floor)) (minimum)")
                 if let low = handle(L10n.string("Resize terminal"), in: host) { doubleClick(low, in: host) }
                 let restored = Self.size.height - (handle(L10n.string("Resize terminal"), in: host)?.frame.maxY ?? 0)
                 XCTAssertEqual(restored, 280, accuracy: 1)
-                notes.append("터미널 손잡이 두 번 누름 → \(Int(restored)) (기본으로)")
-                describe("작업 하나, 오른쪽 패널·터미널 열림", titleBarControls(in: host), width: Self.size.width, notes: notes)
+                notes.append("Terminal handle double-clicked → \(Int(restored)) (default)")
+                describe("One task, side panel and terminal open", titleBarControls(in: host), width: Self.size.width, notes: notes)
             }
             model.taskWorkspaces.state(for: fixture.running.id).setPanels(.init())
             host.close()
@@ -359,10 +359,10 @@ final class WindowStructureQATests: XCTestCase {
                 let leftHas = panels(model, fixture.left.id).isTerminalPresented
                 let rightHas = panels(model, fixture.right.id).isTerminalPresented
                 let focused = splits.activeSplit?.focusedPaneID == rightPane.id
-                describe("탭 셋 + 분할 화면(왼쪽 구획 포커스) — 제목 막대", titleBar, width: Self.size.width)
-                describe("탭 셋 + 분할 화면(왼쪽 구획 포커스) — 구획 머리", panes, width: Self.size.width,
-                         notes: ["오른쪽 구획 머리의 터미널 단추 → 왼쪽 작업 \(leftHas ? "열림" : "닫힘"), 오른쪽 작업 \(rightHas ? "열림" : "닫힘"), "
-                                 + "포커스 \(focused ? "오른쪽 구획으로 옮김" : "그대로")"])
+                describe("Three tabs + split view (left pane focused): title bar", titleBar, width: Self.size.width)
+                describe("Three tabs + split view (left pane focused): pane headers", panes, width: Self.size.width,
+                         notes: ["Right pane header's terminal button → left task \(leftHas ? "open" : "closed"), right task \(rightHas ? "open" : "closed"), "
+                                 + "focus \(focused ? "moved to the right pane" : "unchanged")"])
                 XCTAssertFalse(leftHas)
                 XCTAssertTrue(rightHas)
                 XCTAssertTrue(focused, "a pane's button focuses its pane")
@@ -379,7 +379,7 @@ final class WindowStructureQATests: XCTestCase {
                 drag(boundary, by: CGSize(width: 100, height: 0), in: host)
                 let moved = (leftShare() - before) * Double(Self.size.width - 241 - SplitLayoutMetrics.handleThickness)
                 XCTAssertEqual(moved, 100, accuracy: 2, "the pane boundary moves as far as the pointer")
-                report.append("- 확인: 구획 사이 손잡이를 오른쪽으로 100 끎 → 경계 \(Int(moved.rounded())) 이동(이전에는 절반)")
+                report.append("- Check: handle between panes dragged 100 right → boundary moved \(Int(moved.rounded())) (half before)")
                 report.append("")
                 splits.resize(at: [], fractions: [before, 1 - before])
             }
@@ -391,8 +391,8 @@ final class WindowStructureQATests: XCTestCase {
                 XCTAssertTrue(press(leftPanel, in: host))
                 let leftHas = panels(model, fixture.left.id).trailingSurfaceID != nil
                 let rightHas = panels(model, fixture.right.id).trailingSurfaceID != nil
-                describe("분할 화면(오른쪽 구획 포커스) — 구획 머리", paneHeaderControls(in: host), width: Self.size.width,
-                         notes: ["왼쪽 구획 머리의 오른쪽 패널 단추 → 왼쪽 \(leftHas ? "열림" : "닫힘"), 오른쪽 \(rightHas ? "열림" : "닫힘")"])
+                describe("Split view (right pane focused): pane headers", paneHeaderControls(in: host), width: Self.size.width,
+                         notes: ["Left pane header's side panel button → left \(leftHas ? "open" : "closed"), right \(rightHas ? "open" : "closed")"])
                 XCTAssertTrue(leftHas)
                 XCTAssertFalse(rightHas)
                 model.taskWorkspaces.state(for: fixture.left.id).setPanels(.init())
@@ -413,9 +413,9 @@ final class WindowStructureQATests: XCTestCase {
                 let leftTerminal = panes.first { $0.label == terminal }
                 XCTAssertTrue(press(leftTerminal, in: host), "the left pane's terminal button")
                 let leftHas = panels(model, fixture.left.id).isTerminalPresented
-                describe("분할 화면(빈 구획 포커스, ⌘⇧D 직후) — 구획 머리", panes, width: Self.size.width,
-                         notes: ["왼쪽 구획 머리의 터미널 단추 → 왼쪽 작업 \(leftHas ? "열림" : "닫힘")",
-                                 "(아래 빈 구획 머리는 \"새 작업\"과 닫기뿐)"])
+                describe("Split view (empty pane focused, right after ⌘⇧D): pane headers", panes, width: Self.size.width,
+                         notes: ["Left pane header's terminal button → left task \(leftHas ? "open" : "closed")",
+                                 "(the empty pane's header below has only \"New task\" and close)"])
                 XCTAssertTrue(leftHas)
                 model.taskWorkspaces.state(for: fixture.left.id).setPanels(.init())
                 splits.split(.down)
@@ -429,8 +429,8 @@ final class WindowStructureQATests: XCTestCase {
                                          appearance: appearance)
             host.settle(passes: 20, interval: 0.03)
             try draw(host, "home", appearance)
-            if light { describe("새 작업 화면(탭)", titleBarControls(in: host), width: Self.size.width,
-                                notes: ["터미널·브라우저는 이번 범위 밖(별도 작업 제안)"]) }
+            if light { describe("New task screen (tab)", titleBarControls(in: host), width: Self.size.width,
+                                notes: ["Terminal and browser out of scope here (suggested as a separate task)"]) }
             host.close()
             splits.closeOtherTabs(than: .session(fixture.running.id))
 
@@ -444,8 +444,8 @@ final class WindowStructureQATests: XCTestCase {
             if light {
                 let shown = titleBarControls(in: host)
                 XCTAssertFalse(shown.contains { taskButtons.contains($0.label) }, "scheduled tasks show no task's buttons")
-                describe("예약된 작업 화면", shown, width: Self.size.width,
-                         notes: ["제목 막대에 가려진 작업의 머리·버튼 없음, 보기 메뉴의 ⌘J·⌘⌥B·⌃⌘I·⌘1–4도 꺼짐(코드)"])
+                describe("Scheduled tasks screen", shown, width: Self.size.width,
+                         notes: ["No header or buttons for the hidden task in the title bar; View menu ⌘J, ⌘⌥B, ⌃⌘I, ⌘1–4 off too (code)"])
             }
             host.close()
 
@@ -462,8 +462,8 @@ final class WindowStructureQATests: XCTestCase {
             if light {
                 let shown = titleBarControls(in: host)
                 XCTAssertTrue(shown.contains { $0.label == more }, "a narrow title bar folds its buttons")
-                describe("좁은 창 760×560, 사이드바 최대 폭, 오른쪽 패널·터미널 열림", shown, width: narrow.width,
-                         notes: ["버튼 셋이 \"더 보기\" 메뉴로 접히고 제목 자리가 넓어짐"])
+                describe("Narrow window 760×560, sidebar at max width, side panel and terminal open", shown, width: narrow.width,
+                         notes: ["The three buttons fold into a \"More\" menu and the title gets more room"])
             }
             UserDefaults.yardlet.removeObject(forKey: SidebarWidth.defaultsKey)
             model.taskWorkspaces.state(for: fixture.running.id).setPanels(.init())
@@ -488,8 +488,8 @@ final class WindowStructureQATests: XCTestCase {
                 // The right half was split again: the left pane keeps half, the other two a quarter each.
                 XCTAssertEqual(panes.filter { $0.label == more }.count, 2, "the two narrow panes fold their buttons")
                 XCTAssertEqual(panes.filter { $0.label == terminal }.count, 1, "the wide pane keeps its buttons")
-                describe("세 구획(가운데 구획에 오른쪽 패널·터미널) — 구획 머리", panes, width: Self.size.width,
-                         notes: ["왼쪽 구획(약 500)은 버튼 셋, 가운데·오른쪽(약 260)은 \"더 보기\". 가운데는 오른쪽 패널이 대화를 대신(678 미만)"])
+                describe("Three panes (side panel and terminal in the middle pane): pane headers", panes, width: Self.size.width,
+                         notes: ["Left pane (about 500) has three buttons, middle and right (about 260) \"More\". The middle one's side panel replaces its conversation (under 678)"])
             }
             model.taskWorkspaces.state(for: fixture.right.id).setPanels(.init())
             splits.dissolve(three.id)
@@ -498,7 +498,7 @@ final class WindowStructureQATests: XCTestCase {
         try writeReport()
     }
 
-    /// 2026-10-24 (A layout, the user: "탭 자체가 가장 상위 헤더면 안되나 코덱스처럼? 지금은 공간낭비가 너무 심한 느낌"): the
+    /// 2026-10-24 (A layout, asked for so the tabs are the topmost header as in Codex and waste no space): the
     /// window's tabs are in the title bar, and a side panel beside the conversation reaches the window's top
     /// with its tabs in the title bar's row, or in a split view in the pane header's row. Tabs, panes and a
     /// side panel's tabs drag to new places with the pointer, and Esc cancels a drag. Drawn light and dark
@@ -584,8 +584,8 @@ final class WindowStructureQATests: XCTestCase {
                               "the window's tabs are in the title bar")
                 let top = try XCTUnwrap(pageTop(host), "the browser's address bar")
                 XCTAssertEqual(top, ParityTheme.titleBarHeight + 41, accuracy: 2)
-                notes.append("작업 하나 + 탭 셋 + 오른쪽 패널 브라우저: 페이지 시작 \(Int(top.rounded())) pt "
-                             + "(이전 구조 34 + 50 + 42 + 41 = 167 pt)")
+                notes.append("One task + three tabs + side panel browser: page starts at \(Int(top.rounded())) pt "
+                             + "(previous layout 34 + 50 + 42 + 41 = 167 pt)")
             }
             host.close()
 
@@ -606,8 +606,8 @@ final class WindowStructureQATests: XCTestCase {
                 XCTAssertEqual(closePanel.frame.midY, paneLine, accuracy: 3, "the pane's panel strip is in its header's row")
                 let top = try XCTUnwrap(pageTop(host))
                 XCTAssertEqual(top, ParityTheme.titleBarHeight + SplitLayoutMetrics.paneHeaderHeight + 41, accuracy: 2)
-                notes.append("분할 화면(1680×900), 오른쪽 구획에 오른쪽 패널 브라우저: 페이지 시작 \(Int(top.rounded())) pt "
-                             + "(이전 구조 50 + 36 + 42 + 41 = 169 pt, 탭이 둘 이상이면 34 pt 더)")
+                notes.append("Split view (1680×900), side panel browser in the right pane: page starts at \(Int(top.rounded())) pt "
+                             + "(previous layout 50 + 36 + 42 + 41 = 169 pt, 34 pt more with two or more tabs)")
             }
             model.taskWorkspaces.state(for: fixture.right.id).setPanels(.init())
             host.close()
@@ -632,7 +632,7 @@ final class WindowStructureQATests: XCTestCase {
         let buttonY = try XCTUnwrap(close.superview).convert(close.frame, to: nil).midY
         let fromTop = (titled.contentView?.bounds.height ?? 0) - buttonY
         XCTAssertEqual(fromTop, ParityTheme.titleBarHeight / 2, accuracy: 1.5)
-        notes.append("신호등 단추 중심: 창 위에서 \(String(format: "%.1f", fromTop)) pt (제목 줄 50 pt의 가운데)")
+        notes.append("Traffic light center: \(String(format: "%.1f", fromTop)) pt from the window top (middle of the 50 pt title row)")
         titled.close()
 
         // Dragging, with the pointer, in a window off every screen.
@@ -683,7 +683,7 @@ final class WindowStructureQATests: XCTestCase {
         release(before)
         XCTAssertEqual(splits.tabs, [.session(fixture.left.id), .session(fixture.running.id), .home])
         XCTAssertEqual(splits.selection, .session(fixture.left.id))
-        notes.append("뒤 창 탭을 끌어 첫 탭 앞으로 → 순서 [\(fixture.left.title), \(fixture.running.title), 새 작업], 끈 탭이 보임")
+        notes.append("Back window tab dragged before the first → order [\(fixture.left.title), \(fixture.running.title), New task], dragged tab shown")
 
         // The shown tab by its mark, to the end of the bar.
         let shown = try XCTUnwrap(tab(fixture.left.title))
@@ -693,7 +693,7 @@ final class WindowStructureQATests: XCTestCase {
         try snapshot("drag-shown-tab")
         release(last)
         XCTAssertEqual(splits.tabs, [.session(fixture.running.id), .home, .session(fixture.left.id)])
-        notes.append("보이는 탭을 아이콘 자리로 끌어 줄 끝으로 → [\(fixture.running.title), 새 작업, \(fixture.left.title)]")
+        notes.append("Shown tab dragged by its icon to the end of the bar → [\(fixture.running.title), New task, \(fixture.left.title)]")
 
         // 2. Esc cancels a drag: the tab stays.
         let running = try XCTUnwrap(tab(fixture.running.title))
@@ -708,7 +708,7 @@ final class WindowStructureQATests: XCTestCase {
         release(NSPoint(x: from.x + 300, y: from.y))
         XCTAssertEqual(splits.tabs, [.session(fixture.running.id), .home, .session(fixture.left.id)], "Esc cancels the drag")
         XCTAssertEqual(splits.selection, .session(fixture.left.id))
-        notes.append("창 탭을 끄는 중 Esc → 놓아도 순서·보이는 탭 그대로")
+        notes.append("Esc while dragging a window tab → order and shown tab unchanged after release")
 
         // 3. A task's tab onto the shown task's right side: the two make a split view.
         let runningTab = try XCTUnwrap(tab(fixture.running.title))
@@ -719,8 +719,8 @@ final class WindowStructureQATests: XCTestCase {
         let split = try XCTUnwrap(splits.activeSplit, "a task's tab dropped beside the shown task makes a split view")
         XCTAssertEqual(split.panes.map(\.sessionID), [fixture.left.id, fixture.running.id])
         XCTAssertEqual(splits.tabs, [.home, .split(split.id)])
-        notes.append("다른 작업의 창 탭을 보이는 작업 오른쪽 가장자리로 → 분할 화면 [\(fixture.left.title) | \(fixture.running.title)], "
-                     + "그 작업의 탭은 분할 화면 탭에 합쳐짐")
+        notes.append("Another task's window tab onto the shown task's right edge → split view [\(fixture.left.title) | \(fixture.running.title)], "
+                     + "that task's tab merges into the split view's tab")
 
         // A pane's header: its free part, left of its buttons.
         func paneHandle(_ index: Int) throws -> NSPoint {
@@ -749,7 +749,7 @@ final class WindowStructureQATests: XCTestCase {
         try snapshot("drag-pane-swap")
         release(center)
         XCTAssertEqual(splits.activeSplit?.panes.map(\.sessionID), [fixture.running.id, fixture.left.id])
-        notes.append("왼쪽 구획 머리를 오른쪽 구획 가운데로 → 맞바꿈")
+        notes.append("Left pane header onto the right pane's middle → swapped")
 
         // 5. A pane onto the other's bottom edge: the split view stacks them.
         let below = NSPoint(x: panes[1].midX, y: panes[1].maxY - 30)
@@ -762,7 +762,7 @@ final class WindowStructureQATests: XCTestCase {
             XCTFail("A pane moved within a split of two ended the split")
         }
         XCTAssertEqual(splits.activeSplit?.panes.map(\.sessionID), [fixture.left.id, fixture.running.id])
-        notes.append("구획 머리를 다른 구획 아래 가장자리로 → 위아래로 쌓임(두 구획 분할이 끝나지 않음)")
+        notes.append("Pane header onto the other pane's bottom edge → stacked (the two-pane split does not end)")
 
         // 6. A pane onto the tab bar: its task leaves the split view for a tab of its own.
         host.settle(passes: 12, interval: 0.03)
@@ -779,7 +779,7 @@ final class WindowStructureQATests: XCTestCase {
         XCTAssertNil(splits.activeSplit)
         XCTAssertEqual(splits.tabs, [.session(fixture.left.id), .home, .session(fixture.running.id)])
         XCTAssertEqual(splits.selection, .session(fixture.left.id))
-        notes.append("위 구획 머리를 창 탭 줄의 \"새 작업\" 탭 앞으로 → 그 작업이 자기 탭이 되어 보이고, 남은 작업은 분할 화면 탭 자리에 혼자")
+        notes.append("Top pane header before the tab bar's \"New task\" tab → that task becomes its own tab and shows, the other stays alone in the split view's place")
 
         // 7. A side panel's tab along its strip.
         splits.activate(.session(fixture.running.id))
@@ -793,14 +793,14 @@ final class WindowStructureQATests: XCTestCase {
         release(end)
         XCTAssertEqual(panels(model, fixture.running.id).trailingTabs, ["diff", browser, "files"])
         XCTAssertEqual(panels(model, fixture.running.id).trailingSurfaceID, "files")
-        notes.append("오른쪽 패널의 \"파일\" 탭을 줄 끝으로 → 순서 [검토, 브라우저, 파일], 끈 탭이 보임")
+        notes.append("Side panel \"Files\" tab to the end of the strip → order [Review, Browser, Files], dragged tab shown")
 
-        try (["# 머리 한 줄(A안)과 창 안 끌기", ""] + notes.map { "- " + $0 }).joined(separator: "\n")
+        try (["# One-row header (option A) and dragging in the window", ""] + notes.map { "- " + $0 }).joined(separator: "\n")
             .write(to: directory.appending(path: "header-and-drag.md"), atomically: true, encoding: .utf8)
     }
 
-    /// 2026-10-24 (user: "사이드바에서 스크롤 내려서 옛날 작업에서 채팅치면 그 세션이 상단으로 올라가버려서 사이드바에서 지금
-    /// 선택한 세션이 안보이게 되는데"): while the sidebar is scrolled away from its top, the shown task keeps its place and its
+    /// 2026-10-24 (a user reported that a message sent in an old task, with the sidebar scrolled down, moved the
+    /// task to the top and out of sight): while the sidebar is scrolled away from its top, the shown task keeps its place and its
     /// project's when it becomes active; with the list at its top it goes where its activity puts it (`SidebarOrderHold`).
     /// The task is picked by pressing its row, the list is scrolled by its scroll view, into
     /// `.build/window-structure-qa/sidebar-hold-*.png`.
@@ -819,7 +819,7 @@ final class WindowStructureQATests: XCTestCase {
             folders.append(folder)
             for task in 0..<3 {
                 sessions.append(SessionRecord(harness: .codex, workspaceURL: folder, runtimeExecutableURL: cli,
-                    title: "작업 \(project)-\(task)", updatedAt: now.addingTimeInterval(-Double(project * 10 + task) * 60)))
+                    title: "Task \(project)-\(task)", updatedAt: now.addingTimeInterval(-Double(project * 10 + task) * 60)))
             }
         }
         let model = AppModel(
@@ -837,8 +837,8 @@ final class WindowStructureQATests: XCTestCase {
             restoresIndexOnLaunch: false
         )
         addTeardownBlock { await model.shutdown() }
-        for (index, folder) in folders.enumerated() { _ = model.projects.ensureProject(forRoot: folder, name: "프로젝트 \(index)") }
-        let target = try XCTUnwrap(sessions.first { $0.title == "작업 7-1" })
+        for (index, folder) in folders.enumerated() { _ = model.projects.ensureProject(forRoot: folder, name: "Project \(index)") }
+        let target = try XCTUnwrap(sessions.first { $0.title == "Task 7-1" })
         let directory = try WindowlessRender.directory(Self.folder)
 
         let host = WindowlessRender.Host(window(model, .light, size: Self.size), size: Self.size, appearance: .light)
@@ -851,7 +851,7 @@ final class WindowStructureQATests: XCTestCase {
         host.settle(passes: 6, interval: 0.03)
         await model.store.markRead(id: sessions[0].id)
         host.settle(passes: 6, interval: 0.03)
-        let firstRow = try XCTUnwrap(elements(in: host).first { $0.label.hasPrefix("작업 0-0") })
+        let firstRow = try XCTUnwrap(elements(in: host).first { $0.label.hasPrefix("Task 0-0") })
         let scroll = try XCTUnwrap(sidebarScrollView(in: host.hosting, x: firstRow.frame.midX))
         // Down to the task, short of the list's end: there the list's height, which it estimates for the rows
         // it has not drawn, can shorten and take the scroll back with it whatever the order does.
@@ -878,7 +878,7 @@ final class WindowStructureQATests: XCTestCase {
         scroll.reflectScrolledClipView(scroll.contentView)
         host.settle(passes: 12, interval: 0.03)
         let top = try XCTUnwrap(row())
-        let other = try XCTUnwrap(elements(in: host).first { $0.label.hasPrefix("작업 0-0") })
+        let other = try XCTUnwrap(elements(in: host).first { $0.label.hasPrefix("Task 0-0") })
         XCTAssertLessThan(top.frame.minY, other.frame.minY, "At the top the task did not take its place by activity")
         try WindowlessRender.writePNG(host.capture().bitmap, to: directory.appending(path: "sidebar-hold-top-light.png"))
     }

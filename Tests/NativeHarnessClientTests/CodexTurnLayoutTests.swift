@@ -39,7 +39,7 @@ final class CodexTurnLayoutTests: XCTestCase {
     func testAStoppedTurnKeepsItsCommandInTheWorkAndIsTheOneToEdit() {
         let thread = thread([
             turn("turn-1", status: "completed", durationMs: 41_000, items: [
-                user("u1", "테스트를 돌려 줘"), command("c0", status: "completed"), answer("a1", "All 30 tests pass.")
+                user("u1", "Run the tests"), command("c0", status: "completed"), answer("a1", "All 30 tests pass.")
             ]),
             turn("turn-2", status: "interrupted", durationMs: 22_000, items: [
                 user("u2", "Run the full suite again"), command("c1", status: "interrupted")
@@ -56,7 +56,7 @@ final class CodexTurnLayoutTests: XCTestCase {
 
     func testAPlanModeTurnAnswersWithItsPlanAndOffersToImplementIt() throws {
         var planTurn = turn("turn-1", status: "completed", durationMs: 95_000, items: [
-            user("u1", "중지된 턴 표시를 고치는 계획을 세워 줘"),
+            user("u1", "Plan a fix for how stopped turns read"),
             plan("p1", "\n# Show stopped turns\n\n1. Read `Stopped`.\n"),
             answer("a1", "This keeps the change to the timeline.")
         ])

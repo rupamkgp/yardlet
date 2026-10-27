@@ -71,7 +71,7 @@ struct ConversationSentMessage: View {
 
     /// A message another task sent: not the person's, so not their bubble on the right. It reads as
     /// a note from that task, on the left where the conversation's own lines are, under "Sent from
-    /// {task}" (2026-10-22: "하위세션에서 오는 메시지들 내 채팅처럼 뜨는데").
+    /// {task}" (2026-10-22: messages from child sessions looked like the person's own).
     private func receivedFromTask(_ message: TaskMessage) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             taskMessageLabel(message)

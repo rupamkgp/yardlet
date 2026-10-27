@@ -1,47 +1,55 @@
-# 계정 선택 UX — 2026-09-15
+# Account selection UX (2026-09-15)
 
-사용자가 기존 UX를 재검토하고 최적화해 달라고 요청했다. 기준은 **이미 로그인한 계정을
-보고, 지금 시작할 작업에 사용할 계정을 직접 고르는 흐름**이다. 하네스의 인증·저장
-소유권은 유지한다. 같은 이메일이나 제공자라는 이유로 서로 다른 CLI 인증을 합치지 않는다.
+This review revisits the existing UX and streamlines it. The baseline is **a flow where the user sees the accounts
+already signed in and picks the account for the task about to start**. The harness keeps ownership of authentication and
+storage. Different CLI sign-ins are not merged because they share an email or a provider.
 
-## 결정
+## Decisions
 
-- 사이드바 **연결**은 설정의 **계정** 섹션을 연다(2026-10-08, 이전에는 별도 연결 시트).
-  기존 로그인과 추가 계정은 같은 목록에 표시한다. 기존 로그인을 표시하기 위해 등록 파일이나
-  credential을 복사하지 않는다.
-- 설정의 **하네스** 섹션은 설치 상태와 실행 파일 설정을 다룬다. 계정의 로그인 여부로 하네스
-  설치 상태를 판단하지 않는다. 계정 목록은 하네스 필터와 검색으로 좁힐 수 있다. 처음에는
-  **사용 중인 하네스**(작업·저장된 계정이 있거나 새 작업에 고른 하네스, 하나도 없으면 전부)만
-  보이고 **전체**나 개별 하네스는 같은 필터에서 고른다.
-- 목록은 열자마자 계정마다 마지막 조회 값(계정·요금제·한도)과 "N분 전에 업데이트됨"을 보이고,
-  뒤에서 다시 조회해 답이 오는 대로 바꾼다. 로그아웃은 그대로 로그아웃으로, 끝내지 못한 조회는
-  "새로 고치지 못함 · N분 전에 업데이트됨"으로 표시한다. 모든 하네스가 같은 행·한도·문구를 쓴다.
-- 계정 목록은 하나(`AccountList`)이고 네 곳에서 같은 행·한도·갱신 문구·새로 고침 위치로 보인다(2026-10-08, B5):
-  새 작업 계정 칩의 팝오버(그 하네스의 기본 로그인과 저장 계정), 작업의 **계정 선택** 시트(그 작업의 기록을 함께
-  쓰는 계정만, 남은 한도가 많은 순), 한도 카드의 **다른 계정으로 계속** 팝오버(같은 목록), 설정 › 계정(하네스
-  필터·검색, 계정별 묶음). 한 연결뿐인 계정은 한 행이고, 여러 연결이 같은 계정이면 계정 머리 아래에 연결 행을 둔다.
-  작업을 옮기는 목록에서는 현재 계정을 표시만 하고, 마지막 확인에서 로그아웃으로 나온 계정은 고를 수 없으며
-  로그인 버튼을 두지 않는다.
-- 계정명, 하네스/제공자, 남은 한도와 초기화 시각을 짧은 행에서 비교한다. 장문의 설명,
-  중첩 카드와 반복된 선택 버튼을 줄인다. 한도 영역을 누르면 모든 한도와 정확한 초기화 시각,
-  마지막 조회 시각을 확인한다. 두 개를 초과하는 항목은 목록에 +N으로 표시해 누락을 숨기지 않는다.
-- 새 작업 입력창의 프로젝트·하네스 옆에서 계정을 선택한다. 선택창에 기본 연결과 추가
-  계정이 함께 보이며 **다른 계정 추가**, **계정 관리**가 해당 하네스에 맞춰 바로 열린다.
-- 새 계정 추가는 하네스 맥락을 유지하고 로그인으로 이어진다. 계정 이름과 폴더 선택은
-  고급 설정이다. Pi는 제공자를 먼저 정한다. 제공자별 로그인과 API-key 입력은 CLI가 소유한다.
-- 새 로그인 흐름을 취소해도 기존 기본 계정을 바꾸지 않는다. 성공 후 **이 계정 사용**을
-  누를 때 새 작업 선택을 바꾼다. 로그인을 시도하며 CLI가 만든 파일은 임의 삭제하지 않는다.
-- 저장된 연결 없음, 제공자 선택 필요, 상태 확인 불가, 잔여 한도 미제공을 구분한다.
-  저장된 OAuth가 없어도 CLI의 환경 키나 외부 제공자 인증으로 실행할 수 있으므로 선택을
-  일괄 차단하지 않는다. 런타임이 없거나 계정 바인딩에 문제가 확인된 경우는 선택하지 않는다.
-- 새 계정 환경을 지원하지 않는 하네스에는 작동하지 않는 추가 버튼을 제공하지 않는다.
-  기존 작업의 계정·세션 ID·초안은 이 선택 UI 변경으로 바뀌지 않는다.
+- **Connections** in the sidebar opens the **Accounts** section of Settings (2026-10-08; before, a separate connections
+  sheet). Existing sign-ins and additional accounts show in the same list. No registration file or credential is copied
+  to show an existing sign-in.
+- The **Harnesses** section of Settings covers install state and executable settings. Whether an account is signed in
+  does not decide whether a harness is installed. The account list can be narrowed with a harness filter and search. At
+  first only **Harnesses in use** show (harnesses that have tasks or saved accounts, or that were chosen for new tasks,
+  or all of them if there are none), and **All harnesses** or a single harness is picked in the same filter.
+- As soon as the list opens, each account shows its last looked-up values (account, plan, limits) and "Updated N min.
+  ago", and Yardlet looks them up again in the background and updates each one as its answer arrives. A signed-out
+  account shows as signed out, and a lookup that could not finish shows "Couldn't refresh · updated N min. ago". Every
+  harness uses the same rows, limits and wording.
+- There is one account list (`AccountList`), and it shows in four places with the same rows, limits, update wording and
+  refresh position (2026-10-08, B5): the popover of the new task's account chip (that harness's default sign-in and
+  saved accounts), a task's **Choose account** sheet (only accounts that share that task's history, most remaining limit
+  first), the limit card's **Continue with another account** popover (the same list) and Settings › Accounts (harness
+  filter and search, grouped by account). An account with only one connection is one row, and when several connections
+  are the same account, their connection rows sit under an account header. In the list for moving a task, the current
+  account is only shown, accounts that came out signed out at the last check cannot be chosen, and there is no sign-in
+  button.
+- Account name, harness/provider, remaining limit and reset time are compared in short rows. Long explanations, nested
+  cards and repeated select buttons are cut back. Clicking the limit area shows every limit with its exact reset time
+  and the last lookup time. When there are more than two items, the list shows +N so nothing is hidden.
+- The account is chosen next to the project and harness in the new task composer. The picker shows the default
+  connection and additional accounts together, and **Add another account** and **Manage accounts** open directly for
+  that harness.
+- Adding an account keeps the harness context and leads into sign-in. The account name and folder choice are advanced
+  settings. Pi picks the provider first. Sign-in for each provider and API-key entry belong to the CLI.
+- Cancelling a new sign-in flow does not change the existing default account. The new task's choice changes when **Use
+  this account** is clicked after a successful sign-in. Files the CLI created while trying to sign in are not deleted on
+  Yardlet's own judgment.
+- No saved connection, provider choice needed, status unavailable and remaining limit not provided are told apart. A CLI
+  can run with an environment key or an external provider's authentication even without a saved OAuth sign-in, so
+  choosing is not blocked across the board. An account is not chosen when the runtime is missing or a problem with its
+  account binding is confirmed.
+- Harnesses that do not support a new account environment get no add button that would not work. The account, session ID
+  and draft of existing tasks do not change with this selection UI change.
 
-## 확인할 흐름
+## Flows to check
 
-1. 이미 로그인된 native 계정이 등록 없이 목록에 보이고 그대로 선택된다.
-2. 같은 하네스의 여러 계정과 단기/장기 한도를 동시에 비교하고 선택할 수 있다.
-3. 다른 계정 추가에서 하네스를 다시 고를 필요가 없고, 취소하면 입력하던 초안으로 돌아온다.
-4. 관리 진입은 해당 하네스로 좁혀진 계정 목록을 바로 연다.
-5. 로그인 필요와 한도 미제공을 구분하며, 다른 하네스의 계정을 잘못 선택하지 않는다.
-6. 기본 연결 선택은 nil 바인딩을 유지하고 원본 저장소를 새 환경으로 재등록하지 않는다.
+1. A native account already signed in shows in the list without registration and can be chosen as it is.
+2. Several accounts of the same harness and their short-term and long-term limits can be compared and chosen at the same
+   time.
+3. Add another account does not ask for the harness again, and cancelling returns to the draft being typed.
+4. Opening Manage goes straight to the account list narrowed to that harness.
+5. Sign-in required and limits not provided are told apart, and an account of another harness is not chosen by mistake.
+6. Choosing the default connection keeps the nil binding and does not register the native store again as a new
+   environment.

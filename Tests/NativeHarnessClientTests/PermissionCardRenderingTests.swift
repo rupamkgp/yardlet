@@ -23,7 +23,7 @@ final class PermissionCardRenderingTests: XCTestCase {
             "new_string": .string("def add(a, b):\n    return a + b")
         ])
         let entries = [
-            TranscriptEntry(content: .user(text: "calc.py 테스트를 고쳐 줘")),
+            TranscriptEntry(content: .user(text: "Fix the calc.py tests")),
             TranscriptEntry(content: .activity(HarnessActivity(
                 id: "toolu_bash", kind: "Bash", title: "Bash", input: bashInput["command"]?.stringValue,
                 output: "Ran 3 tests\nFAILED (failures=1, errors=1)"

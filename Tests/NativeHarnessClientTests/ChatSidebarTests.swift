@@ -191,7 +191,7 @@ final class ChatSidebarRenderingTests: XCTestCase {
         func chat(_ path: String) -> URL { home.appending(path: path, directoryHint: .isDirectory) }
         let running = task("Summarize the meeting notes", .claudeCode, in: chat("Documents/Yardlet/2026-10-12/new-chat"),
                            minutesAgo: 1, status: .running)
-        let unread = task("new-chat-2 · 오늘 날씨 알려줘", .codex, in: chat("Documents/Yardlet/2026-10-12/new-chat-2"),
+        let unread = task("new-chat-2 · What's the weather today", .codex, in: chat("Documents/Yardlet/2026-10-12/new-chat-2"),
                           minutesAgo: 2, status: .completed, origin: .automatic, unread: true)
         let selected = task("Draft an email to the team", .codex, in: chat("Documents/Codex/2026-10-09/new-chat"),
                             minutesAgo: 3)
@@ -255,7 +255,7 @@ final class ChatSidebarRenderingTests: XCTestCase {
         XCTAssertLessThan(chatsTitle, projectsTitle)
         let firstChat = try index(of: "Summarize the meeting notes, Claude Code")
         XCTAssertTrue((chatsTitle..<projectsTitle).contains(firstChat))
-        XCTAssertTrue((chatsTitle..<projectsTitle).contains(try index(of: "오늘 날씨 알려줘, Codex")),
+        XCTAssertTrue((chatsTitle..<projectsTitle).contains(try index(of: "What's the weather today, Codex")),
                       "The folder name is dropped from a fallback title")
         XCTAssertTrue((chatsTitle..<projectsTitle).contains(try index(of: L10n.string("Show more"))))
     }

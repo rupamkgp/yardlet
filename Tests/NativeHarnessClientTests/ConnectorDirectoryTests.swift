@@ -55,7 +55,7 @@ final class ConnectorDirectoryTests: XCTestCase {
     // MARK: - Directory
 
     /// Each entry is the service's own public endpoint with the sign-in its live metadata showed
-    /// on 2026-10-16 and 2026-10-21 (docs/CONNECTORS.md, "디렉터리").
+    /// on 2026-10-16 and 2026-10-21 (docs/CONNECTORS.md, "Directory").
     func testTheDirectoryHasEachServicesOfficialEndpointAndSignIn() throws {
         func preset(_ id: String) throws -> ConnectorPreset { try XCTUnwrap(ConnectorPreset.preset(id: id), id) }
         XCTAssertEqual(ConnectorPreset.all.map(\.id), [

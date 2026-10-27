@@ -239,15 +239,15 @@ final class QuitAndUpdateWaitTests: XCTestCase {
 
     func testTheConfirmationsAndTheWaitingMenuRender() throws {
         let directory = try WindowlessRender.directory("followups-qa")
-        let claude = session(.claudeCode, title: "릴리스 노트 정리")
-        let codex = session(.codex, title: "업로드 대기열 재작성")
-        let cursor = session(.cursorAgent, title: "린트 정리")
+        let claude = session(.claudeCode, title: "Tidy the release notes")
+        let codex = session(.codex, title: "Rewrite the upload queue")
+        let cursor = session(.cursorAgent, title: "Clean up lint")
         let mixed = QuitConfirmation(active: [claude, cursor, codex], continuing: [claude.id, codex.id])
         let all = QuitConfirmation(active: [claude, codex], continuing: [claude.id, codex.id])
         let alerts: [(String, () -> NSAlert)] = [
             ("quit-confirmation", { mixed.alert() }),
             ("quit-continue", { all.alert() }),
-            ("update-offer", { YardletUpdateOffer.alert(build: "68650b4", date: "2026. 10. 16. 오후 9:40",
+            ("update-offer", { YardletUpdateOffer.alert(build: "68650b4", date: "Oct 16, 2026 at 9:40 PM",
                                                        hasRunningTasks: true) }),
         ]
         for (name, make) in alerts {

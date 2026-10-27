@@ -130,6 +130,51 @@ final class BrowserAgentPage {
         }
     }
 
+    // MARK: Files the page shows
+
+    /// The `file:` address each frame shows, by frame id, as of `fileFrameMark` in the event log.
+    private var fileFrames: [String: String] = [:]
+    private var fileFrameMark = 0
+
+    /// Starts from the page's frames as `Page.getFrameTree` gave them, then follows the frame navigations
+    /// logged from `eventMark` on, where the Page domain was enabled.
+    func seedFrames(_ tree: JSONValue, eventMark: Int) {
+        fileFrames = [:]
+        func visit(_ node: JSONValue) {
+            if let frame = node["frame"], let id = frame["id"]?.stringValue, let url = frame["url"]?.stringValue,
+               BrowserURLPolicy.scheme(of: url) == "file" {
+                fileFrames[id] = url
+            }
+            node["childFrames"]?.arrayValue?.forEach(visit)
+        }
+        visit(tree["frameTree"] ?? .null)
+        fileFrameMark = eventMark
+    }
+
+    /// The `file:` addresses the page's frames show now: a link, a script or an iframe can bring one in
+    /// without `browser_navigate`.
+    func shownFiles() -> Set<String> {
+        let log = cdp.eventLog
+        if fileFrameMark < log.count {
+            for event in log[fileFrameMark...] {
+                switch event.method {
+                case "Page.frameNavigated":
+                    guard let frame = event.params["frame"], let id = frame["id"]?.stringValue else { continue }
+                    // A new document in the main frame takes its frames with it.
+                    if frame["parentId"] == nil { fileFrames = [:] }
+                    let url = frame["url"]?.stringValue ?? ""
+                    fileFrames[id] = BrowserURLPolicy.scheme(of: url) == "file" ? url : nil
+                case "Page.frameDetached":
+                    if let id = event.params["frameId"]?.stringValue { fileFrames[id] = nil }
+                default:
+                    break
+                }
+            }
+            fileFrameMark = log.count
+        }
+        return Set(fileFrames.values)
+    }
+
     // MARK: Host events
 
     func receive(_ event: BrowserHostEvent) {

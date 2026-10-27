@@ -1,535 +1,659 @@
-# 휴대폰 원격 v2 설계
+# Phone remote v2 design
 
-상태: 2026-10-24 설계와 구현(Mac·중계·Android). 프로토콜 계약은 [REMOTE_PROTOCOL](REMOTE_PROTOCOL.md) 11~17절이다.
-화면 시안은 [remote-v2/mockups.html](remote-v2/mockups.html)과 같은 폴더의 PNG다.
+Status: designed and implemented on 2026-10-24 (Mac, relay and Android). The protocol contract is
+[REMOTE_PROTOCOL](REMOTE_PROTOCOL.md) sections 11 to 17. The screen mockups are
+[remote-v2/mockups.html](remote-v2/mockups.html) and the PNG files in the same folder.
 
-## 0. 결론
+## 0. Conclusions
 
-- **연결 경로는 셋, 보안은 하나.** 휴대폰과 Mac 사이의 모든 연결은 같은 Noise IK 핸드셰이크와 암호화로 감싼다. 그 아래
-  경로는 같은 Wi-Fi 직접 연결, Tailscale, Yardlet 중계 서버 가운데 먼저 닿는 것을 휴대폰이 고른다. 경로가 무엇이든 Mac의
-  정적 공개 키로 상대를 확인하므로, 중계 서버와 같은 Wi-Fi의 다른 기기는 내용을 읽거나 바꿀 수 없다.
-- **짝짓기는 QR 한 번.** QR에 Mac의 정적 공개 키, 5분짜리 일회용 비밀(256비트), 중계 주소와 방 ID, 직접 연결 주소가 들어간다.
-  휴대폰은 자기 키 쌍을 만들어 첫 핸드셰이크에 비밀과 함께 보낸다. Mac은 휴대폰의 공개 키만 저장한다(지금의 토큰 해시보다
-  강하다: Mac에 휴대폰의 비밀이 하나도 없다).
-- **중계 서버는 상자 하나.** Cloudflare Workers + Durable Objects로 Mac마다 방 하나를 두고, Mac이 나가는 WebSocket으로 방을
-  열면 휴대폰의 WebSocket과 이어 준다. 서버는 암호문만 넘기고 아무것도 저장하지 않는다. 계정도 없다. 방 ID는 Mac의 서명 키에서
-  나오고(자기 증명), Mac은 그 키로 서명해 방을 연다. 사용자 한 명은 무료 요금제 안에 든다.
-- **알림은 암호문만.** 휴대폰이 FCM 토큰을 Mac에 알려 두면, 휴대폰이 연결되어 있지 않을 때 Mac이 중계 서버를 거쳐 FCM 데이터
-  메시지를 보낸다. 내용(작업 제목, 요청 요약)은 짝짓기 때 나눈 알림 키로 암호화되어 Google과 중계 서버는 읽지 못한다. FCM이
-  없으면 지금처럼 "백그라운드 알림"(앞쪽 서비스)으로 받는다.
-- **휴대폰에서 새로 하는 일:** 질문 카드 답하기, 계획 검토(승인·계속 계획), 새 작업 만들기(Mac의 새 작업 기본값으로). 설정·
-  계정·파일·diff·터미널은 여전히 Mac에서 한다.
-- **플랫폼은 Android 네이티브(Kotlin, Compose)를 잇는다.** iOS는 나중에 SwiftUI로 만들고 Mac의 `YardletRemote` 패키지(프로토콜
-  타입, Noise)를 그대로 쓴다. 두 기준 앱도 플랫폼마다 네이티브 앱이다.
-- **계정은 선택(2026-10-24 사용자 요청).** QR 없이 계정으로 로그인해 자기 Mac 목록에서 고르고, 새 휴대폰은 Mac이나 이미 연결된
-  휴대폰이 확인 코드를 보고 승인한다(Signal·WhatsApp의 연결된 기기와 같다). 계정 서버는 Mac 목록만 알고 내용은 모른다(3.1).
-- **두 앱보다 빠르고 넓게(같은 날 사용자 요청).** 마지막 목록과 대화를 휴대폰에 두고 먼저 그린 뒤 최신으로 바꾸고, 목표 시간을 정해
-  잰다(5.1). 명령 출력과 diff, 제안된 작업 다루기, 고정·보관, 여러 Mac까지 휴대폰에서 한다(5절).
-- **작업 중 잠자기·화면 잠금 막기(같은 날 사용자 결정).** 설정으로 켜고(기본 꺼짐), 작업이 일하는 동안만 화면 꺼짐까지 막는다.
-  배터리 20% 아래와 과열이면 멈춘다. 덮개 닫힘은 관리자 권한이 들어 넣지 않는다(6.5).
-- **Mac 없이 둘러보기와 APK 먼저(같은 날 사용자 결정).** 첫 화면의 "Explore without a Mac"을 누르면 휴대폰 안의 데모 Mac에 붙어 작업
-  목록·대화·승인·질문·계획 검토·diff·새 작업·알림을 써 본다. 네트워크와 저장소를 쓰지 않는다(8절). 배포는 GitHub Releases APK와
-  Obtainium을 먼저 하고, Play 비공개 테스트는 데모 모드와 Mac 공개 뒤의 실제 사용자로 천천히 채운다(12절).
-- **v1 휴대폰은 깨지지 않는다.** v1 리스너(Tailscale 주소, 47615, 평문 JSON과 토큰)는 그대로 둔다. 이미 짝지은 v1 기기는 계속
-  쓰고, 새 짝짓기는 v2 QR만 보인다. 새 앱은 v1을 말하지 않으므로 한 번 다시 짝짓는다.
+- **Three routes, one security layer.** Every connection between the phone and the Mac is wrapped in the same Noise IK
+  handshake and encryption. Underneath, the phone picks whichever route reaches the Mac first: a direct connection on
+  the same Wi-Fi, Tailscale or the Yardlet relay server. Whatever the route, the phone verifies the other end with the
+  Mac's static public key, so the relay server and other devices on the same Wi-Fi cannot read or change the content.
+- **Pairing is one QR scan.** The QR holds the Mac's static public key, a one-time secret that lasts 5 minutes (256
+  bits), the relay address with its room ID and the direct connection addresses. The phone makes its own key pair and
+  sends its public key with the secret in the first handshake. The Mac stores only the phone's public key (stronger than
+  today's token hash: the Mac holds none of the phone's secrets).
+- **The relay server is one box.** Cloudflare Workers + Durable Objects keep one room per Mac. When the Mac opens its
+  room with an outgoing WebSocket, the relay joins it to the phone's WebSocket. The server only forwards ciphertext and
+  stores nothing. It has no accounts either. The room ID comes from the Mac's signing key (self-certifying), and the Mac
+  opens the room by signing with that key. One user fits within the free plan.
+- **Notifications carry only ciphertext.** Once the phone has told the Mac its FCM token, the Mac sends FCM data
+  messages through the relay server while the phone is not connected. The content (task title, request summary) is
+  encrypted with a notification key shared at pairing, so Google and the relay server cannot read it. Without FCM, the
+  phone gets them through "Background notifications" (a foreground service), as it does today.
+- **New on the phone:** answering question cards, plan review (approve or keep planning) and creating a new task (with
+  the Mac's new-task defaults). Settings, accounts, files, diffs and the terminal are still handled on the Mac.
+- **The platform stays native Android (Kotlin, Compose).** iOS comes later in SwiftUI and uses the Mac's `YardletRemote`
+  package (protocol types, Noise) as is. The two reference apps are also native apps on each platform.
+- **Accounts are optional (requested 2026-10-24).** Without a QR code, the person signs in with an account and picks
+  from their own list of Macs. The Mac or a phone already connected checks a confirmation code and approves the new
+  phone (like linked devices in Signal and WhatsApp). The account server knows only the list of Macs, not the content
+  (section 3.1).
+- **Faster and broader than the two apps (requested the same day).** The phone keeps the last list and conversations,
+  draws them first and then replaces them with the latest, and target times are set and measured (section 5.1). The
+  phone also covers command output, diffs, suggested tasks, pinning, archiving and several Macs (section 5).
+- **Preventing sleep and screen lock while a task works (decided the same day).** A setting turns it on (off by
+  default), and only while a task works does it also keep the display from turning off. It stops below 20% battery and
+  when the Mac overheats. Lid-closed operation is left out because it needs administrator rights (section 6.5).
+- **Exploring without a Mac, and the APK first (decided the same day).** Tapping "Explore without a Mac" on the first
+  screen attaches the app to a demo Mac inside the phone, where the person can try the task list, conversations,
+  approvals, questions, plan review, diffs, a new task and notifications. It uses no network and no storage (section 8).
+  Distribution starts with a GitHub Releases APK and Obtainium. The Play closed test fills up slowly through demo mode
+  and real users after the Mac release (section 12).
+- **v1 phones do not break.** The v1 listener (Tailscale addresses, 47615, plain JSON and a token) stays. v1 devices
+  already paired keep working, and new pairing shows only the v2 QR. The new app does not speak v1, so it pairs again
+  once.
 
-## 1. 기준 대조
+## 1. Comparison with reference products
 
-### 1.1 두 앱(2026-10-24, 공개 문서와 설치본 바이트)
+### 1.1 The two apps (2026-10-24, public docs and installed app bytes)
 
-| | Claude Code Remote Control(Claude 앱 Code 탭) | Codex Remote(ChatGPT 앱의 Codex) |
+| | Claude Code Remote Control (Code tab in the Claude app) | Codex Remote (Codex in the ChatGPT app) |
 |---|---|---|
-| 구조 | 로컬 CLI가 Anthropic으로 나가는 HTTPS만. 들어오는 포트 없음 | 호스트(데스크톱 앱)가 OpenAI의 중계 층에 등록, 휴대폰은 계정으로 들어옴 |
-| 짝짓기 | 같은 claude.ai 계정. QR·세션 URL·세션 목록. 선택 사항으로 Trusted Devices | 호스트 설정 › Connections › Control this Mac에서 허용, QR로 휴대폰마다·호스트마다. 수동 코드(만료 있음)도 있음. 계정 MFA |
-| 암호 | TLS. 대화 기록이 Anthropic 서버에 저장됨(문서에 명시) | 번들 CLI에 `Noise_hybridIK_X25519+MLKEM768_AESGCM_SHA256`. 휴대폰 연결 전체가 E2EE인지는 공개 자료로 확정 못 함 |
-| 휴대폰에서 | 메시지, 중단, 권한 승인, `AskUserQuestion` 답, 계획 승인, 사진·파일 첨부, 서버 모드에서 새 세션 | 메시지(Queue·Steer), 중단, 승인(한 번·대화 동안·더 넓게), 질문·MCP 폼 답, Plan 모드, 새 로컬 작업(호스트·프로젝트·worktree·브랜치), diff 검토 |
-| 알림 | 모바일 푸시(완료, 판단 필요; 설정 둘) | 완료·주의 필요 알림 |
-| 끊김 | 대화형은 계속 재시도, 서버 모드는 약 10분 뒤 끝날 수 있음 | 호스트가 잠들거나 앱이 꺼지면 끊김 |
-| 화면 관례 | Code 탭 목록, 원격 세션에 컴퓨터 아이콘과 녹색 점 | 목록 필터(All·Cloud·컴퓨터), Pinned·Today 구획. 승인 카드: 설명·명령, Approve 위·Always approve 아래, 아래 줄에 "Tell Codex what to do" 입력과 Deny |
+| Structure | The local CLI makes only outgoing HTTPS connections to Anthropic. No incoming port | The host (desktop app) registers with OpenAI's relay layer; the phone comes in through the account |
+| Pairing | The same claude.ai account. QR, session URL or session list. Trusted Devices as an option | Allowed in the host's Settings › Connections › Control this Mac, by QR per phone and per host. A manual code (with expiry) too. Account MFA |
+| Encryption | TLS. Conversation history is stored on Anthropic's servers (stated in the docs) | `Noise_hybridIK_X25519+MLKEM768_AESGCM_SHA256` in the bundled CLI. Public sources do not confirm whether the whole phone connection is E2EE |
+| On the phone | Messages, interrupt, permission approval, `AskUserQuestion` answers, plan approval, photo and file attachments, new sessions in server mode | Messages (Queue and Steer), interrupt, approvals (once, for the conversation or broader), answers to questions and MCP forms, Plan mode, new local tasks (host, project, worktree and branch), diff review |
+| Notifications | Mobile push (when finished or when a decision is needed; two settings) | Notifications when a task finishes or needs attention |
+| Disconnects | Interactive mode keeps retrying; server mode may end after about 10 minutes | Drops when the host sleeps or the app quits |
+| UI conventions | Code tab list; remote sessions get a computer icon and a green dot | List filter (All, Cloud, computer), Pinned and Today sections. Approval card: description and command, Approve above and Always approve below, and a "Tell Codex what to do" field with Deny on the bottom line |
 
-출처: [Claude Remote Control](https://code.claude.com/docs/en/remote-control), [Claude 모바일](https://code.claude.com/docs/en/mobile),
-[Codex 원격 연결](https://learn.chatgpt.com/docs/remote-connections), [Codex 모바일](https://learn.chatgpt.com/docs/mobile),
-[Codex Remote 글](https://developers.openai.com/blog/mastering-codex-remote-for-engineering). 설치본: Claude 3.1623.3
-`app.asar`(`toggleRemoteControl`, 휴대폰에서 이 컴퓨터에 세션을 시작하도록 허용하는 안내), ChatGPT 26.1016.61520
-(`codex-mobile-setup-dialog`: QR·수동 코드·새로 고침, CLI의 `remoteControl/pairing/start`·`manualPairingCode`). 앱은 실행하지 않았다.
+Sources: [Claude Remote Control](https://code.claude.com/docs/en/remote-control), [Claude
+mobile](https://code.claude.com/docs/en/mobile), [Codex remote
+connections](https://learn.chatgpt.com/docs/remote-connections), [Codex mobile](https://learn.chatgpt.com/docs/mobile),
+[Codex Remote post](https://developers.openai.com/blog/mastering-codex-remote-for-engineering). Installed apps: Claude
+3.1623.3 `app.asar` (`toggleRemoteControl`, the text that allows starting sessions on this computer from a phone),
+ChatGPT 26.1016.61520 (`codex-mobile-setup-dialog`: QR, manual code and refresh; the CLI's `remoteControl/pairing/start`
+and `manualPairingCode`). The apps were not run.
 
-**정리:** 두 앱 모두 휴대폰의 핵심을 작업 고르기·승인·질문·후속 메시지·중단·결과 보기로 잡고, 새 로컬 작업도 휴대폰에서 시작한다.
-둘 다 회사 서버와 계정을 거친다. Yardlet은 계정과 서버가 없으므로 기기 키로 짝짓고, 중계는 암호문만 나르게 한다.
+**Summary:** Both apps treat picking a task, approvals, questions, follow-up messages, interrupting and viewing results
+as the core of the phone, and both start new local tasks from the phone too. Both go through the company's servers and
+accounts. Yardlet has no accounts or servers, so it pairs with device keys and has the relay carry only ciphertext.
 
-### 1.2 잘 알려진 원격·동기화 앱
+### 1.2 Well-known remote and sync apps
 
-| 앱 | 짝짓기와 신원 | 중계 | Yardlet이 가져온 것 |
+| App | Pairing and identity | Relay | What Yardlet took |
 |---|---|---|---|
-| Syncthing | 기기 ID = 인증서 SHA-256. 로컬 발견(브로드캐스트) | 직접이 안 되면 중계, 기기 사이 TLS는 그대로라 중계가 못 읽음 | 경로와 무관한 끝단 인증, 로컬 발견 |
-| KDE Connect | UDP 1716·mDNS 발견, TLS 위 짝짓기 승인, 인증서 고정 | 없음 | mDNS 발견, 고정된 상대 키 |
-| Signal 기기 연결 | 새 기기의 임시 공개 키를 QR에 | 서버 mailbox에 암호문 | QR에 공개 키 |
-| Tailscale | WireGuard(Noise IK 계열) | DERP가 암호문만 나르고 직접 경로로 옮김 | Noise IK, 중계 뒤 직접 경로로 올라가기 |
-| Home Assistant Cloud | 계정 | TLS 암호문을 SNI로 넘기고 복호화는 집의 인스턴스 | 중계는 넘기기만 |
-| Chrome Remote Desktop, Magic Wormhole | 짧은 코드 + SPAKE2(PAKE) | 직접 실패 시 중계 | 손으로 치는 짧은 코드에는 PAKE가 필요하다(다음 단계) |
-| Happy(Claude Code 모바일 클라이언트) | QR에 CLI의 임시 NaCl 공개 키 | 서버가 암호화된 메시지를 저장 | 반면교사: 푸시 본문에 세션 제목이 평문으로 감. Yardlet은 푸시도 암호화 |
+| Syncthing | Device ID = certificate SHA-256. Local discovery (broadcast) | Relay when direct fails; TLS between devices stays, so the relay cannot read | End-to-end authentication regardless of route, local discovery |
+| KDE Connect | UDP 1716 and mDNS discovery, pairing approval over TLS, certificate pinning | None | mDNS discovery, pinned peer key |
+| Signal device linking | The new device's ephemeral public key in the QR | Ciphertext in a server mailbox | Public key in the QR |
+| Tailscale | WireGuard (Noise IK family) | DERP carries only ciphertext and moves to a direct path | Noise IK, upgrading from the relay to a direct path |
+| Home Assistant Cloud | Account | Forwards TLS ciphertext by SNI; the instance at home decrypts | The relay only forwards |
+| Chrome Remote Desktop, Magic Wormhole | Short code + SPAKE2 (PAKE) | Relay when direct fails | A short code typed by hand needs a PAKE (next step) |
+| Happy (Claude Code mobile client) | The CLI's ephemeral NaCl public key in the QR | The server stores encrypted messages | A lesson in what not to do: the session title goes in plain text in the push body. Yardlet encrypts pushes too |
 
-출처: [Syncthing](https://docs.syncthing.net/users/relaying.html), [KDE Connect 프로토콜](https://github.com/KDE/kdeconnect-meta/blob/master/protocol.md),
-[Signal](https://signal.org/blog/a-synchronized-start-for-linked-devices/), [Tailscale DERP](https://tailscale.com/kb/1232/derp-servers),
-[Nabu Casa](https://support.nabucasa.com/hc/en-us/articles/25619268678557-Remote-access-Deep-dive),
-[Magic Wormhole](https://magic-wormhole.readthedocs.io/en/latest/welcome.html), [Happy](https://github.com/slopus/happy/blob/main/docs/encryption.md).
+Sources: [Syncthing](https://docs.syncthing.net/users/relaying.html), [KDE Connect
+protocol](https://github.com/KDE/kdeconnect-meta/blob/master/protocol.md),
+[Signal](https://signal.org/blog/a-synchronized-start-for-linked-devices/), [Tailscale
+DERP](https://tailscale.com/kb/1232/derp-servers), [Nabu
+Casa](https://support.nabucasa.com/hc/en-us/articles/25619268678557-Remote-access-Deep-dive), [Magic
+Wormhole](https://magic-wormhole.readthedocs.io/en/latest/welcome.html),
+[Happy](https://github.com/slopus/happy/blob/main/docs/encryption.md).
 
-## 2. 연결
+## 2. Connection
 
-### 2.1 보안 채널: Noise IK
+### 2.1 Secure channel: Noise IK
 
-- 패턴 `Noise_IK_25519_ChaChaPoly_SHA256`, 프롤로그 `yardlet-remote/2`. 휴대폰이 시작하고(initiator) Mac이 받는다(responder).
-  휴대폰은 QR로 Mac의 정적 공개 키를 이미 안다(`<- s`). 왕복 두 메시지로 끝나고, 첫 메시지부터 휴대폰의 공개 키가 암호화되어
-  간다(중계는 어느 휴대폰인지도 모른다).
-- 첫 메시지의 내용(payload)은 휴대폰 이름과, 짝짓기라면 QR의 일회용 비밀이다. 이 내용은 Mac의 정적 키와 휴대폰의 정적 키로
-  만든 키로 암호화되므로 Mac만 읽고, 휴대폰 키의 주인만 만들 수 있다.
-- 핸드셰이크 뒤의 메시지는 v1과 같은 JSON 요청·응답·이벤트다. Noise 메시지는 65,535바이트를 넘지 못하므로 큰 JSON(대화 한
-  페이지는 수 MB)은 조각으로 나눈다(앞 1바이트가 "이어짐/끝").
-- 모든 경로에서 같다: 같은 Wi-Fi의 `ws://`, Tailscale의 `ws://`, 중계의 `wss://`. TLS를 따로 두지 않는 까닭은 Noise가 끝단을
-  인증하기 때문이다(인증서 관리가 없다). 중계 구간은 `wss://`라 한 겹 더 싸인다.
-- 테스트 벡터: 공개 도메인인 cacophony 벡터의 `Noise_IK_25519_ChaChaPoly_SHA256`을 Mac과 휴대폰 검사가 같이 쓴다. 두 구현이
-  같은 바이트를 내야 통과한다.
-- 넣지 않은 것: Codex처럼 ML-KEM을 섞는 양자 내성 혼합 IK. CryptoKit에는 있지만 Android에 표준 구현이 없다. 중계 구간의
-  "지금 모아 나중에 푸는" 위험을 줄이려면 다음 단계에서 `hybridIK`로 올릴 수 있게 프롤로그에 판 번호를 둔다.
+- Pattern `Noise_IK_25519_ChaChaPoly_SHA256`, prologue `yardlet-remote/2`. The phone starts (initiator) and the Mac
+  answers (responder). The phone already knows the Mac's static public key from the QR (`<- s`). The handshake takes two
+  messages, one round trip, and the phone's public key travels encrypted from the first message on (the relay does not
+  even know which phone it is).
+- The first message's payload is the phone's name and, when pairing, the one-time secret from the QR. It is encrypted
+  with a key made from the Mac's static key and the phone's static key, so only the Mac can read it and only the owner
+  of the phone's key can make it.
+- Messages after the handshake are the same JSON requests, responses and events as in v1. A Noise message cannot exceed
+  65,535 bytes, so large JSON (one page of conversation can be several MB) is split into fragments (the first byte says
+  "continues" or "end").
+- It is the same on every route: `ws://` on the same Wi-Fi, `ws://` over Tailscale, `wss://` through the relay. There is
+  no separate TLS because Noise authenticates both ends (no certificates to manage). The relay leg is `wss://`, so it
+  gets one more layer.
+- Test vectors: the Mac and phone tests share the `Noise_IK_25519_ChaChaPoly_SHA256` vectors from the public-domain
+  cacophony set. Both implementations must produce the same bytes to pass.
+- Left out: a quantum-resistant hybrid IK that mixes in ML-KEM, as Codex does. CryptoKit has it, but Android has no
+  standard implementation. To reduce the "harvest now, decrypt later" risk on the relay leg, the prologue carries a
+  version number so that a later step can move up to `hybridIK`.
 
-### 2.2 같은 Wi-Fi 직접 연결
+### 2.2 Direct connection on the same Wi-Fi
 
-- Mac은 v2 리스너를 모든 인터페이스의 TCP 47616에 연다(쓰는 중이면 빈 포트). v1처럼 주소를 골라 묶을 까닭이 없다: 핸드셰이크를
-  못 하는 상대는 아무것도 얻지 못한다(Syncthing의 22000과 같다).
-- Bonjour로 `_yardlet._tcp`를 알린다. 인스턴스 이름과 TXT의 `id`는 Mac 공개 키에서 나온 16자 해시라 Mac 이름이 LAN에 보이지
-  않는다. 휴대폰은 저장한 Mac 키로 같은 해시를 만들어 자기 Mac을 찾는다.
-- macOS 15부터 Bonjour 광고는 로컬 네트워크 허용을 묻는다(TCP 수신만으로는 묻지 않는다, Apple TN3179). 원격을 켤 때 한 번 뜨고,
-  거절하면 Bonjour 없이 마지막 주소와 중계로 연결한다. Info.plist에 `NSLocalNetworkUsageDescription`과 `NSBonjourServices`
-  (`_yardlet._tcp`)를 넣는다.
-- Mac은 핸드셰이크 응답에 지금의 직접 주소(LAN, Tailscale, MagicDNS 이름)를 넣는다. 휴대폰은 이것을 저장해 두었다가 Bonjour가
-  안 되는 망(게스트 Wi-Fi의 기기 격리 등)에서도 먼저 시도한다.
-- Android 17(targetSdk 37)부터는 LAN 소켓에 `ACCESS_LOCAL_NETWORK` 권한이 든다. 지금 targetSdk 36에서는 필요 없고, 37로 올릴 때
-  권한 요청과 거절 시 중계로 넘어가는 길을 넣는다.
+- The Mac opens the v2 listener on TCP 47616 on every interface (a free port if that one is in use). There is no reason
+  to bind to chosen addresses as v1 does: a peer that cannot complete the handshake gets nothing (like Syncthing's
+  22000).
+- The Mac advertises `_yardlet._tcp` over Bonjour. The instance name and the TXT `id` are a 16-character hash derived
+  from the Mac's public key, so the Mac's name is not visible on the LAN. The phone makes the same hash from the Mac key
+  it saved and finds its Mac that way.
+- From macOS 15, advertising over Bonjour asks for local network permission (only listening on TCP does not ask; Apple
+  TN3179). The prompt appears once when the remote is turned on; if the person declines, the phone connects through the
+  last address and the relay without Bonjour. Info.plist gets `NSLocalNetworkUsageDescription` and `NSBonjourServices`
+  (`_yardlet._tcp`).
+- The Mac puts its current direct addresses (LAN, Tailscale, MagicDNS name) in the handshake response. The phone saves
+  them and tries them first, even on networks where Bonjour does not work (such as device isolation on guest Wi-Fi).
+- From Android 17 (targetSdk 37), LAN sockets need the `ACCESS_LOCAL_NETWORK` permission. The current targetSdk 36 does
+  not need it; moving to 37 adds the permission request and a fallback to the relay when it is denied.
 
 ### 2.3 Tailscale
 
-- Tailscale 주소도 Mac의 한 인터페이스라 v2 리스너가 그대로 받는다. 휴대폰은 VPN이 켜져 있을 때 저장된 Tailscale 주소를 직접 경로로
-  시도한다. 따로 할 일이 없다.
-- v1 리스너(Tailscale 주소만, 47615, 평문)는 v1 기기를 위해 남긴다.
+- A Tailscale address is also one of the Mac's interfaces, so the v2 listener accepts it as is. When the VPN is on, the
+  phone tries the saved Tailscale address as a direct route. Nothing else is needed.
+- The v1 listener (Tailscale addresses only, 47615, plain text) stays for v1 devices.
 
-### 2.4 Yardlet 중계 서버
+### 2.4 Yardlet relay server
 
-**모양:** Cloudflare Worker 하나와 Durable Object 클래스 하나(`Room`). Mac마다 방이 하나다.
+**Shape:** one Cloudflare Worker and one Durable Object class (`Room`). Each Mac has one room.
 
 ```
-Mac ──wss /v1/rooms/<방>/host──▶ Room(DO) ◀──wss /v1/rooms/<방>/connect── 휴대폰
-     (나가는 연결, 서명으로 방 열기)        (암호문만 넘김)
+Mac ──wss /v1/rooms/<room>/host──▶ Room(DO) ◀──wss /v1/rooms/<room>/connect── phone
+     (outgoing, opens the room by signing)    (forwards ciphertext only)
 ```
 
-- **방 ID**는 Mac의 Ed25519 중계 키의 SHA-256 앞 20바이트를 base32로 쓴 32자다. 서버는 Mac이 보낸 공개 키에서 방 ID를 다시 계산하고,
-  서버가 준 nonce에 대한 서명을 확인한 뒤에만 그 방의 Mac으로 받는다. 계정·등록·저장이 없다.
-- **이어 주기:** 휴대폰이 `connect`로 들어오면 방이 연결 번호를 붙여 Mac에 알리고(`open`), 그 뒤 양쪽의 바이너리 프레임을 번호를
-  붙이고 떼며 넘긴다. Mac은 연결마다 Noise 응답자를 하나씩 둔다. Mac이 없으면 휴대폰의 업그레이드 요청에 404를 준다.
-- **하지 않는 것:** 내용 저장, 로그에 내용 쓰기, 휴대폰 인증(방 ID를 아는 누구나 들어올 수는 있지만 Mac의 핸드셰이크에서 끊긴다).
-  방 하나에 휴대폰 연결 8개, 휴대폰 프레임 65,535바이트(Noise 메시지 하나), 인증 전 10초, 말 없는 연결 120초로 막는다.
-- **잠자기:** Hibernation API로 받아, 오가는 메시지가 없으면 DO가 내려가도 연결은 남고 시간 요금이 붙지 않는다. Mac의 유지 ping은
-  자동 응답(`ping`→`pong`)이라 DO를 깨우지 않는다.
-- **서버가 보는 것:** 방 ID, 양쪽 IP 주소, 연결·끊김 시각, 프레임 크기와 간격, 알림을 보낼 때의 FCM 토큰(보내고 버림). 보지 못하는
-  것: 작업 목록, 대화, 명령, 승인, 휴대폰의 공개 키.
-- **비용(2026-10-24 Cloudflare 가격표):** 무료 요금제에서도 SQLite 저장 방식 DO를 쓸 수 있고 하루 요청 100,000회, 13,000 GB-s다.
-  DO가 받는 WebSocket 메시지는 20개를 요청 1회로 센다. 사용자 한 명이 하루 두 시간 휴대폰을 열어 두면 대략 요청 수백 회, 수백
-  GB-s라 무료 안이다. 사용자가 1,000명이면 유료 요금제(월 $5에 DO 요청 100만 회, 400,000 GB-s 포함)에 초과분 몇 달러로 본다.
-  도메인은 없어도 된다(`*.workers.dev`).
-- **배포는 이번에 하지 않는다.** 코드와 로컬 실행(`wrangler dev`, 로그인 불필요)·검사까지만 한다. Mac 빌드의 기본 중계 주소는
-  비워 두고, 배포한 뒤 상수 하나를 넣는다. 그때까지는 개발용 설정 값으로만 중계를 쓴다.
+- The **room ID** is 32 characters: the first 20 bytes of the SHA-256 of the Mac's Ed25519 relay key, written in base32.
+  The server recomputes the room ID from the public key the Mac sends, and accepts the connection as that room's Mac
+  only after verifying its signature over a nonce the server gave. There are no accounts, registration or storage.
+- **Joining:** when a phone comes in through `connect`, the room gives it a connection number and tells the Mac
+  (`open`). After that it forwards binary frames both ways, adding and removing the number. The Mac keeps one Noise
+  responder per connection. If the Mac is not there, the room answers the phone's upgrade request with 404.
+- **What it does not do:** store content, write content to logs or authenticate phones (anyone who knows the room ID can
+  come in, but the Mac's handshake cuts them off). Limits: 8 phone connections per room, 65,535 bytes per phone frame
+  (one Noise message), 10 seconds before authentication and 120 seconds for a silent connection.
+- **Sleeping:** sockets are accepted through the Hibernation API, so when no messages pass, the DO can be evicted while
+  the connections stay, and no duration charge accrues. The Mac's keepalive ping gets an automatic response
+  (`ping`→`pong`), so it does not wake the DO.
+- **What the server sees:** the room ID, both sides' IP addresses, connect and disconnect times, frame sizes and
+  intervals, and the FCM token while sending a notification (dropped after sending). What it cannot see: the task list,
+  conversations, commands, approvals and the phone's public key.
+- **Cost (Cloudflare price list, 2026-10-24):** the free plan also allows SQLite-backed DOs, with 100,000 requests and
+  13,000 GB-s per day. Every 20 WebSocket messages a DO receives count as one request. A user who keeps the phone open
+  two hours a day makes roughly a few hundred requests and a few hundred GB-s, within the free plan. 1,000 users would
+  need the paid plan ($5 a month, including 1 million DO requests and 400,000 GB-s) plus a few dollars of overage. No
+  domain is needed (`*.workers.dev`).
+- **Deployment is not part of this step.** It goes only as far as the code, running it locally (`wrangler dev`, no
+  sign-in needed) and tests. The Mac build's default relay address stays empty, and one constant goes in after
+  deployment. Until then the relay is used only through a development setting.
 
-### 2.5 휴대폰의 경로 고르기
+### 2.5 How the phone picks a route
 
-1. 후보를 모은다: Bonjour로 찾은 주소, 마지막에 받은 직접 주소(Wi-Fi·이더넷이면 LAN, VPN이 켜져 있으면 Tailscale), 중계.
-2. 직접 후보는 바로, 중계는 0.7초 뒤에 시작해 먼저 핸드셰이크를 마친 것을 쓰고 나머지는 닫는다(직접 시도는 3초 제한).
-3. 중계로 붙어 있는 동안 망이 바뀌거나 Bonjour가 Mac을 찾으면 직접 연결을 다시 시도하고, 되면 옮긴다(목록·열린 대화는 다시
-   받는다).
-4. 화면에는 경로를 크게 보이지 않는다. Mac 시트에 "같은 Wi-Fi로 연결됨"·"Tailscale로 연결됨"·"Yardlet 서버를 거쳐 연결됨"
-   한 줄만 둔다.
+1. Gather candidates: addresses found through Bonjour, the last direct addresses received (LAN on Wi-Fi or Ethernet,
+   Tailscale when the VPN is on) and the relay.
+2. Start the direct candidates at once and the relay after 0.7 seconds; use whichever finishes the handshake first and
+   close the rest (direct attempts time out after 3 seconds).
+3. While connected through the relay, if the network changes or Bonjour finds the Mac, try a direct connection again and
+   move to it if it works (the list and the open conversation are fetched again).
+4. The screen does not make much of the route. The Mac sheet has just one line: "Connected over the same Wi-Fi",
+   "Connected over Tailscale" or "Connected through the Yardlet server".
 
-## 3. 짝짓기·제거·재연결
+## 3. Pairing, removal and reconnection
 
-- **Mac:** 설정 › 원격 연결 › "휴대폰 연결"이 QR을 5분 보인다. 수동 코드는 없앴다: 계정이 없는 구조에서 손으로 치는 짧은 코드는
-  PAKE(SPAKE2 등)가 있어야 안전하다. QR을 휴대폰 기본 카메라로 찍어도 앱이 열린다(`yardlet-remote://pair?v=2…`).
-- **휴대폰:** QR을 읽으면 이 Mac 전용 X25519 키 쌍을 만들고(Mac마다 다른 키라 Mac끼리 휴대폰을 엮을 수 없다), 개인 키는 Android
-  Keystore의 AES 키로 봉인해 DataStore에 둔다. 백업에서 뺀다.
-- **확정:** Mac은 첫 메시지의 비밀이 맞으면 휴대폰 공개 키를 기기 목록에 넣고 응답한다. 응답이 휴대폰에 닿지 못해 다시 시도하면,
-  같은 공개 키에 한해 같은 표의 남은 시간 안에서 같은 기기로 받는다.
-- **제거:** Mac 설정에서 제거하면 열린 연결을 바로 끊고(`revoked`), 그 공개 키로는 다시 들어올 수 없다(`unknownDevice`). 알림
-  토큰도 함께 지운다. 휴대폰의 "연결 해제"는 Mac에 알리고(`forgetDevice`) 자기 키를 지운다.
-- **재연결:** 끊기면 지수 백오프(1초→30초, ±20%), 망이 바뀌면 바로. 매번 새 핸드셰이크를 한다(세션 재개 없음).
-- **여러 Mac:** 휴대폰 앱은 Mac 여럿을 저장하고, 위쪽 Mac 이름을 눌러 바꾼다. 한 번에 하나에 연결한다.
+- **Mac:** Settings › Remote › "Pair a phone" shows the QR for 5 minutes. The manual code is gone: without accounts, a
+  short code typed by hand is safe only with a PAKE (such as SPAKE2). Scanning the QR with the phone's built-in camera
+  also opens the app (`yardlet-remote://pair?v=2…`).
+- **Phone:** after reading the QR, it makes an X25519 key pair for this Mac only (a different key for each Mac, so Macs
+  cannot link the phone across each other) and keeps the private key in DataStore, sealed with an AES key in the Android
+  Keystore. It is excluded from backups.
+- **Confirming:** if the secret in the first message matches, the Mac adds the phone's public key to its device list and
+  responds. If the response does not reach the phone and the phone tries again, the Mac accepts it as the same device,
+  for the same public key only and within the time left on the same ticket.
+- **Removal:** removing the phone in the Mac's settings closes its open connections at once (`revoked`), and that public
+  key cannot come back in (`unknownDevice`). Its notification token is deleted too. "Disconnect" on the phone tells the
+  Mac (`forgetDevice`) and deletes the phone's own key.
+- **Reconnection:** after a drop, exponential backoff (1 second→30 seconds, ±20%), or at once when the network changes.
+  Every reconnection is a new handshake (no session resumption).
+- **Several Macs:** the phone app saves several Macs, and the person switches by tapping the Mac name at the top. It
+  connects to one at a time.
 
-### 3.1 계정(선택)
+### 3.1 Accounts (optional)
 
-사용자(2026-10-24): "계정 느낌으로 하는 것도 가능한게 낫지않겠어?" QR 짝짓기는 그대로 두고, 계정으로 로그인하면 그 사람의 Mac이
-보이고 새 휴대폰을 붙일 수 있게 한다. 종단 간 암호화는 지킨다.
+Decision (2026-10-24): an account-based way to connect should also be possible. QR pairing stays, and signing in with an
+account shows that person's Macs and lets them add a new phone. End-to-end encryption is kept.
 
-- **계정이 하는 일은 둘뿐이다.** 찾기(이 계정에 등록된 Mac의 이름·방 ID·공개 키)와, 새 휴대폰을 기존 기기의 승인으로 붙이기.
-  작업·대화·명령은 계정 서버에 가지 않는다(중계를 지나더라도 암호문이다). Signal·WhatsApp의 연결된 기기처럼 서버는 기기 목록만 알고,
-  새 기기는 기존 기기가 승인한다.
-- **흐름:**
-  1. Mac: 설정 › 원격 연결 › "계정으로 로그인"(브라우저 로그인 창) 뒤 이 Mac을 계정에 올린다(이름, 방 ID, Mac 공개 키 둘). 방 주인임은
-     중계 키 서명으로 증명한다.
-  2. 새 휴대폰: "계정으로 로그인" → 계정의 Mac 목록 → Mac을 고르면 그 Mac과 Noise 핸드셰이크를 하며 연결 요청(`link`)을 보낸다.
-  3. Mac은 그 휴대폰을 기다림으로 둔다. Mac 화면과 이미 연결된 휴대폰에 "Pixel 9가 연결하려 합니다 · 482 913"이 뜨고, 새 휴대폰에도
-     같은 숫자가 보인다. 같으면 허용한다.
-  4. 허용하면 그 연결이 바로 인증되어 목록을 받는다. 2분 안에 답이 없거나 거절하면 끊는다.
-- **확인 숫자가 있는 까닭:** 계정 서버가 Mac 공개 키를 바꿔치기하면(서버 침해, 운영자) 휴대폰은 가짜 Mac과 이야기하게 된다. 숫자는
-  양쪽이 각자 가진 두 공개 키로 계산하므로 바꿔치기가 있으면 두 화면의 숫자가 다르다. 그래서 계정 서버를 믿지 않아도 된다(KDE
-  Connect의 확인 문자열, Signal 안전 번호와 같은 생각).
-- **자리를 비웠을 때:** Mac 앞이 아니면 이미 연결된 휴대폰이 승인한다. 연결된 휴대폰이 없고 Mac 앞도 아니면 붙일 수 없다. 그것이 안전한
-  쪽이다.
-- **로그인 수단:** GitHub과 Google을 먼저 넣는다(OAuth 2.0 인가 코드와 PKCE, 앱은 브라우저 로그인 창 `ASWebAuthenticationSession`과
-  Custom Tabs). 개발 도구 사용자에게 가장 흔하고 두 플랫폼 모두 같은 길로 된다. Sign in with Apple은 iOS 앱을 만들 때 넣는다(서비스
-  ID·키·도메인 확인이 필요하고, App Store는 다른 소셜 로그인을 넣은 앱에 Apple 로그인도 요구하는 경우가 있다). 이메일 링크는 메일 발송
-  서비스(발신 도메인, 대개 유료)가 있어야 해서 다음으로 둔다.
-- **서버에 남는 것:** 계정 ID(로그인 제공자와 그 사용자 번호의 해시. 원래 번호와 이메일은 저장하지 않음), 표시 이름(GitHub 로그인 이름
-  같은 것, 선택), 등록한 Mac(이름, 방 ID, Mac 공개 키 둘, 갱신 시각), 로그인 세션(토큰의 해시, 기기 이름, 시각), 2분짜리 일회용
-  로그인 코드. 남지 않는 것: 작업, 대화, 명령, 휴대폰 공개 키, 알림 토큰. Mac에서 로그아웃하면 그 Mac은 목록에서 빠진다.
-- **저장 위치:** 계정마다 Durable Object 하나(계정 ID가 이름, SQLite). 모든 사용자를 담은 표는 없다.
-- **QR과의 관계:** QR은 계정 없이 쓰는 기본 길로 남는다. 계정은 Mac 앞에 없을 때 새 휴대폰을 붙이거나, 여러 Mac을 한 번에 찾을 때 쓴다.
+- **An account does only two things.** Discovery (the names, room IDs and public keys of the Macs registered to this
+  account), and adding a new phone with approval from an existing device. Tasks, conversations and commands never go to
+  the account server (even when they pass the relay, they are ciphertext). As with linked devices in Signal and
+  WhatsApp, the server knows only the device list, and existing devices approve new ones.
+- **Flow:**
+  1. Mac: Settings › Remote › "Sign in with an account" (a browser sign-in window), then this Mac is registered to the
+     account (name, room ID, the Mac's two public keys). The Mac proves it owns the room with a relay key signature.
+  2. New phone: "Sign in with an account" → the account's list of Macs → picking a Mac runs a Noise handshake with that
+     Mac and sends a link request (`link`).
+  3. The Mac puts that phone on hold. The Mac's screen and the phones already connected show "Pixel 9 wants to connect ·
+     482 913", and the new phone shows the same number. If they match, the person allows it.
+  4. Once allowed, that connection is authenticated at once and receives the list. With no answer within 2 minutes, or a
+     refusal, the Mac drops it.
+- **Why there is a confirmation number:** if the account server swapped the Mac's public key (a server breach, or the
+  operator), the phone would talk to a fake Mac. Each side computes the number from the two public keys it holds, so a
+  swap makes the numbers on the two screens differ. That way the account server does not need to be trusted (the same
+  idea as KDE Connect's verification string and Signal's safety number).
+- **When away:** if the person is not at the Mac, a phone already connected approves. With no connected phone and nobody
+  at the Mac, a new phone cannot be added. That is the safe side.
+- **Sign-in methods:** GitHub and Google come first (OAuth 2.0 authorization code with PKCE; the apps use browser
+  sign-in windows, `ASWebAuthenticationSession` and Custom Tabs). They are the most common among developer-tool users
+  and work the same way on both platforms. Sign in with Apple comes with the iOS app (it needs a service ID, a key and
+  domain verification, and the App Store sometimes requires Sign in with Apple in apps that offer other social sign-in).
+  Email links need a mail sending service (a sending domain, usually paid), so they come later.
+- **What stays on the server:** the account ID (a hash of the sign-in provider and the user number there; the original
+  number and the email are not stored), a display name (such as the GitHub login name; optional), registered Macs (name,
+  room ID, the Mac's two public keys, update time), sign-in sessions (a hash of the token, device name, times) and
+  one-time sign-in codes that last 2 minutes. What does not stay: tasks, conversations, commands, phones' public keys
+  and notification tokens. Signing out on a Mac removes that Mac from the list.
+- **Where it is stored:** one Durable Object per account (named by the account ID, SQLite). There is no table of all
+  users.
+- **Relation to the QR:** the QR remains the default way, with no account. An account is for adding a new phone when the
+  person is not at the Mac, or for finding several Macs at once.
 
-## 4. 알림
+## 4. Notifications
 
-- 휴대폰이 `registerPush`로 FCM 토큰을 보내면 Mac이 기기마다 32바이트 알림 키를 만들어 답한다. 토큰과 키는 Mac의 기기 목록에 있다.
-- Mac은 기기가 연결되어 있지 않을 때만 보낸다: 기다림이 시작될 때(높은 우선순위), 작업이 끝나거나 실패했을 때, 기다림이 Mac에서
-  풀렸을 때(알림 회수, 보통 우선순위). 휴대폰 앱은 화면에서 나가면 연결을 닫고 알림에 맡긴다("백그라운드 알림"을 켠 경우는 그대로
-  연결해 둔다).
-- 내용은 v1의 `attention` 이벤트와 같은 JSON을 ChaCha20-Poly1305(알림 키, 무작위 nonce)로 암호화한 것이다. FCM 데이터 메시지는
-  4 KB까지라 요약은 120자로 둔다. Google과 중계는 토큰·크기·시각만 본다.
-- 높은 우선순위 데이터 메시지는 보이는 알림으로 이어져야 우선순위가 낮아지지 않는다(FCM 문서). 기다림·완료는 늘 알림을 띄우고,
-  회수만 보통 우선순위로 보낸다.
-- 잠금 화면에는 "승인 요청이 있습니다"만 보이고(공개 버전), 잠금을 풀면 작업 제목과 요약을 보인다.
-- FCM을 쓰려면 Firebase 프로젝트가 있어야 한다(무료). 프로젝트가 없는 빌드는 알림 등록을 하지 않고 "백그라운드 알림"만 쓴다.
-  iOS는 APNs로 같은 모양을 쓴다(다음 단계).
+- When the phone sends its FCM token with `registerPush`, the Mac makes a 32-byte notification key for that device and
+  returns it. The token and the key live in the Mac's device list.
+- The Mac sends one only while the device is not connected, at three moments: a wait starts (high priority); a task
+  finishes or fails; a wait is resolved on the Mac (the notification is withdrawn, normal priority). When the phone app
+  leaves the screen, it closes the connection and relies on notifications (with "Background notifications" on, it stays
+  connected).
+- The content is the same JSON as v1's `attention` event, encrypted with ChaCha20-Poly1305 (the notification key, a
+  random nonce). FCM data messages are limited to 4 KB, so the summary is capped at 120 characters. Google and the relay
+  see only the token, the size and the time.
+- A high-priority data message must lead to a visible notification, or its priority gets lowered (FCM docs). Waits and
+  completions always show a notification; only withdrawals go at normal priority.
+- The lock screen shows only "There is an approval request" (the public version); after unlocking, the task title and
+  summary appear.
+- FCM needs a Firebase project (free). A build without a project does not register for notifications and uses only
+  "Background notifications". iOS uses the same shape with APNs (next step).
 
-## 5. 휴대폰에서 하는 일
+## 5. What the phone does
 
-| 일 | v1 | v2 | 근거 |
+| Action | v1 | v2 | Basis |
 |---|---|---|---|
-| 작업 목록·상태, 대화 읽기, 메시지, 중지, 읽음 | 함 | 함 | 두 앱 모두 |
-| 승인: 한 번만 허용·거부 | 함 | 함 | 영구 규칙을 만드는 답은 여전히 Mac에서 |
-| 질문 카드 답하기 | Mac에서 | **함** | 두 앱 모두 휴대폰에서 답한다. Mac 카드와 같은 길(`ConversationRequestFormInput`)로 보낸다. 비밀 답 질문과 MCP 폼은 Mac에서 |
-| 계획 검토 | Mac에서 | **함**: 계획 승인, 계속 계획(이유 선택) | Mac 카드가 내는 두 답 그대로. 권한 모드를 바꾸는 답은 없다 |
-| 새 작업 | 없음 | **함**: 프로젝트(또는 채팅)와 첫 메시지 | 두 앱 모두 휴대폰에서 새 로컬 작업을 연다. 하네스·모델·계정·worktree는 Mac 홈 입력창의 지금 값 그대로 |
-| 명령 출력, 파일 변경(diff) | 없음 | **함**: 도구 줄을 누르면 그때 불러온다(`itemDetail`) | Codex 휴대폰은 diff를 보인다. 스트림에 늘 싣지 않고 누를 때만 받아 빠르기를 지킨다 |
-| 제안된 작업 | 없음 | **함**: 시작, 여기서 하기, 닫기 | Mac 칩과 같은 세 동작 |
-| 하위 작업 | 부모 링크 | 부모 아래 접어 보이고 바로 연다 | 사용자는 하위 작업을 여럿 동시에 돌린다 |
-| 고정·보관 | 없음 | **함** | 목록 정리 |
-| 여러 Mac, 계정 | 없음 | **함** | 3절, 3.1 |
-| 이미지 첨부 | 없음 | 다음 | 두 앱 모두 있다. 사진 고르기·크기 줄이기·Mac 첨부 길이 함께 들어 따로 한다 |
-| 새 작업의 하네스·모델 고르기, Steer·Queue 고르기 | 없음 | 다음 | 하네스마다 모델 목록이 달라 Mac 목록을 옮겨야 한다 |
-| 브라우저 탭 넘겨받기 | 없음 | 다음(6.3) | Mac 쪽 "사람을 기다림" 신호가 브라우저 격리·금고 작업에 있다 |
-| 설정, 커넥터, 파일 둘러보기, 터미널 | 없음 | 하지 않음 | Mac에서 |
+| Task list and status, reading conversations, messages, stop, mark read | Yes | Yes | Both apps |
+| Approval: allow once or deny | Yes | Yes | Answers that create a permanent rule still stay on the Mac |
+| Answering question cards | On the Mac | **Yes** | Both apps answer on the phone. Sent through the same path as the Mac card (`ConversationRequestFormInput`). Questions with secret answers and MCP forms stay on the Mac |
+| Plan review | On the Mac | **Yes**: Approve plan, Keep planning (with an optional reason) | The same two answers the Mac card gives. No answer that changes the permission mode |
+| New task | No | **Yes**: project (or chat) and first message | Both apps open new local tasks from the phone. Harness, model, account and worktree are the current values in the Mac home composer |
+| Command output, file changes (diff) | No | **Yes**: loaded when the tool line is tapped (`itemDetail`) | Codex on the phone shows diffs. Fetched only on tap instead of always riding the stream, to keep things fast |
+| Suggested tasks | No | **Yes**: Start, Do it here, Dismiss | The same three actions as the Mac chip |
+| Child tasks | Parent link | Shown collapsed under the parent and opened directly | Users run several child tasks at once |
+| Pin and archive | No | **Yes** | Keeping the list tidy |
+| Several Macs, accounts | No | **Yes** | Sections 3 and 3.1 |
+| Image attachments | No | Next | Both apps have it. It needs photo picking, resizing and the Mac's attachment path together, so it is done separately |
+| Choosing the harness and model for a new task, choosing Steer or Queue | No | Next | Each harness has a different model list, so the Mac's lists have to be carried over |
+| Taking over a browser tab | No | Next (section 6.3) | The Mac-side "waiting for the person" signal belongs to the browser isolation and vault work |
+| Settings, connectors, browsing files, terminal | No | Not done | On the Mac |
 
-### 5.1 빠르기
+### 5.1 Speed
 
-사용자(2026-10-24): "그 두 앱의 리모트는 느리고 기능도 좀 별로여서.. 훨씬 더 많은 일을 수행가능하면 좋을 듯". 두 앱은 회사 서버를
-거쳐 한 번 더 돌고, 앱을 열 때마다 처음부터 받는다. Yardlet은 같은 Wi-Fi면 Mac에 바로 붙고, 휴대폰이 마지막 상태를 갖고 있다.
+The goal (2026-10-24): the remotes in the two apps are slow and limited, so Yardlet's should do much more. The two apps
+take an extra trip through the company's servers and fetch everything from scratch each time the app opens. On the same
+Wi-Fi, Yardlet connects straight to the Mac, and the phone keeps the last state.
 
-| 순간 | 목표 | 어떻게 |
+| Moment | Target | How |
 |---|---|---|
-| 앱을 열고 목록이 보이기 | 0.3초 안(저장해 둔 목록), 최신으로 1초 안(같은 Wi-Fi)·2초 안(중계) | 마지막 목록과 연 대화를 휴대폰에 두고 먼저 그림. 경로 경주(2.5) |
-| 대화 열기 | 저장한 쪽 바로, 최신 0.5초 안 | 저장한 페이지를 먼저, 구독 응답으로 바꿈 |
-| Mac에서 일어난 일이 휴대폰에 | 0.5초 안 | 서버 묶음 간격(목록 0.4초, 대화 0.2초), 바뀐 것만 보냄 |
-| 망이 바뀐 뒤 다시 붙기 | 1.5초 안 | 망 변경 즉시 경로 경주 |
-| 승인·메시지의 응답 | 0.3초 안(같은 Wi-Fi) | Mac이 받자마자 답하고 결과는 이벤트로 |
+| Opening the app until the list shows | Within 0.3 s (saved list); up to date within 1 s (same Wi-Fi) or 2 s (relay) | Keep the last list and opened conversations on the phone and draw them first. Route race (section 2.5) |
+| Opening a conversation | Saved copy at once, up to date within 0.5 s | Saved page first, replaced by the subscription response |
+| Something on the Mac reaching the phone | Within 0.5 s | Server batching interval (list 0.4 s, conversation 0.2 s), sends only changes |
+| Reconnecting after a network change | Within 1.5 s | Route race as soon as the network changes |
+| Response to an approval or a message | Within 0.3 s (same Wi-Fi) | The Mac answers as soon as it receives, and the result comes as an event |
 
-- **바뀐 것만:** 목록은 바뀐 작업만(`tasksChanged`), 대화는 바뀐 항목만(`conversation`) 보낸다. 다시 붙으면 저장해 둔 화면을 둔 채
-  새 목록과 페이지로 바꾼다. 명령 출력과 diff는 누를 때만 받는다.
-- **잰다:** Mac 검사는 루프백에서 핸드셰이크와 첫 목록까지의 시간을, 휴대폰 앱은 연결·첫 목록·대화 첫 페이지 시간을 기록한다.
+- **Only changes:** the list sends only changed tasks (`tasksChanged`), and the conversation only changed items
+  (`conversation`). On reconnecting, the saved screen stays up while the new list and page replace it. Command output
+  and diffs are fetched only on tap.
+- **Measuring:** the Mac tests record the time to the handshake and to the first list over loopback, and the phone app
+  records the time to connect, to the first list and to the first conversation page.
 
 
-## 6. 자리를 비운 동안 사람이 필요한 단계를 휴대폰에서 처리하기
+## 6. Handling steps that need the person from the phone while they are away
 
-휴대폰에서는 브라우저를 손으로 다루기, 지문, 다른 Mac 앱 조작, Yardlet 안의 복잡한 일이 어렵다. 다른 제품이 이것을 어떻게
-나누는지 보고, Yardlet은 "휴대폰에서 끝낼 수 있는 일"과 "Mac 앞에서만 되는 일"을 정직하게 가른다.
+From a phone it is hard to work a browser by hand, use a fingerprint, operate other Mac apps or do complex work inside
+Yardlet. After looking at how other products split this, Yardlet honestly separates "what can be finished on the phone"
+from "what works only at the Mac".
 
-### 6.1 다른 제품(2026-10-24, 공개 문서)
+### 6.1 Other products (2026-10-24, public docs)
 
-| 제품 | 사람이 필요한 단계 | 휴대폰에서 | 넘긴 동안 모델 |
+| Product | Steps that need the person | On the phone | The model during takeover |
 |---|---|---|---|
-| ChatGPT 에이전트(종료)와 지금의 cloud browser | 로그인에서 멈추고 "Take over browser", 끝나면 돌려주고 이어 감. 지금은 보안 로그인 폼이 값을 원격 브라우저에 바로 넣음 | cloud browser는 휴대폰에서도 넘겨받기 | 옛 에이전트는 넘긴 동안 스크린샷과 입력한 비밀을 찍지 않는다고 명시. 지금 문서에는 같은 보장이 따로 없음 |
-| Browserbase Live View | 라이브 뷰 URL(iframe)로 클릭·입력·스크롤 | 모바일 키보드는 공식 지원하지 않고 자체 입력 칸을 권함 | 세션은 기본으로 녹화됨. URL은 만료 시간(최대 6시간) |
-| Steel | WebRTC(H.264, 25fps) 라이브 세션, `interactive`로 입력, 로그인·CAPTCHA용 사람 개입 문서 | 브라우저에서 보임, 터치 완전 지원은 미확인 | 디버그 URL은 인증이 없어 링크를 가진 누구나 봄. 자격 증명 칸 흐리게 하기 옵션 |
-| Claude Code Remote Control | 권한 요청·`AskUserQuestion`을 답할 때까지 열어 둠 | 휴대폰에서 답함, 푸시. 화면 넘겨받기는 없음 | — |
-| Aside | 승인·질문 대기 표시, MFA·패스키·CAPTCHA는 사람이. 에이전트 탭을 골라 직접 쓰고, 10-23 Computer Use와 넘겨받기 추가 | Slack·Telegram에서 지시·승인 카드·`/stop`. 화면 스트리밍은 확인 안 됨 | 미확인 |
-| ego(lite), ego.app | 작업 Space에 들어가 로그인·확인을 하고 이어 감 | ego.app은 iMessage·Dynamic Island 한 번 눌러 승인을 내세움(대기자 명단 단계) | 미확인 |
-| Manus | SMS 코드·CAPTCHA·MFA에서 Take Over 알림 → 처리 → 돌려주기 | 휴대폰에서 직접 다 되는지는 문서에 없음 | 미확인 |
-| 1Password for Claude, Steel Credentials | 비밀번호·코드를 모델을 거치지 않고 페이지에 직접 | — | 모델 문맥에 값이 들어가지 않음 |
+| ChatGPT agent (discontinued) and today's cloud browser | Stops at sign-in for "Take over browser", then gets the browser back and continues. Now a secure sign-in form puts the values straight into the remote browser | The cloud browser can be taken over from the phone too | The old agent stated that it takes no screenshots and records no typed secrets during takeover. Today's docs give no such guarantee |
+| Browserbase Live View | Click, type and scroll through a live view URL (iframe) | No official mobile keyboard support; recommends your own input field | Sessions are recorded by default. The URL expires (6 hours at most) |
+| Steel | WebRTC (H.264, 25fps) live sessions, input with `interactive`, human-in-the-loop docs for sign-in and CAPTCHA | Shows in a browser; full touch support not confirmed | The debug URL has no authentication, so anyone with the link can watch. Option to blur credential fields |
+| Claude Code Remote Control | Keeps permission requests and `AskUserQuestion` open until answered | Answered on the phone, with push. No screen takeover | — |
+| Aside | Shows waits for approvals and questions; the person handles MFA, passkeys and CAPTCHA. The person picks an agent tab and uses it directly; Computer Use and takeover added on 10-23 | Instructions, approval cards and `/stop` in Slack and Telegram. Screen streaming not confirmed | Not confirmed |
+| ego(lite), ego.app | The person enters the task's Space, signs in or confirms, and it continues | ego.app advertises one-tap approval in iMessage and the Dynamic Island (waitlist stage) | Not confirmed |
+| Manus | Take Over notification at SMS codes, CAPTCHA and MFA → the person handles it → hands back | The docs do not say whether all of it works directly on the phone | Not confirmed |
+| 1Password for Claude, Steel Credentials | Passwords and codes go straight into the page without passing through the model | — | Values never enter the model's context |
 
-Apple 쪽 사실: 멀리 있는 휴대폰으로 Mac의 Touch ID를 대신하는 공식 방법은 없다. Apple Watch 승인(`deviceOwnerAuthenticationWithWatch`,
-`…WithCompanion`)은 가까이 있어야 한다. 근처 기기 패스키(QR)는 두 기기 모두 Bluetooth가 필요해 화면을 휴대폰으로 보내도 풀리지 않는다.
+Facts on the Apple side: there is no official way for a distant phone to stand in for the Mac's Touch ID. Apple Watch
+approval (`deviceOwnerAuthenticationWithWatch`, `…WithCompanion`) requires the watch to be nearby. A passkey from a
+nearby device (QR) needs Bluetooth on both devices, so sending the screen to the phone does not unlock it.
 
-출처: [ChatGPT agent](https://help.openai.com/en/articles/11752874-chatgpt-agent),
-[cloud browser](https://help.openai.com/en/articles/20001280-using-cloud-browser-in-chatgpt),
-[Browserbase Live View](https://docs.browserbase.com/platform/browser/observability/session-live-view),
-[Steel 라이브 세션](https://docs.steel.dev/overview/sessions-api/embed-sessions/live-sessions),
-[Steel 사람 개입](https://docs.steel.dev/overview/sessions-api/human-in-the-loop),
-[Claude 권한](https://code.claude.com/docs/en/permissions), [Aside 문제 해결](https://docs.aside.com/help/troubleshooting),
-[Aside 변경 기록](https://docs.aside.com/changelog/components), [ego(lite)](https://lite.ego.app/document/en/docs/quick-start),
-[Manus Take Over](https://help.manus.im/en/articles/11711218-how-can-i-take-over-manus-browser-or-vs-code),
-[1Password for Claude](https://support.claude.com/en/articles/15936181-get-started-with-1password-for-claude),
-[Apple Watch로 잠금 해제](https://support.apple.com/en-us/102442),
-[LAPolicy](https://developer.apple.com/documentation/localauthentication/lapolicy). 금고 설계의 Aside·Ego 지도는
-[BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md) 2절.
+Sources: [ChatGPT agent](https://help.openai.com/en/articles/11752874-chatgpt-agent), [cloud
+browser](https://help.openai.com/en/articles/20001280-using-cloud-browser-in-chatgpt), [Browserbase Live
+View](https://docs.browserbase.com/platform/browser/observability/session-live-view), [Steel live
+sessions](https://docs.steel.dev/overview/sessions-api/embed-sessions/live-sessions), [Steel
+human-in-the-loop](https://docs.steel.dev/overview/sessions-api/human-in-the-loop), [Claude
+permissions](https://code.claude.com/docs/en/permissions), [Aside
+troubleshooting](https://docs.aside.com/help/troubleshooting), [Aside
+changelog](https://docs.aside.com/changelog/components), [ego(lite)](https://lite.ego.app/document/en/docs/quick-start),
+[Manus Take Over](https://help.manus.im/en/articles/11711218-how-can-i-take-over-manus-browser-or-vs-code), [1Password
+for Claude](https://support.claude.com/en/articles/15936181-get-started-with-1password-for-claude), [Unlock with Apple
+Watch](https://support.apple.com/en-us/102442),
+[LAPolicy](https://developer.apple.com/documentation/localauthentication/lapolicy). The vault design's map of Aside and
+Ego is in [BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md) section 2.
 
-**정리:** 다들 (1) 하네스의 승인·질문은 휴대폰에서 바로, (2) 로그인은 비밀을 모델 밖으로 채우고, (3) 그래도 막히면 사람이
-화면을 넘겨받았다가 돌려준다. 넘겨받은 동안 모델이 화면을 보지 않는다는 약속은 ChatGPT의 옛 에이전트만 명시했다.
-지문·근처 기기 인증은 누구도 원격으로 풀지 않는다.
+**Summary:** Everyone (1) answers the harness's approvals and questions directly on the phone, (2) fills sign-in secrets
+outside the model and (3), when still stuck, lets the person take over the screen and then hand it back. Only ChatGPT's
+old agent stated a promise that the model does not see the screen during takeover. Nobody unlocks fingerprint or
+nearby-device authentication remotely.
 
-### 6.2 Yardlet의 처리
+### 6.2 How Yardlet handles it
 
-| 단계 | 먼저 | 막히면 휴대폰에서 | Mac 앞에서만 |
+| Step | First | If stuck, from the phone | Only at the Mac |
 |---|---|---|---|
-| 하네스의 승인·질문·계획 | — | 바로 답한다(5절) | 영구 규칙을 만드는 답, 비밀 답 질문, MCP 폼 |
-| 브라우저 로그인·2단계 인증 | 금고가 비밀번호·TOTP·Yardlet 패스키를 값 없이 채움([BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)) | 금고에 없거나 사이트가 막으면 탭 넘겨받기(6.3) | — |
-| CAPTCHA, 본인 확인, 결제 확인, QR 로그인 | — | 탭 넘겨받기 | 휴대폰 카메라로 Mac 화면의 QR을 찍어야 하는 로그인 |
-| 지문·패스키 | Yardlet 패스키는 사람 없이 | 금고 "매번 확인" 항목은 휴대폰 생체 인증으로도 확인(6.4) | Touch ID 전용 확인, iCloud 키체인·근처 기기 패스키, macOS 관리자 암호, 키체인 허용 창: 휴대폰에는 "Mac에서 처리해야 합니다"로 알린다 |
-| 다른 Mac 앱 | 하네스의 컴퓨터 조작(Codex computer-use, Claude `--chrome`). "작업 중 화면 잠금 막기"를 켜면 화면이 잠기지 않는다(6.5) | 그 하네스의 승인에 답한다 | 그 설정이 꺼져 있고 화면이 잠긴 Mac의 화면 조작 |
-| Yardlet 안의 복잡한 일 | — | 조율 작업(예: 고정한 채팅 작업)에 말로 맡긴다. 그 작업이 세션 도구([AGENT_BROWSER_TOOLS](AGENT_BROWSER_TOOLS.md): `create_task`, `send_message_to_task`, `read_task`)로 다른 작업을 만들고 묻고 정리한다 | 설정, 계정, 커넥터, 파일·diff 검토 |
+| Harness approvals, questions and plans | — | Answer directly (section 5) | Answers that create a permanent rule, questions with secret answers, MCP forms |
+| Browser sign-in and two-step verification | The vault fills passwords, TOTP and Yardlet passkeys without exposing the values ([BROWSER_VAULT_DESIGN](BROWSER_VAULT_DESIGN.md)) | If the vault does not have it or the site blocks it, take over the tab (section 6.3) | — |
+| CAPTCHA, identity checks, payment confirmation, QR sign-in | — | Take over the tab | Sign-in that needs the phone's camera to scan a QR on the Mac's screen |
+| Fingerprint and passkeys | Yardlet passkeys without the person | Vault items set to "Every time" can also be confirmed with phone biometrics (section 6.4) | Touch ID-only confirmation, iCloud Keychain and nearby-device passkeys, the macOS administrator password, keychain access prompts: the phone says "This must be handled on the Mac" |
+| Other Mac apps | The harness's computer control (Codex computer-use, Claude `--chrome`). With "Keep the screen unlocked while tasks work" on, the screen does not lock (section 6.5) | Answer that harness's approvals | Screen control on a Mac whose screen is locked with that setting off |
+| Complex work inside Yardlet | — | Hand it in words to a coordinating task (for example a pinned chat task). That task uses the session tools ([AGENT_BROWSER_TOOLS](AGENT_BROWSER_TOOLS.md): `create_task`, `send_message_to_task`, `read_task`) to create, ask and tidy up other tasks | Settings, accounts, connectors, reviewing files and diffs |
 
-- 휴대폰 앱은 자주 하는 일(기다리는 작업 보기, 승인, 질문 답, 메시지, 대화 읽기, 새 작업)만 잘 만든다. 고정한 작업은 목록 위에
-  두어 조율 작업을 찾기 쉽게 한다. Mac 설정 화면을 휴대폰에 옮기지 않는다.
-- "Mac에서 처리해야 합니다"는 v1의 `moreOnMac`과 같은 정직한 표시다. 무엇을 해야 하는지(예: "Mac에서 Touch ID 확인")를 한 줄로 보이고,
-  휴대폰에서 할 수 있는 척하지 않는다.
+- The phone app does only the frequent things, and does them well (seeing waiting tasks, approvals, answering questions,
+  messages, reading conversations, new tasks). Pinned tasks sit at the top of the list so the coordinating task is easy
+  to find. The Mac's settings screens are not brought to the phone.
+- "This must be handled on the Mac" is an honest marker, like v1's `moreOnMac`. It shows in one line what needs doing
+  (for example "Confirm with Touch ID on the Mac") and does not pretend the phone can do it.
 
-### 6.3 브라우저 탭 넘겨받기(다음 단계 설계)
+### 6.3 Taking over a browser tab (design for the next step)
 
-Yardlet 브라우저는 CEF 화면 밖 렌더링이고 탭마다 DevTools 프로토콜을 쥐고 있어(에이전트 도구가 이미 쓴다), 탭 하나의 화면과
-입력만 휴대폰으로 보내기 쉽다. Mac 쪽에서 "사람을 기다림"을 만드는 일(에이전트가 사람을 부르는 도구, 금고의 "넘기고 기다리기")은
-브라우저 격리·금고 작업이 맡고, 이 설계는 휴대폰 쪽(보기, 입력, 알림)과 프로토콜을 정한다.
+Yardlet's browser uses CEF off-screen rendering and holds the DevTools protocol for each tab (the agent tools already
+use it), so it is easy to send just one tab's screen and input to the phone. Creating the "waiting for the person" state
+on the Mac side (a tool for the agent to call the person, the vault's "hand over and wait") belongs to the browser
+isolation and vault work; this design sets the phone side (viewing, input, notifications) and the protocol.
 
-- **신호:** 작업의 주의 상태가 `waiting`(`pendingRequest` `browser`)이 되고, 대화에 요청 항목(`requestKind` `browserHandoff`: 탭 ID,
-  사이트, 이유 한 줄)이 생긴다. 알림은 "‘작업 제목’이 github.com에서 기다립니다". 사람이 직접 고른 탭도 같은 길로 넘겨받는다.
-- **보기:** `watchTab {taskId, tabId}`에 Mac이 CDP `Page.startScreencast`로 받은 JPEG를 `tabFrame` 이벤트로 보낸다(휴대폰 폭에 맞춘
-  최대 폭, 품질 60, 프레임마다 확인 응답으로 흐름 조절, 화면에 보일 때만). 한 장 50~100 KB, 초당 2~5장이라 중계로도 된다.
-- **입력:** `tabInput`의 누르기(x, y), 글자(`Input.insertText`), 키(Enter, Backspace, Tab), 스크롤. 휴대폰 키보드는 화면 아래 입력
-  칸으로 받는다(Browserbase도 자체 입력 칸을 권한다). 입력 대상이 비밀번호 칸이면 휴대폰 입력 칸도 가린다.
-- **돌려주기:** `releaseTab {taskId, tabId, note?}`. 에이전트는 기다리던 도구 결과로 "사람이 탭에서 단계를 마쳤습니다"를 받고 이어 간다.
-- **넘긴 동안:** 그 탭의 `browser_*` 도구는 "사람이 이 탭을 쓰는 중"으로 거절되고, 스크린샷·스냅샷을 주지 않는다(ChatGPT 옛 에이전트의
-  약속과 같은 것을 코드로). 한 번에 한 기기만 입력한다.
-- **화면의 비밀값:** 페이지가 그리는 그대로 간다. 비밀번호 칸은 브라우저가 가리고, 금고가 채운 칸의 덮개는 그대로 둔다. 휴대폰은
-  프레임을 메모리에만 두고 `FLAG_SECURE`로 스크린샷과 최근 앱 미리보기를 막는다.
-- **재인증:** 넘겨받기를 시작할 때 휴대폰 생체 인증을 한 번 묻는다(Claude Trusted Devices의 최근 인증과 같은 생각).
+- **Signal:** the task's attention state becomes `waiting` (`pendingRequest` `browser`), and a request item appears in
+  the conversation (`requestKind` `browserHandoff`: tab ID, site, a one-line reason). The notification reads "‘Task
+  title’ is waiting on github.com". A tab the person picks directly is taken over the same way.
+- **Viewing:** on `watchTab {taskId, tabId}`, the Mac sends the JPEGs it gets from CDP `Page.startScreencast` as
+  `tabFrame` events (maximum width fitted to the phone, quality 60, flow control by acknowledging each frame, only while
+  on screen). At 50 to 100 KB per frame and 2 to 5 frames per second, it works through the relay too.
+- **Input:** `tabInput` carries taps (x, y), text (`Input.insertText`), keys (Enter, Backspace, Tab) and scrolling. The
+  phone keyboard types into an input field at the bottom of the screen (Browserbase also recommends its own input
+  field). When the target is a password field, the phone's input field is masked too.
+- **Handing back:** `releaseTab {taskId, tabId, note?}`. The agent gets "The person finished the step in the tab" as the
+  result of the tool it was waiting on, and continues.
+- **During takeover:** `browser_*` tools on that tab are refused with "The person is using this tab", and they give no
+  screenshots or snapshots (the same promise as ChatGPT's old agent, in code). Only one device types at a time.
+- **Secrets on screen:** frames go exactly as the page draws them. The browser masks password fields, and the cover over
+  fields the vault filled stays. The phone keeps frames only in memory and blocks screenshots and the recent apps
+  preview with `FLAG_SECURE`.
+- **Re-authentication:** starting a takeover asks once for phone biometrics (the same idea as recent authentication in
+  Claude Trusted Devices).
 
-### 6.4 휴대폰 생체 인증으로 확인(다음 단계 설계)
+### 6.4 Confirming with phone biometrics (design for the next step)
 
-- 짝지을 때 휴대폰이 Android Keystore에 "생체 인증 뒤에만 서명"하는 EC 키(`setUserAuthenticationRequired`, 강한 생체 인증)를 만들고
-  공개 키를 Mac에 등록한다.
-- 금고의 "매번 확인" 항목을 채울 때 Mac은 Touch ID 창과 함께 휴대폰에 확인 요청(사이트, 항목 이름, 작업 제목, 무작위 값)을 보낸다.
-  휴대폰은 BiometricPrompt를 띄우고, 통과하면 그 키로 요청을 서명해 돌려준다. Mac은 서명을 확인한 뒤에만 채운다. 두 쪽 중 먼저 온
-  확인이 쓰이고 2분이 지나면 거절한다.
-- 휴대폰이 대신하는 것은 금고의 확인뿐이다. macOS 자체의 Touch ID·관리자 암호 창은 대신하지 못한다.
+- At pairing, the phone makes an EC key in the Android Keystore that "signs only after biometric authentication"
+  (`setUserAuthenticationRequired`, strong biometrics) and registers the public key with the Mac.
+- When filling a vault item set to "Every time", the Mac shows the Touch ID prompt and also sends the phone a
+  confirmation request (site, item name, task title, a random value). The phone shows BiometricPrompt and, if it passes,
+  signs the request with that key and returns it. The Mac fills only after verifying the signature. Whichever
+  confirmation arrives first is used, and after 2 minutes the request is refused.
+- The phone stands in only for the vault's confirmation. It cannot stand in for macOS's own Touch ID or administrator
+  password prompts.
 
-### 6.5 작업 중 잠자기·화면 잠금 막기
+### 6.5 Preventing sleep and screen lock while a task works
 
-사용자(2026-10-24): "화면잠금이나 잠드는 걸 방지하는 방식을 요즘 개발자들이 다른 앱 써서 엄청 많이 쓰는걸로 알고있는디". 처음
-추천("넣지 않기")을 바꾼다.
+Decision (2026-10-24): many developers already use separate apps to keep the Mac from sleeping or locking its screen, so
+this replaces the first recommendation ("leave it out").
 
-- **대조:** Amphetamine(무료, 화면 꺼짐·화면 보호기·덮개 닫힘 잠자기를 따로 막음), KeepingYouAwake(MIT, `caffeinate`를 감쌈), 에이전트
-  전용 앱들(Claude Code·Codex 훅으로 에이전트가 일하는 동안만 막고 배터리 하한·발열에서 멈춤). 덮개를 닫은 채 돌리기는
-  `sudo pmset -a disablesleep 1` 같은 관리자 권한이 들고, 되돌리기를 잊는 것이 주된 위험이다.
-- **설정:** 설정 › 일반 "작업 중 화면 잠금 막기", 기본 꺼짐. 켜면 지금 유휴 잠자기를 막는 때(`AppModel.keepsMacAwake`: 작업이 일하는
-  동안, 원격 휴대폰이 있으면 승인을 기다리는 동안까지)에 디스플레이 잠자기와 화면 보호기도 막는다. 화면이 꺼지지 않으니 잠금도 오지
-  않는다. 일이 끝나면 바로 풀린다. Yardlet은 작업이 일하는 때를 이미 알므로 하네스 훅이 없다(2절 11: 하네스 설정에 쓰지 않는다).
-- **멈추는 때:** 배터리로 돌고 남은 양이 20% 아래일 때. 나아지면 다시 막는다. 멈출 때 알림을 한 번 보내고 메뉴 막대 메뉴에 그 상태를 둔다.
-  2026-10-24에는 Mac이 뜨거울 때(`thermalState` serious 이상)도 말없이 풀었으나, 일은 계속 돌아 식지 않고 화면만 잠겨 2026-10-26에 뺐다.
-- **덮개 닫힘은 넣지 않는다.** 관리자 암호가 들고, Yardlet이 꺼지거나 지워진 뒤에도 시스템 설정이 남을 수 있다(2절 11). 외부
-  디스플레이와 전원이 있으면 macOS가 덮개를 닫아도 깨어 있다(클램셸 모드).
-- **위험은 기본값과 짧은 표시로 다룬다.** 실제로 막는 동안 메뉴 막대 항목의 메뉴 맨 위에 "화면 잠금을 막는 중" 한 줄을 둔다. 설정 옆
-  설명 글은 두지 않는다.
-- 이 설정이 꺼져 있고 화면이 잠겨 하네스의 화면 조작이 실패하면 그 실패를 휴대폰에 그대로 보인다. Mac 전체 화면을 넘겨받는 일은
-  macOS 화면 공유가 할 일이라 Yardlet이 만들지 않는다.
+- **Comparison:** Amphetamine (free; blocks display sleep, the screen saver and lid-closed sleep separately),
+  KeepingYouAwake (MIT; wraps `caffeinate`) and agent-specific apps (they block only while the agent works, through
+  Claude Code and Codex hooks, and stop at a battery floor or when hot). Running with the lid closed needs administrator
+  rights, as in `sudo pmset -a disablesleep 1`, and the main risk is forgetting to undo it.
+- **Setting:** Settings › General "Keep the screen unlocked while tasks work", off by default. When it is on, whenever
+  Yardlet already prevents idle sleep (`AppModel.keepsMacAwake`: while a task works, and also while it waits for an
+  approval when there is a remote phone), it also prevents display sleep and the screen saver. With the screen staying
+  on, the lock never comes. It is released as soon as the work ends. Yardlet already knows when a task is working, so
+  there is no harness hook (a product principle: Yardlet writes nothing to harness settings).
+- **When it stops:** on battery with less than 20% left. It blocks again once that improves. When it stops, it sends one
+  notification and shows the state in the menu bar menu. On 2026-10-24 it also released silently when the Mac was hot
+  (`thermalState` serious or above), but the work kept running, so the Mac did not cool down and only the screen locked;
+  that was removed on 2026-10-26.
+- **Lid-closed operation is left out.** It needs the administrator password, and the system setting can remain after
+  Yardlet quits or is deleted (a product principle: Yardlet leaves nothing behind once removed). With an external
+  display and power, macOS stays awake with the lid closed (clamshell mode).
+- **The risk is handled with the default and a short indicator.** While it is actually blocking, the top of the menu bar
+  item's menu shows one line, "Keeping the screen unlocked". There is no explanatory text next to the setting.
+- If this setting is off and the harness's screen control fails because the screen is locked, the phone shows that
+  failure as it is. Taking over the whole Mac screen is a job for macOS Screen Sharing, so Yardlet does not build it.
 
-### 6.6 이번 범위와 다음
+### 6.6 This scope and what comes next
 
-| 이번(v2) | 다음 |
+| This time (v2) | Next |
 |---|---|
-| 승인·질문·계획 답, 새 작업, 메시지(조율 작업 포함), 고정한 작업을 위로, 명령 출력·diff | 브라우저 탭 넘겨받기(6.3, 브라우저 격리·금고 작업의 "사람을 기다림" 신호와 함께) |
-| 작업 중 잠자기·화면 잠금 막기(6.5) | 덮개 닫힘(넣지 않음) |
-| 잠금 화면에는 알림의 공개 버전만 | 휴대폰 생체 인증으로 금고 확인(6.4), 넘겨받기 전 재인증 |
-| Mac에서만 되는 요청은 그렇다고 보임(`moreOnMac`) | 무엇을 Mac에서 해야 하는지 한 줄 문구(Touch ID, iCloud 패스키, 시스템 창) |
-| 기기 제거·휴대폰 쪽 연결 해제 | 앱 잠금(앱을 열 때 생체 인증) |
+| Answering approvals, questions and plans; new tasks; messages (including to the coordinating task); pinned tasks at the top; command output and diffs | Taking over a browser tab (section 6.3, together with the "waiting for the person" signal from the browser isolation and vault work) |
+| Preventing sleep and screen lock while a task works (section 6.5) | Lid closed (left out) |
+| Only the public version of notifications on the lock screen | Vault confirmation with phone biometrics (section 6.4), re-authentication before takeover |
+| Requests that only work on the Mac say so (`moreOnMac`) | A one-line message on what to do on the Mac (Touch ID, iCloud passkey, system prompt) |
+| Device removal and disconnecting from the phone side | App lock (biometrics when opening the app) |
 
-## 7. 플랫폼
+## 7. Platforms
 
-- **추천과 진행: Android는 지금 앱(Kotlin, Jetpack Compose)을 잇는다.** 단위 검사 77개와 에뮬레이터 QA가 있고, 프로토콜 계층이
-  화면과 나뉘어 있다. 새 연결은 `connection/`과 `protocol/` 아래 갈아 끼우고 화면을 다시 다듬는다.
-- **iOS는 SwiftUI 네이티브로, Mac의 `YardletRemote` 패키지를 공유한다.** Noise, 프로토콜 타입, 짝짓기 URL 해석이 이미 Swift로
-  있다. Kotlin Multiplatform이나 Compose Multiplatform은 Android 코드를 나눠 쓸 수 있지만, iOS 쪽 관례(시트, 알림, 생체 인증)를
-  다시 맞춰야 하고 Swift로 있는 코드를 한 번 더 Kotlin으로 쓰게 된다. Flutter·React Native는 지금 앱을 버리고 새로 써야 한다.
-- 두 플랫폼 사이의 약속은 이 문서와 REMOTE_PROTOCOL, 그리고 같은 테스트 벡터 파일이다.
+- **Recommendation and progress: Android continues the current app (Kotlin, Jetpack Compose).** It has 77 unit tests and
+  emulator QA, and its protocol layer is separate from the UI. The new connection is swapped in under `connection/` and
+  `protocol/`, and the screens are refined again.
+- **iOS is native SwiftUI and shares the Mac's `YardletRemote` package.** Noise, the protocol types and pairing URL
+  parsing already exist in Swift. Kotlin Multiplatform or Compose Multiplatform would share the Android code, but the
+  iOS conventions (sheets, notifications, biometrics) would have to be matched again, and code that exists in Swift
+  would be written once more in Kotlin. Flutter or React Native would mean throwing away the current app and writing a
+  new one.
+- The contract between the two platforms is this document, REMOTE_PROTOCOL and the shared test vector file.
 
-## 8. 화면
+## 8. UI
 
-시안: [remote-v2/mockups.html](remote-v2/mockups.html)(밝게·어둡게), PNG는 같은 폴더. 원칙: 두 앱의 휴대폰 관례, 꾸밈보다 읽기,
-상태 점은 Mac 사이드바와 같은 뜻, 상자에 배지를 붙인 카드와 "01/02" 번호 표시는 쓰지 않는다.
+Mockups: [remote-v2/mockups.html](remote-v2/mockups.html) (light and dark), with the PNGs in the same folder.
+Principles: the two apps' phone conventions, reading over decoration, status dots that mean the same as in the Mac
+sidebar, and no boxed cards with badges or "01/02" number labels.
 
-- **연결 전:** 앱 아이콘, "Mac과 연결", 두 줄 안내(Mac에서 설정 › 원격 연결 › 휴대폰 연결), [QR 코드 스캔], 그 아래 보조 동작
-  "Explore without a Mac". 직접 입력은 없앴다.
-- **데모(Mac 없이 둘러보기):** 휴대폰 안의 데모 Mac이 요청에 답하고 이벤트를 보내므로 진짜 화면을 그대로 쓴다. 이름과 내용은 Mac 시연
-  픽스처(`--ui-fixture=showcase`)와 같다: Jordan Park, 프로젝트 acme-web·payments-api·design-system, Codex·Claude Code·OpenCode 작업, PR
-  #128. 각본으로 명령 승인, 여러 단계 질문, 계획 검토, diff, 제안 칩, 새 작업, 메시지를 해 볼 수 있다. 위에 "Demo"와 나가기가 늘 보이고,
-  목록에서 뒤로 가도 나간다. 데모 중 앱을 떠나면 몇 초 뒤 "Demo"라고 적힌 요청 알림이 하나 온다. 소켓·Bonjour·중계·계정·FCM을 쓰지 않고,
-  저장한 Mac·캐시·설정·키·알림 등록에 아무것도 쓰지 않으며, 나가면 들어오기 전 상태로 돌아간다.
-- **작업(홈):** 위에 Mac 이름(누르면 Mac 시트)과 연결 상태 한 줄, 오른쪽 검색. "기다리는 작업"이 있으면 맨 위에 모아 요청 요약을
-  둘째 줄로 보인다. 그 아래 프로젝트별 목록(Mac 사이드바 순서, 상태 점). 맨 아래 "새 작업" 입력 막대(Mac 홈처럼 입력이 아래).
-- **대화:** 위에 뒤로, 제목, "하네스 · 프로젝트". 사람 말은 오른쪽 말풍선, 답은 전체 폭 글, 끝난 턴의 작업은 "N 동안 작업함 · 단계
-  N개"로 접는다. 기다리는 요청은 대화 끝이 아니라 입력창 바로 위에 붙여 늘 보이게 한다(Claude Code의 권한 프롬프트가 입력창
-  자리에 뜨는 것과 같다).
-  - 승인: 도구 이름, 명령(고정폭, 세 줄, 누르면 다 보임), 설명, [거부] [한 번만 허용], "다른 선택지는 Mac에서".
-  - 질문: 머리말, 질문, 선택지 줄(설명 포함, 여러 개 고르기는 체크), "직접 입력", 여러 질문이면 "1/3"과 [다음], 건너뛸 수 있으면
-    [건너뛰기], 끝에 [보내기].
-  - 계획: 계획 앞부분과 "전체 보기", [계속 계획] [계획 승인]. 계속 계획은 이유를 적을 수 있다.
-- **새 작업 시트:** 프로젝트 고르기(목록), 입력, "Mac의 새 작업 설정으로 시작 · Claude Code" 한 줄, [시작]. 시작하면 그 작업 대화로
-  간다.
-- **Mac 시트:** 지금 Mac과 연결 경로 한 줄, 저장한 다른 Mac, "다른 Mac 연결", 알림(FCM이 없을 때 "백그라운드 알림"), 화면 모드,
-  "이 Mac 연결 해제".
-- **알림:** "승인 요청 · 작업 제목" / 요약 한 줄. 누르면 그 대화, 요청이 입력창 위에 있다.
+- **Before connecting:** the app icon, "Connect to your Mac", two lines of guidance (on the Mac, Settings › Remote ›
+  Pair a phone), [Scan QR code], and below it the secondary action "Explore without a Mac". Manual entry is gone.
+- **Demo (Explore without a Mac):** a demo Mac inside the phone answers requests and sends events, so the real screens
+  are used as they are. Names and content match the Mac's showcase fixture (`--ui-fixture=showcase`): Jordan Park; the
+  projects acme-web, payments-api and design-system; tasks in Codex, Claude Code and OpenCode; PR #128. A script lets
+  the person try a command approval, a multi-step question, plan review, a diff, suggestion chips, a new task and
+  messages. "Demo" and a way out always show at the top, and going back from the list also leaves. Leaving the app
+  during the demo brings one request notification marked "Demo" a few seconds later. It uses no sockets, Bonjour, relay,
+  accounts or FCM, writes nothing to saved Macs, the cache, settings, keys or notification registration, and leaving
+  puts everything back as it was before entering.
+- **Tasks (home):** at the top, the Mac name (tap for the Mac sheet) and one line of connection state, with search on
+  the right. If there are tasks "Waiting for you", they are gathered at the top with the request summary as their second
+  line. Below that, lists per project (in the Mac sidebar's order, with status dots). At the bottom, a "New task" input
+  bar (input at the bottom, like the Mac home).
+- **Conversation:** at the top, back, the title and "harness · project". The person's messages are bubbles on the right,
+  answers are full-width text, and the work of a finished turn collapses into "Worked for N · N steps". A waiting
+  request sits right above the composer, not at the end of the conversation, so it is always visible (like Claude Code's
+  permission prompt, which appears in place of the composer).
+  - Approval: tool name, command (monospace, three lines, tap to see all), description, [Deny] [Allow once], "More
+    choices are on your Mac".
+  - Question: header, question, option rows (with descriptions; check marks for multiple choice), "Your own answer",
+    "1/3" and [Next] when there are several questions, [Skip] when skippable, and [Send] at the end.
+  - Plan: the start of the plan and "Show all", [Keep planning] [Approve plan]. Keep planning lets the person write a
+    reason.
+- **New task sheet:** project picker (list), input, one line "Starts with your Mac's new-task settings · Claude Code",
+  [Start]. Starting goes to that task's conversation.
+- **Mac sheet:** the current Mac with one line for the connection route, other saved Macs, "Add another Mac",
+  Notifications ("Background notifications" when there is no FCM), Appearance and "Disconnect this Mac".
+- **Notifications:** "Approval requested · task title" / a one-line summary. Tapping opens that conversation, with the
+  request above the composer.
 
-## 9. v1 호환
+## 9. v1 compatibility
 
-- v1 리스너·`pair`·`hello`·토큰 기기는 그대로다. 새 요청(`answerQuestion`, `reviewPlan`, `createTask`, `registerPush`)은 v2
-  연결에서만 받는다. v1 연결에 보내는 승인 항목은 v1이 아는 답만 남기고 나머지는 `moreOnMac`으로 바꾼다.
-- Mac 설정은 v2 QR만 보인다. v1 기기는 목록에 "이전 앱"으로 보이고 제거할 수 있다.
-- 새 Android 앱은 v1을 말하지 않는다. 그래서 새 앱은 새 Mac 빌드가 있어야 연결된다. 이미 깔린 v1 앱은 지금 Mac에서 계속 된다.
+- The v1 listener, `pair`, `hello` and token devices stay as they are. The new requests (`answerQuestion`, `reviewPlan`,
+  `createTask`, `registerPush`) are accepted only on v2 connections. Approval items sent on a v1 connection keep only
+  the answers v1 knows, and the rest become `moreOnMac`.
+- The Mac's settings show only the v2 QR. v1 devices appear in the list as "Earlier app" and can be removed.
+- The new Android app does not speak v1, so it needs a new Mac build to connect. A v1 app already installed keeps
+  working with the current Mac.
 
-## 10. 보안 정리
+## 10. Security summary
 
-| 위협 | 막는 법 | 남는 위험 |
+| Threat | Defense | Remaining risk |
 |---|---|---|
-| 중계 서버가 내용을 봄·바꿈 | Noise IK(끝단 키 고정), 중계는 암호문만 | 메타데이터(IP, 시각, 크기). 양자 컴퓨터로 나중에 푸는 일(2.1의 혼합 IK로 다음에) |
-| 같은 Wi-Fi의 다른 기기 | 같은 Noise. Bonjour에는 Mac 이름 대신 키 해시 | Yardlet이 켜져 있다는 사실은 보인다 |
-| 남이 방 ID를 알아냄 | 핸드셰이크에 Mac의 공개 키가 있어야 첫 메시지를 만든다. Mac 공개 키는 QR에만 | 연결 시도로 방을 귀찮게 할 수 있음(방당 8개 제한) |
-| 중계 서버를 사칭한 방 가로채기 | 방 ID가 Mac 서명 키에서 나오고 서명을 확인 | 서버 운영자가 코드를 바꾸면 Mac을 막을 수는 있다(읽지는 못함) |
-| QR을 남이 찍음 | 5분, 한 번, Mac이 짝지은 휴대폰 이름을 보임 | 5분 안에 먼저 찍으면 그 사람이 붙는다(Mac 목록에서 보이고 제거 가능) |
-| 휴대폰 분실 | Mac에서 제거하면 바로 끊김, Android 화면 잠금, 잠금 화면 알림은 공개 버전만 | 잠금이 풀린 휴대폰을 잃으면 제거 전까지 조작 가능. 앱 잠금(생체 인증)은 다음 후보 |
-| Mac의 키가 새어 나감 | 키는 키체인(앱 서명에만 열림) | 같은 사용자 권한의 악성 프로그램은 다른 Yardlet 자료처럼 위험 |
-| 알림 내용 | 알림 키로 암호화, 키는 짝짓기 뒤 보안 채널로만 | Google·중계는 알림이 왔다는 사실과 시각을 앎 |
-| 자격 증명·계정 토큰·환경 값 | 보내지 않는다(v1과 같음) | — |
+| The relay server reads or changes content | Noise IK (end keys pinned), the relay carries only ciphertext | Metadata (IP, time, size). Decryption later by a quantum computer (next, with the hybrid IK in section 2.1) |
+| Other devices on the same Wi-Fi | The same Noise. Bonjour carries a key hash instead of the Mac name | They can see that Yardlet is on |
+| Someone learns the room ID | Making the first handshake message needs the Mac's public key, which is only in the QR | They can pester the room with connection attempts (limit of 8 per room) |
+| Room hijacking by impersonation at the relay server | The room ID comes from the Mac's signing key, and the signature is verified | A server operator who changes the code can block the Mac (but cannot read anything) |
+| Someone else scans the QR | 5 minutes, one use, and the Mac shows the paired phone's name | Whoever scans first within the 5 minutes gets in (visible in the Mac's list and removable) |
+| Lost phone | Removing it on the Mac cuts it off at once, Android screen lock, only the public version of notifications on the lock screen | Someone with a lost, unlocked phone can operate it until it is removed. App lock (biometrics) is a candidate for next |
+| The Mac's keys leak | Keys are in the keychain (open only to the app's signature) | Malware running with the same user's rights is a risk, as it is for other Yardlet data |
+| Notification content | Encrypted with the notification key, which travels only over the secure channel after pairing | Google and the relay know that a notification came and when |
+| Credentials, account tokens, environment values | Not sent (same as v1) | — |
 
-## 11. Mac에 남는 것
+## 11. What stays on the Mac
 
-- 켜 둔 동안: v2 리스너, Bonjour 광고, 중계로 나가는 연결 하나. 끄면 셋 다 바로 닫히고 중계 방은 메모리에서 사라진다.
-- 늘 남는 것(Yardlet 자신의 자료): `~/.yardlet/remote/devices.json`(휴대폰 공개 키·이름·시각·알림 토큰과 키, v1 토큰 해시),
-  `audit.log`(명령 종류·작업 ID, 본문 없음), 키체인 항목(Mac의 Noise 키와 중계 키, 계정에 로그인했으면 그 세션 토큰). 하네스·제공자
-  계정·저장소에는 아무것도 쓰지 않는다.
-- 잠자기·화면 잠금 막기는 프로세스가 쥔 전원 단언(assertion)이라 Yardlet이 끝나면 macOS가 거둔다. 시스템 설정(`pmset`)은 바꾸지 않는다.
-- 로컬 네트워크 허용은 macOS가 기억한다(시스템 설정 › 개인정보 보호에서 끌 수 있다).
+- While it is on: the v2 listener, the Bonjour advertisement and one outgoing connection to the relay. Turning it off
+  closes all three at once, and the relay room disappears from memory.
+- What always stays (Yardlet's own data): `~/.yardlet/remote/devices.json` (phones' public keys, names, times,
+  notification tokens and keys, v1 token hashes), `audit.log` (command kinds and task IDs, no content) and keychain
+  items (the Mac's Noise key and relay key, and the session token if signed in to an account). Nothing is written to
+  harnesses, provider accounts or repositories.
+- Preventing sleep and screen lock is a power assertion held by the process, so macOS releases it when Yardlet quits.
+  System settings (`pmset`) are not changed.
+- macOS remembers the local network permission (it can be turned off in System Settings › Privacy & Security).
 
-## 12. 배포에 필요한 설정
+## 12. Settings needed for distribution
 
-계정은 있다고 보고, 그 안에서 연결하고 설정할 것만 적는다. 로그인·결제·계정 설정은 사람이 직접 하고, 비밀 값은 명령 인자·문서·로그에
-넣지 않는다(`wrangler secret put`의 입력, Gradle 사용자 속성).
+This assumes the accounts exist and lists only what to connect and set up in them. Sign-in, payment and account settings
+are done by the person, and secret values never go in command arguments, docs or logs (they go through the input of
+`wrangler secret put` and Gradle user properties).
 
-- **중계:** Cloudflare에서 `wrangler login`과 `wrangler deploy`(`*.workers.dev` 하위 도메인, 도메인은 선택), 나온 주소를 Mac 빌드의 기본
-  중계 주소와 Android `yardlet.relayUrl`에, `PUBLIC_URL`과 `AUTH_STATE_SECRET`. 2026-10-25 배포했다: 주소가 배포한 계정 이름을 담아
-  저장소에 적지 않는다. 중계에는 `PUBLIC_URL`도 비밀로 두고, Mac 빌드는 `Packaging/RelayURL`(git 밖) 첫 줄을 Info.plist
-  `YardletRelayURL`로 넣어 `RemoteControlService.builtInRelayURL`이 읽는다. Android `yardlet.relayUrl`은 Gradle 사용자 속성이다.
-- **알림:** Firebase 프로젝트에 Android 앱(`com.zzunkie.yardlet.remote`)을 더해 그 값을 Android 빌드에, 서비스 계정 키를 중계의 비밀
-  `FCM_SERVICE_ACCOUNT`·`FCM_PROJECT_ID`로.
-- **계정:** 같은 Google Cloud 프로젝트의 OAuth 클라이언트(웹)와 GitHub OAuth App, 콜백은 `https://<중계>/v1/auth/<provider>/callback`.
-  Sign in with Apple은 iOS 앱 때. 이메일 링크는 메일 발송 서비스를 고른 뒤.
-- **배포 순서(2026-10-24 바뀜):** Play 계정은 2023-11-13 뒤에 만든 개인 계정이라 프로덕션 전에 비공개(closed)
-  트랙에서 테스터 12명이 14일 연속 참여해야 하고(내부 트랙은 세지 않는다), 지인으로 채우기는 어렵다. 그래서 다음 순서로 한다.
-  1. **GitHub Releases APK와 Obtainium을 먼저 낸다.** 릴리스마다 APK 두 개를 올린다: `play` 빌드(FCM 알림, Firebase 값을 넣어 빌드, 보통
-     휴대폰용)와 파일 이름에 `-foss`를 붙인 `foss` 빌드(Google Play 서비스가 없는 휴대폰용). 둘은 앱 ID가 같고 아래 키로 서명하므로, 나중에
-     다른 채널의 판을 지우지 않고 덮어 설치할 수 있다. Obtainium은 GitHub Releases를 그대로 읽으므로 따로 할 일이 없고, 두 APK 가운데
-     하나를 고르게 한다. 앱 안에는 스스로 업데이트하는 기능을 넣지 않는다(Play 정책). 업데이트는 Obtainium이나 Play가 한다.
-  2. **Play 비공개 테스트는 천천히 채운다.** 데모 모드로 Mac이 없는 사람도 실제로 써 볼 수 있으므로, Mac 공개 뒤의 실제 사용자에 더해
-     공개 채널의 관심자도 받는다. 내부 트랙은 우리끼리 빠르게 확인하는 데만 쓴다. "앱 접근 권한" 안내는 데모 모드로 한다(14.5).
-- **키 정책:** 앱 서명 키를 우리가 만들어 Play App Signing에 올리고, GitHub의 두 APK와 Play판이 같은 키를 쓴다. 업로드 키는 따로 두고, 두
-  키 모두 오프라인에 백업한다. F-Droid는 소스에서 빌드해 자기 키로 서명하므로 재현 가능 빌드를 맞추지 않으면 다른 채널과 서명이 다르다.
-  Android 개발자 인증은 2027년 전 세계 시행 전에 패키지 이름을 등록한다(한국은 아직 시작 전).
-- **Play Console:** 앱, 비공개 테스트 트랙, 데이터 보안 양식과 개인정보처리방침(14절). iOS는 Apple 개발자 계정의 앱 ID와 APNs.
+- **Relay:** on Cloudflare, `wrangler login` and `wrangler deploy` (a `*.workers.dev` subdomain; a domain is optional);
+  the resulting address goes into the Mac build's default relay address and into Android's `yardlet.relayUrl`; then
+  `PUBLIC_URL` and `AUTH_STATE_SECRET`. Deployed on 2026-10-25: the address contains the name of the account that
+  deployed it, so it is not written in the repository. The relay keeps `PUBLIC_URL` as a secret too, and the Mac build
+  puts the first line of `Packaging/RelayURL` (outside git) into Info.plist as `YardletRelayURL`, which
+  `RemoteControlService.builtInRelayURL` reads. Android's `yardlet.relayUrl` is a Gradle user property.
+- **Notifications:** add the Android app (`com.zzunkie.yardlet.remote`) to a Firebase project and put its values in the
+  Android build; the service account key goes into the relay's secrets `FCM_SERVICE_ACCOUNT` and `FCM_PROJECT_ID`.
+- **Accounts:** an OAuth client (web) in the same Google Cloud project and a GitHub OAuth App, with the callback
+  `https://<relay>/v1/auth/<provider>/callback`. Sign in with Apple comes with the iOS app. Email links come after a
+  mail sending service is chosen.
+- **Release order (changed 2026-10-24):** the Play account is a personal account created after 2023-11-13, so before
+  production 12 testers must take part in a closed track for 14 days in a row (the internal track does not count), and
+  filling that with acquaintances is hard. So the order is:
+  1. **Ship the GitHub Releases APK and Obtainium first.** Each release uploads two APKs: the `play` build (FCM
+     notifications, built with the Firebase values, for ordinary phones) and the `foss` build, with `-foss` in its file
+     name (for phones without Google Play services). Both have the same app ID and are signed with the key below, so a
+     build from one channel can later be installed over another channel's build without uninstalling it. Obtainium reads
+     GitHub Releases directly, so nothing else is needed, and it lets the person pick one of the two APKs. The app has
+     no self-update feature (Play policy). Updates come from Obtainium or Play.
+  2. **Fill the Play closed test slowly.** Demo mode lets people without a Mac really try the app, so besides real users
+     after the Mac release, it also takes interested people from public channels. The internal track is only for quick
+     checks among ourselves. The "App access" instructions use demo mode (section 14.5).
+- **Key policy:** we create the app signing key and upload it to Play App Signing, and the two APKs on GitHub and the
+  Play build use the same key. The upload key is kept separate, and both keys are backed up offline. F-Droid builds from
+  source and signs with its own key, so unless reproducible builds match, its signature differs from the other channels.
+  For Android developer verification, the package name is registered before worldwide enforcement in 2027 (it has not
+  started in Korea yet).
+- **Play Console:** the app, the closed test track, the Data safety form and the privacy policy (section 14). For iOS,
+  the app ID and APNs in the Apple developer account.
 
-## 13. 구현 계획과 검증
+## 13. Implementation plan and verification
 
-| 갈래 | 내용 | 검증 |
+| Track | Contents | Verification |
 |---|---|---|
-| Mac(`YardletRemote`, `NativeHarnessClient/Remote`) | Noise, 보안 채널, 키(키체인), v2 리스너와 Bonjour, 중계 클라이언트, 알림 보내기, 새 요청, 설정 화면, 픽스처 서버 v2 | cacophony 벡터, 서버·종단 간 검사 넓히기, 설정 렌더 |
-| 중계(`relay/`, TypeScript) | Worker + Room DO, 서명 확인, 이어 주기, FCM HTTP v1 | Vitest(workerd), `wrangler dev`로 Mac 픽스처와 이어 보기 |
-| Android(다른 저장소) | Noise(BouncyCastle X25519, 플랫폼 ChaCha20-Poly1305), 경로 경주, Bonjour(NsdManager), 여러 Mac, 질문·계획·새 작업, 알림(FCM 선택), 화면, 데모 모드 | 같은 벡터, MockWebServer, 에뮬레이터에서 픽스처(직접)와 `wrangler dev`(중계), 데모는 비행기 모드에서 |
+| Mac (`YardletRemote`, `NativeHarnessClient/Remote`) | Noise, secure channel, keys (keychain), v2 listener and Bonjour, relay client, sending notifications, new requests, settings screen, fixture server v2 | cacophony vectors, broader server and end-to-end tests, settings render |
+| Relay (`relay/`, TypeScript) | Worker + Room DO, signature verification, joining, FCM HTTP v1 | Vitest (workerd), joining with the Mac fixture through `wrangler dev` |
+| Android (separate repository) | Noise (BouncyCastle X25519, the platform's ChaCha20-Poly1305), route race, Bonjour (NsdManager), several Macs, questions, plans and new tasks, notifications (FCM optional), screens, demo mode | The same vectors, MockWebServer, the fixture (direct) and `wrangler dev` (relay) on the emulator, the demo in airplane mode |
 
-## 14. Play 공개에 필요한 사실(2026-10-24, 코드 기준)
+## 14. Facts needed for the Play release (2026-10-24, from the code)
 
-Play 비공개 테스트 준비용이다. 아래 사실은 `relay/src`, Android `app/src`, Mac `Sources/YardletRemote`를 읽고 적었다. 정책 근거는 Play 도움말
-[데이터 보안](https://support.google.com/googleplay/android-developer/answer/10787469),
-[계정 삭제](https://support.google.com/googleplay/android-developer/answer/13327111),
-[포그라운드 서비스](https://support.google.com/googleplay/android-developer/answer/13392821)와 Firebase의
-[Play 데이터 공개 안내](https://firebase.google.com/docs/android/play-data-disclosure)다(모두 2026-10-24 확인).
+This is for preparing the Play closed test. The facts below were written down after reading `relay/src`, Android
+`app/src` and Mac `Sources/YardletRemote`. The policy basis is the Play help pages [Data
+safety](https://support.google.com/googleplay/android-developer/answer/10787469), [Account
+deletion](https://support.google.com/googleplay/android-developer/answer/13327111) and [Foreground
+services](https://support.google.com/googleplay/android-developer/answer/13392821), and Firebase's [Play data disclosure
+guide](https://firebase.google.com/docs/android/play-data-disclosure) (all checked 2026-10-24).
 
-### 14.1 무엇이 어디로 가고 무엇이 남는가
+### 14.1 What goes where and what stays
 
-Play의 정의로 "수집"은 앱 밖으로 데이터를 보내는 것이다. 다만 종단 간 암호화로 보낸 사람과 받는 사람 말고는(개발자를 포함한 중간 누구도)
-읽을 수 없는 데이터는 신고하지 않아도 되고, 기기 안에서만 다루는 데이터도 신고하지 않는다. 메모리에서만 잠깐 다루는 데이터는 양식에는 적되
-스토어에는 "일시 처리"로 보인다.
+By Play's definition, "collection" means sending data out of the app. But data that is end-to-end encrypted so that no
+one other than the sender and the recipient can read it (nobody in between, the developer included) need not be
+declared, and neither does data handled only on the device. Data handled only briefly in memory goes on the form, but
+the store shows it as "processed ephemerally".
 
-| 데이터 | 어디로 | 개발자(중계)가 읽나 | 어디에 얼마나 남나 | 지우는 길 | 양식 판단 |
+| Data | Where it goes | Does the developer (relay) read it | Where it stays and for how long | How it is deleted | Form verdict |
 |---|---|---|---|---|---|
-| 작업 목록, 대화, 메시지, 승인·질문·계획 답, 명령 출력, diff | 휴대폰 ↔ 사용자의 Mac | 못 읽음. 같은 Wi-Fi·Tailscale은 중계를 지나지 않고, 중계 경로는 Noise 암호문만 넘긴다 | 중계: 없음. 휴대폰: 마지막 목록과 연 대화를 앱 전용 `noBackupFilesDir`에 캐시(백업 안 됨) | 앱 삭제, "이 Mac 연결 해제" | 수집 아님(종단 간 암호화, 기기 안) |
-| 알림 내용(작업 제목, 요청 한 줄, Mac 이름) | Mac → 중계 → FCM → 휴대폰 | 못 읽음. 짝짓기 뒤 Mac이 준 알림 키로 봉인(ChaCha20-Poly1305) | 중계: 없음. FCM: 전달될 때까지(TTL 1시간) | 자동 | 수집 아님(종단 간 암호화) |
-| 휴대폰 공개 키, 기기 이름(`Settings.Global.DEVICE_NAME`, 없으면 모델명) | 휴대폰 → 사용자의 Mac(핸드셰이크, 암호화) | 못 읽음 | 사용자의 Mac `~/.yardlet/remote/devices.json`. 중계에는 없음 | Mac 설정에서 기기 제거, 앱의 "연결 해제" | 수집 아님. 단, 기기 이름에 사람 이름이 들어갈 수 있다(예: "OO의 Galaxy") |
-| FCM 등록 토큰 | 휴대폰 → Mac(암호화) → 알림마다 Mac → 중계(TLS) → FCM | 읽음: 알림 하나를 보내는 동안 메모리에서만. 저장·로그하지 않는다(`fcm.ts`는 실패 상태 코드만 경고) | 사용자의 Mac 기기 목록. 중계에는 없음. FCM이 거절하면 Mac이 지움 | 앱 삭제·데이터 삭제(토큰 무효), Mac에서 기기 제거 | 기기 또는 기타 ID, 일시 처리, 앱 기능. FCM은 서비스 제공자라 공유 아님 |
-| Firebase SDK가 보내는 것(`play` 빌드만) | 휴대폰 → Google | 우리 서버가 아님 | Firebase 안내: 설치 ID(FID), 앱 버전, Firebase 사용자 에이전트 | 앱 삭제·데이터 삭제 | 기기 또는 기타 ID(FID), 앱 정보(앱 버전). `foss` 빌드에는 없음 |
-| IP 주소와 접속 시각 | 휴대폰·Mac → 중계(Cloudflare) | 우리 코드는 기록하지 않음(`wrangler.jsonc`에 Workers Logs가 꺼져 있음) | Cloudflare가 호스팅 제공자로 처리 | — | Play 양식에 IP 항목은 없고 위치 추정에 쓰지 않는다. 개인정보처리방침에는 적는다 |
-| 방 상태(방 ID, 연결 번호, 인증 여부, 시각) | 중계 Durable Object | 읽음 | 열린 소켓에 붙은 첨부에만. 소켓이 닫히면 사라짐 | 자동 | 개인 데이터 아님 |
-| 데모 모드의 작업·대화(샘플 데이터) | 어디로도 가지 않음. 앱 안의 데모 Mac이 메모리에서 답한다 | 해당 없음 | 메모리에만. 나가면 사라짐 | 자동 | 수집 아님(네트워크를 쓰지 않음) |
-| 계정(켰을 때만, 14.2) | 앱 → 중계(https) | 읽음 | 계정 Durable Object(SQLite): 계정 ID(제공자 사용자 번호의 SHA-256 해시), 표시 이름(GitHub 로그인 이름, Google 프로필 이름), 로그인 토큰 해시와 기기 이름·만든·쓴 시각, Mac 목록(Mac 이름, 방 ID, 공개 키 둘, 갱신 시각), 2분짜리 일회용 코드. 원래 사용자 번호와 이메일은 저장하지 않는다 | `DELETE /v1/account`(전부), Mac 로그아웃(그 Mac 항목과 토큰), 앱 로그아웃(그 토큰). 90일 쓰지 않은 토큰은 다음에 쓰려 할 때 지운다(그 전까지 남음) | 개인 정보 › 이름(표시 이름)과 사용자 ID(계정 ID), 기기 이름. 계정 삭제 요건 적용 |
+| Task list, conversations, messages, answers to approvals, questions and plans, command output, diffs | Phone ↔ the user's Mac | No. Same Wi-Fi and Tailscale do not pass through the relay, and the relay route forwards only Noise ciphertext | Relay: nothing. Phone: the last list and opened conversations, cached in the app-only `noBackupFilesDir` (not backed up) | Uninstalling the app, "Disconnect this Mac" | Not collection (end-to-end encrypted, on device) |
+| Notification content (task title, one-line request, Mac name) | Mac → relay → FCM → phone | No. Sealed with the notification key the Mac gave after pairing (ChaCha20-Poly1305) | Relay: nothing. FCM: until delivered (TTL 1 hour) | Automatic | Not collection (end-to-end encrypted) |
+| Phone public key, device name (`Settings.Global.DEVICE_NAME`, or the model name if there is none) | Phone → the user's Mac (handshake, encrypted) | No | The user's Mac, `~/.yardlet/remote/devices.json`. Nothing on the relay | Removing the device in the Mac's settings, "Disconnect" in the app | Not collection. But the device name can contain a person's name (for example "Alex's Galaxy") |
+| FCM registration token | Phone → Mac (encrypted) → for each notification, Mac → relay (TLS) → FCM | Yes: only in memory while sending one notification. Not stored or logged (`fcm.ts` warns only with the failure status code) | The user's Mac device list. Nothing on the relay. The Mac deletes it if FCM rejects it | Uninstalling the app or clearing its data (invalidates the token), removing the device on the Mac | Device or other IDs, processed ephemerally, App functionality. FCM is a service provider, so this is not sharing |
+| What the Firebase SDK sends (`play` build only) | Phone → Google | Not our server | Per Firebase's guide: installation ID (FID), app version, Firebase user agent | Uninstalling the app or clearing its data | Device or other IDs (FID), App info (app version). Not in the `foss` build |
+| IP addresses and connection times | Phone and Mac → relay (Cloudflare) | Our code does not record them (Workers Logs is off in `wrangler.jsonc`) | Cloudflare processes them as the hosting provider | — | The Play form has no IP item, and they are not used to estimate location. The privacy policy mentions them |
+| Room state (room ID, connection number, whether authenticated, times) | Relay Durable Object | Yes | Only in attachments on open sockets. Gone when the socket closes | Automatic | Not personal data |
+| Demo mode tasks and conversations (sample data) | Go nowhere. The demo Mac inside the app answers from memory | Not applicable | In memory only. Gone on leaving | Automatic | Not collection (no network use) |
+| Accounts (only when turned on, section 14.2) | App → relay (https) | Yes | Account Durable Object (SQLite): account ID (SHA-256 hash of the provider's user number), display name (GitHub login name, Google profile name), sign-in token hashes with device name and created and last-used times, list of Macs (Mac name, room ID, two public keys, update time), one-time codes that last 2 minutes. The original user number and email are not stored | `DELETE /v1/account` (everything), signing out on the Mac (that Mac's entry and token), signing out in the app (that token). A token unused for 90 days is deleted the next time someone tries to use it (it stays until then) | Personal info › Name (display name) and User IDs (account ID), device name. The account deletion requirement applies |
 
-- **권한(병합된 release 매니페스트):** `play`는 `INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`와 FCM 라이브러리가 넣는
-  `WAKE_LOCK`·`com.google.android.c2dm.permission.RECEIVE`·`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`뿐이고 포그라운드 서비스가 없다. 앱이
-  화면에서 사라지면 5초 뒤 연결을 닫고, 알림은 FCM으로 받고, 돌아오면 바로 다시 연결한다. `foss`는 FCM이 없어 "백그라운드 알림"(기본 꺼짐)용
-  `ConnectionService`(connectedDevice)와 `FOREGROUND_SERVICE`·`FOREGROUND_SERVICE_CONNECTED_DEVICE`·`CHANGE_NETWORK_STATE`, 앱 안
-  QR 스캐너용 `CAMERA`를 더 쓴다. 위치·연락처·사진·마이크는 쓰지 않는다.
-- **넣지 않은 것:** 분석, 광고, 충돌 보고 SDK.
-- **전송 중 암호화:** 예. 휴대폰과 Mac 사이는 모든 경로에서 Noise(같은 Wi-Fi·Tailscale의 `ws://`도 내용은 Noise), 중계는 `wss://`, 계정 API는
-  `https://`, FCM과 Firebase는 Google의 HTTPS.
+- **Permissions (merged release manifest):** `play` has only `INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`
+  and, added by the FCM library, `WAKE_LOCK`, `com.google.android.c2dm.permission.RECEIVE` and
+  `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, with no foreground service. When the app leaves the screen it closes the
+  connection after 5 seconds, notifications arrive through FCM, and it reconnects at once when the app comes back.
+  `foss` has no FCM, so it also uses `ConnectionService` (connectedDevice) for "Background notifications" (off by
+  default), with `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` and `CHANGE_NETWORK_STATE`, and `CAMERA`
+  for the in-app QR scanner. Location, contacts, photos and the microphone are not used.
+- **Left out:** analytics, advertising and crash-reporting SDKs.
+- **Encryption in transit:** yes. Between the phone and the Mac, Noise on every route (on the same Wi-Fi and Tailscale,
+  the content of `ws://` is Noise too); the relay uses `wss://`, the account API `https://`, and FCM and Firebase use
+  Google's HTTPS.
 
-**양식 초안(계정을 뺀 첫 비공개 테스트, `play` 빌드):**
+**Draft form (first closed test without accounts, `play` build):**
 
-- 수집: 기기 또는 기타 ID(FCM 등록 토큰은 일시 처리, Firebase 설치 ID), 앱 정보와 성능 › 기타(앱 버전, Firebase SDK). 목적은 앱 기능(알림
-  전달). 필수(알림을 쓰는 동안 앱 안에서 끌 수 없다). 공유 없음.
-- 보안: 전송 중 암호화 예. 삭제 요청: 계정이 없고 우리가 남기는 데이터가 없다. 휴대폰의 데이터는 앱 삭제로, Mac의 기기 기록은 Mac 설정의
-  제거로 지운다는 것을 개인정보처리방침에 적는다.
-- 작업 내용·대화·알림 내용은 종단 간 암호화 예외로 신고하지 않는다. 예외가 좁으므로 개인정보처리방침에 이유(중계가 키를 갖지 않음)를 함께 적는다.
+- Collected: Device or other IDs (the FCM registration token, processed ephemerally; the Firebase installation ID), App
+  info and performance › Other (app version, Firebase SDK). Purpose: App functionality (delivering notifications).
+  Required (it cannot be turned off in the app while notifications are used). Not shared.
+- Security: encrypted in transit, yes. Deletion requests: there is no account and we keep no data. The privacy policy
+  states that data on the phone is deleted by uninstalling the app, and the device record on the Mac by removing it in
+  the Mac's settings.
+- Task content, conversations and notification content are not declared, under the end-to-end encryption exception. The
+  exception is narrow, so the privacy policy also gives the reason (the relay holds no keys).
 
-### 14.2 첫 비공개 테스트에 계정 기능을 넣을지: 빼기를 추천
+### 14.2 Whether the first closed test includes accounts: leave them out (recommended)
 
-- **이유 1, 삭제 요건:** 앱 안에서 계정을 만들 수 있으면(제3자 로그인도 해당할 가능성이 크다) 앱 안 계정 삭제 경로와 웹 삭제 링크가 둘 다
-  있어야 한다. 중계에는 `DELETE /v1/account`가 있지만 Mac·Android 앱에는 로그아웃만 있고 삭제 버튼과 웹 안내가 없다.
-- **이유 2, 신고와 설정이 는다:** 이름·사용자 ID·기기 이름 신고, Google OAuth 동의 화면과 GitHub OAuth App 등록, iOS에서는 Sign in with Apple.
-- **이유 3, 테스트에 필요하지 않다:** Mac이 있는 테스터는 처음에 Mac 앞에서 Yardlet을 설치하므로 QR로 짝짓는 길이 자연스럽고, Mac이 없는
-  테스터는 데모 모드를 쓰므로 계정이 필요 없다. 계정은 Mac 앞에 없을 때 새 휴대폰을 붙이는 편의 기능이다.
-- **끄는 법:** 중계에 OAuth 비밀을 넣지 않는다. 그러면 중계의 `GET /v1/auth/providers`가 빈 목록을 주고, Mac 설정과 휴대폰(연결 전 화면,
-  Mac 시트)은 계정 줄을 보이지 않는다(로그인해 있을 때만 로그아웃 줄이 남는다). 중계 주소(Mac 빌드의 기본값, Android `yardlet.relayUrl`)는
-  그대로 두므로 밖에서 연결(중계 경로)은 그대로 된다. 두 앱은 설정 화면을 열 때마다 제공자를 다시 물어, 나중에 비밀을 넣으면 계정 줄이 나타난다.
-- **나중에 켤 때 할 일:** Mac·Android 앱의 계정 삭제 버튼(`DELETE /v1/account`를 부름), 사이트의 웹 삭제 안내, 양식에 이름·사용자 ID 추가, 90일
-  지난 토큰을 주기적으로 지우는 정리, iOS의 Sign in with Apple.
+- **Reason 1, the deletion requirement:** if an account can be created in the app (third-party sign-in likely counts),
+  there must be both an in-app account deletion path and a web deletion link. The relay has `DELETE /v1/account`, but
+  the Mac and Android apps have only sign-out, with no delete button and no web instructions.
+- **Reason 2, more declarations and setup:** declaring name, user ID and device name, the Google OAuth consent screen
+  and GitHub OAuth App registration, and Sign in with Apple on iOS.
+- **Reason 3, the test does not need them:** testers with a Mac first install Yardlet at the Mac, so pairing by QR is
+  the natural way, and testers without a Mac use demo mode, so they need no account. Accounts are a convenience for
+  adding a new phone when the person is not at the Mac.
+- **How to turn them off:** do not put the OAuth secrets in the relay. Then the relay's `GET /v1/auth/providers` returns
+  an empty list, and the Mac's settings and the phone (the before-connecting screen, the Mac sheet) show no account row
+  (a sign-out row stays only while signed in). The relay address (the Mac build's default, Android's `yardlet.relayUrl`)
+  stays, so connecting from outside (the relay route) keeps working. Both apps ask for the providers again each time the
+  settings screen opens, so the account row appears once the secrets are added later.
+- **What to do when turning them on later:** an account delete button in the Mac and Android apps (calling
+  `DELETE /v1/account`), web deletion instructions on the site, adding name and user ID to the form, a periodic cleanup
+  that deletes tokens past 90 days and Sign in with Apple on iOS.
 
-### 14.3 포그라운드 서비스(connectedDevice) 신고 문안
+### 14.3 Foreground service (connectedDevice) declaration text
 
-`play` 빌드에는 포그라운드 서비스가 없다(병합된 release 매니페스트로 확인). 그래서 첫 비공개 테스트의 Play Console에는
-포그라운드 서비스 신고가 필요 없다. 서비스는 FCM이 없는 `foss` 빌드의 "백그라운드 알림"(기본 꺼짐)에만 남는다. 아래 문안은 나중에 `play`
-빌드에 다시 넣게 될 때를 위한 참고다(Play Console은 영어로 적는다).
+The `play` build has no foreground service (verified in the merged release manifest). So the first closed test needs no
+foreground service declaration in the Play Console. The service remains only for "Background notifications" (off by
+default) in the `foss` build, which has no FCM. The text below is for reference, in case the service goes back into the
+`play` build later (the Play Console is filled in in English).
 
 - **Use case:** Continuous data transfer to an external device (network connection).
-- **Feature description:** "Background notifications is an optional setting, off by default. When the user turns it on, Yardlet
-  Remote keeps an encrypted network connection open to the user's own Mac running the Yardlet app, which the user paired with the
-  phone by scanning a QR code on the Mac. While the connection is open, the Mac sends approval requests, questions and finished-task
-  updates from the coding agents running on it, and the phone shows them right away. A persistent notification shows which Mac is
-  connected and lets the user turn the setting off."
-- **User impact if deferred or interrupted:** "A coding agent on the user's Mac stops and waits until the user answers its request.
-  If the connection is deferred or interrupted, the request does not reach the phone, and the agent on the Mac stays blocked until
-  the user opens the app."
-- **Video(이 순서로 한 번에 찍는다, 시스템 설정 화면이 아니라 앱 안 설정과 기기 사이 동작):** Mac의 Yardlet 설정 › 원격 연결에서 QR 표시 →
-  휴대폰 앱으로 QR 찍기 → 휴대폰 앱의 Mac 시트에서 "백그라운드 알림" 켜기 → 알림 권한 허용 → 상시 알림("Mac에 연결됨") 확인 → 휴대폰 화면
-  끄기 → Mac에서 에이전트가 명령 승인을 요청 → 휴대폰에 알림 → 눌러 "한 번만 허용" → Mac에서 명령이 이어지는 화면.
+- **Feature description:** "Background notifications is an optional setting, off by default. When the user turns it on,
+  Yardlet Remote keeps an encrypted network connection open to the user's own Mac running the Yardlet app, which the
+  user paired with the phone by scanning a QR code on the Mac. While the connection is open, the Mac sends approval
+  requests, questions and finished-task updates from the coding agents running on it, and the phone shows them right
+  away. A persistent notification shows which Mac is connected and lets the user turn the setting off."
+- **User impact if deferred or interrupted:** "A coding agent on the user's Mac stops and waits until the user answers
+  its request. If the connection is deferred or interrupted, the request does not reach the phone, and the agent on the
+  Mac stays blocked until the user opens the app."
+- **Video (recorded in one take, in this order, showing the in-app settings and what happens between the devices, not
+  system settings screens):** show the QR in Yardlet's Settings › Remote on the Mac → scan the QR with the phone app →
+  turn on "Background notifications" in the phone app's Mac sheet → allow the notification permission → check the
+  persistent notification ("Connected to your Mac") → turn off the phone's screen → an agent on the Mac asks to approve
+  a command → a notification on the phone → tap it and choose "Allow once" → the screen where the command continues on
+  the Mac.
 
-### 14.4 개인정보처리방침에 더할 "휴대폰 앱" 절 초안(영어, 사이트용)
+### 14.4 Draft "Phone app" section for the privacy policy (English, for the website)
 
-사이트의 다른 절처럼 영어로 쓰고, Mac 앱 절들 뒤에 둔다.
+It is written in English like the site's other sections and goes after the Mac app sections.
 
 > **Yardlet Remote (the phone app)**
 >
@@ -556,17 +680,18 @@ Play의 정의로 "수집"은 앱 밖으로 데이터를 보내는 것이다. �
 >   the phone in Yardlet's settings on the Mac deletes the record there. Uninstalling the app deletes everything on the phone.
 > - **No analytics or ads.** The app contains no analytics, advertising or crash-reporting code.
 
-계정 기능을 켜는 판에서는 다음 문단을 더한다: "If you sign in with GitHub or Google to find your Macs, the relay keeps a hashed account
-identifier, your display name, your Macs' names and keys, and a hash of each sign-in token with the device name. You can delete your
-account and this data in the app or at <web deletion link>."
+A build with accounts turned on adds this paragraph: "If you sign in with GitHub or Google to find your Macs, the relay
+keeps a hashed account identifier, your display name, your Macs' names and keys, and a hash of each sign-in token with
+the device name. You can delete your account and this data in the app or at <web deletion link>."
 
-### 14.5 "앱 접근 권한"(App access) 안내
+### 14.5 "App access" instructions
 
-Play Console의 앱 콘텐츠 › 앱 접근 권한은 "일부 기능이 제한됨"으로 두고, 로그인 정보 대신 데모 모드를 안내한다. 심사자와 Mac이 없는
-테스터가 같은 길로 앱을 써 본다(Play Console은 영어로 적는다).
+In the Play Console, App content › App access is set to "All or some functionality in my app is restricted", and the
+instructions point to demo mode instead of sign-in details. Reviewers and testers without a Mac try the app the same way
+(the Play Console is filled in in English).
 
-- **Instructions:** "Yardlet Remote controls the Yardlet app on the user's own Mac, so its full use needs a Mac paired by QR code.
-  No account or sign-in is needed. To try every screen without a Mac, tap "Explore without a Mac" on the first screen. The demo runs
-  entirely on the phone with sample data and no network: open tasks, read conversations, approve a command, answer a question,
-  review a plan, open a file diff, start a new task, and leave the app to receive a demo notification. Tap "Exit demo" at the top to
-  leave the demo."
+- **Instructions:** "Yardlet Remote controls the Yardlet app on the user's own Mac, so its full use needs a Mac paired
+  by QR code. No account or sign-in is needed. To try every screen without a Mac, tap "Explore without a Mac" on the
+  first screen. The demo runs entirely on the phone with sample data and no network: open tasks, read conversations,
+  approve a command, answer a question, review a plan, open a file diff, start a new task, and leave the app to receive
+  a demo notification. Tap "Exit demo" at the top to leave the demo."

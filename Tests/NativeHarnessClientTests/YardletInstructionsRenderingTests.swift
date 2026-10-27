@@ -3,7 +3,7 @@ import SwiftUI
 import XCTest
 @testable import NativeHarnessClient
 
-/// Yardlet 지침 drawn offscreen (never shown) in both appearances into `.build/yardlet-instructions-qa`:
+/// Yardlet instructions drawn offscreen (never shown) in both appearances into `.build/yardlet-instructions-qa`:
 ///
 /// - `settings-instructions-*.png`: Settings › Yardlet Instructions with a written guideline, the
 ///   switch on, the note on global instruction files and the harnesses that receive nothing.
@@ -40,7 +40,7 @@ final class YardletInstructionsRenderingTests: XCTestCase {
         let defaults = SuggestionVolatileDefaults()
         let store = YardletInstructionsStore(directory: root.appending(path: "instructions", directoryHint: .isDirectory),
                                              defaults: defaults)
-        store.text = "- 구현은 Opus 5.5, 검토는 Argon을 우선한다."
+        store.text = "- Prefer Opus 5.5 for implementation, Argon for review."
         let evaluation = RoutingEvaluationStore(directory: root.appending(path: "evaluation", directoryHint: .isDirectory),
                                                 defaults: defaults)
         let size = NSSize(width: 820, height: 620)
@@ -68,7 +68,7 @@ final class YardletInstructionsRenderingTests: XCTestCase {
         let directory = try WindowlessRender.directory("yardlet-instructions-qa")
         let store = YardletInstructionsStore(directory: root.appending(path: "instructions", directoryHint: .isDirectory),
                                              defaults: SuggestionVolatileDefaults())
-        store.text = "- 구현은 Opus 5.5, 검토는 Argon을 우선한다."
+        store.text = "- Prefer Opus 5.5 for implementation, Argon for review."
 
         let size = NSSize(width: 820, height: 620)
         for capture in try WindowlessRender.hostedInBothAppearances("settings-instructions", in: directory, size: size, content: { appearance in
@@ -94,7 +94,7 @@ final class YardletInstructionsRenderingTests: XCTestCase {
                               additionalRoots: [root.appending(path: "yardlet-docs", directoryHint: .isDirectory)])
         let projects = ProjectStore(repository: InMemoryProjectRepository(snapshot: ProjectSnapshot(projects: [project])),
                                     chatWorkspaceHome: root)
-        store.setProjectText("- 이 저장소의 문서는 한국어로 쓴다.\n- 빌드는 `swift build --build-system native`.", for: project.id)
+        store.setProjectText("- Write this repository's docs in plain English.\n- Build with `swift build --build-system native`.", for: project.id)
         let sheetSize = NSSize(width: 520, height: 560)
         func sheet(_ appearance: WindowlessRender.Appearance) -> some View {
             ProjectEditSheet(projects: projects, projectID: project.id, instructions: store)

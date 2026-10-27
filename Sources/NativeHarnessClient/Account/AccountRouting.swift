@@ -1,6 +1,6 @@
 import Foundation
 
-/// Which account a task Yardlet starts for an agent runs on (docs/NATIVE_SESSION_STORAGE.md, "2026-09-15 추가 계정 선택"): a child task
+/// Which account a task Yardlet starts for an agent runs on (docs/NATIVE_SESSION_STORAGE.md, "Choosing an additional account"): a child task
 /// (`create_task`), a subagent (`run_agent`) or a suggestion the person starts. The candidates are
 /// the harness's accounts in automatic assignment that are signed in
 /// (`ProviderConnectionStore.isInAutomaticAssignment`); this picks one of them from the plan limits

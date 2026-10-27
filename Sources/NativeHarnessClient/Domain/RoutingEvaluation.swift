@@ -104,7 +104,7 @@ final class RoutingEvaluationStore {
 
     var lastReportURL: URL? { state.lastReport.map { reportsDirectory.appending(path: $0) } }
 
-    /// What tasks receive with Yardlet 지침 while the evaluation is on; nil before it has chosen.
+    /// What tasks receive with Yardlet instructions while the evaluation is on; nil before it has chosen.
     var routingBlock: String? {
         isEnabled ? RoutingEvaluationAggregation.routingBlock(state.routing) : nil
     }

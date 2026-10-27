@@ -1,7 +1,7 @@
 import Foundation
 import YardletAgentTools
 
-// The session tools (`SessionToolCatalog`, docs/AGENT_BROWSER_TOOLS.md, "세션 도구"): an agent reads the person's other
+// The session tools (`SessionToolCatalog`, docs/AGENT_BROWSER_TOOLS.md, "Session tools"): an agent reads the person's other
 // tasks, messages one, waits for one, creates a child task, runs a prompt as a subagent on a
 // harness, archives tasks, or hides or shows a project (`AppModel+ProjectTools`). Every call comes
 // from one task's harness through the Yardlet MCP server and is answered here, through the same paths
@@ -1037,8 +1037,8 @@ extension AppModel: SessionToolHandling {
     }
 
     /// What a child or subagent on the caller's own harness starts with: the caller's model, effort
-    /// and permission mode as its task keeps them, under what the call chose (2026-10-22 user
-    /// decision: "하위 세션 열 때 별 말 없으면 모델/effort/권한을 상속"). A chosen model drops the
+    /// and permission mode as its task keeps them, under what the call chose (decision of
+    /// 2026-10-22: a child session inherits them unless the call says otherwise). A chosen model drops the
     /// caller's effort, which that model may not take. Another harness starts on its own defaults.
     func sessionToolInheritedOptions(harness: HarnessKind, caller: SessionToolCaller,
                                      chosen: [String: String]) -> [String: String] {
@@ -1257,6 +1257,15 @@ extension AppModel: SessionToolHandling {
     /// still asks. The scheduled-task tools keep their own rule (`ScheduleToolApproval`).
     func sessionToolAsksPerson(_ caller: SessionToolCaller) -> Bool {
         caller.permission < .elevated
+    }
+
+    /// Whether a task's browser tools may open a file outside its folders, given its real path
+    /// (docs/AGENT_BROWSER_TOOLS.md, `browser_navigate`): a task that runs without asking may, since its
+    /// shell reads the file anyway; any other asks the person, as a session tool reaching past the task does.
+    func allowsBrowserFile(_ path: String, callerID: UUID) async -> Bool {
+        guard let caller = sessionToolCaller(callerID) else { return false }
+        guard sessionToolAsksPerson(caller) else { return true }
+        return await askPerson(title: L10n.string("Open a file outside this task's folders?"), detail: path, caller: caller)
     }
 
     func askPerson(title: String, detail: String, caller: SessionToolCaller) async -> Bool {

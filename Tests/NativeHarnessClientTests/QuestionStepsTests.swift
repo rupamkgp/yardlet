@@ -8,7 +8,7 @@ import XCTest
 /// takes one, Skip and Next, every answer sent at once from the last question in the provider's own
 /// shape, and, once answered, each question with what it was answered with, read back from the
 /// provider's record so the card reads the same when the conversation is opened again (2026-10-23:
-/// "답변 제출 시에 직접 입력 칸이 없네", "질문 한번에 다 띄우는 게 아니라 순서대로").
+/// a user reported that the card had no field for a typed answer and asked for one question at a time).
 @MainActor
 final class QuestionStepsTests: XCTestCase {
     static let scope = PermissionQuestion(

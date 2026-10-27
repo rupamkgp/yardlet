@@ -303,7 +303,7 @@ final class SidebarNestingRenderingTests: XCTestCase {
             )
         }
         let running = task("Nest task rows under their project", .codex, in: yardlet, minutesAgo: 1, status: .running)
-        let unread = task("yardlet-sandbox · test_calc.py를 실행해서 결과를 알려줘", .claudeCode, in: yardlet,
+        let unread = task("yardlet-sandbox · Run test_calc.py and report the result", .claudeCode, in: yardlet,
                           minutesAgo: 2, status: .completed, origin: .automatic, unread: true)
         let shellBusy = task("Run the release checklist", .claudeCode, in: yardlet, minutesAgo: 3)
         let selected = task("Review the session index migration", .codex, in: yardlet, minutesAgo: 4)
