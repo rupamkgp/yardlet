@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// A token bucket: `capacity` at once, refilled at `perSecond`.
 public struct RemoteRateBucket: Sendable {
@@ -43,6 +44,39 @@ public struct RemoteRateLimiter: Sendable {
         if admitted, isCommand { admitted = commands.take(now: now) }
         refusedInARow = admitted ? 0 : refusedInARow + 1
         return admitted
+    }
+}
+
+/// How a listener holds connections that have not finished their handshake (§7): at most
+/// `maxWaitingPerHost` from one address and `maxWaiting` in all, the oldest closing for a new one, and none
+/// longer than `handshakeTimeout`. Only the Mac's own limits; a phone needs one connection per path.
+public enum RemoteHandshakeAdmission {
+    public static let maxWaiting = 16
+    public static let maxWaitingPerHost = 4
+    public static let handshakeTimeout: TimeInterval = 10
+
+    /// The waiting connections to close so that a new one from `host` fits.
+    public static func displaced<ID: Hashable>(waiting: [(id: ID, host: String, since: Date)], host: String) -> [ID] {
+        var remaining = waiting.sorted { $0.since < $1.since }
+        var closing: [ID] = []
+        if let oldest = remaining.first(where: { $0.host == host }),
+           remaining.count(where: { $0.host == host }) >= maxWaitingPerHost {
+            closing.append(oldest.id)
+            remaining.removeAll { $0.id == oldest.id }
+        }
+        if remaining.count >= maxWaiting, let oldest = remaining.first { closing.append(oldest.id) }
+        return closing
+    }
+
+    /// The address part of a connection's remote endpoint.
+    public static func host(of endpoint: NWEndpoint) -> String {
+        guard case let .hostPort(host, _) = endpoint else { return "\(endpoint)" }
+        switch host {
+        case let .ipv4(value): return "\(value)"
+        case let .ipv6(value): return "\(value)"
+        case let .name(name, _): return name
+        @unknown default: return "\(host)"
+        }
     }
 }
 

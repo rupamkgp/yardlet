@@ -147,8 +147,15 @@ public final class RemoteSecureListener: @unchecked Sendable {
     private static let acceptedHeader = (name: "X-Yardlet-Remote", value: String(RemoteProtocol.secureVersion))
 
     private func accept(_ connection: NWConnection) {
-        let channel = RemoteNWFrameChannel(connection: connection, queue: queue)
+        let host = RemoteHandshakeAdmission.host(of: connection.endpoint)
+        let waiting = channels.values.filter(\.isHandshaking).map { (id: ObjectIdentifier($0), host: $0.host, since: $0.acceptedAt) }
+        for id in RemoteHandshakeAdmission.displaced(waiting: waiting, host: host) { channels[id]?.connection.cancel() }
+        let channel = RemoteNWFrameChannel(connection: connection, queue: queue, host: host)
         channels[ObjectIdentifier(channel)] = channel
+        queue.asyncAfter(deadline: .now() + RemoteHandshakeAdmission.handshakeTimeout) { [weak channel] in
+            guard let channel, channel.isHandshaking else { return }
+            channel.connection.cancel()
+        }
         let path = Self.path(of: connection.endpoint)
         let server = self.server
         let key = staticKey
@@ -218,13 +225,19 @@ public final class RemoteSecureListener: @unchecked Sendable {
 final class RemoteNWFrameChannel: RemoteFrameChannel, @unchecked Sendable {
     let connection: NWConnection
     private let queue: DispatchQueue
+    let host: String
+    let acceptedAt = Date()
     var secure: RemoteSecureConnection?
     private var isClosing = false
 
-    init(connection: NWConnection, queue: DispatchQueue) {
+    init(connection: NWConnection, queue: DispatchQueue, host: String) {
         self.connection = connection
         self.queue = queue
+        self.host = host
     }
+
+    /// Not yet past message 2: the WebSocket is still opening or the Noise handshake is not done.
+    var isHandshaking: Bool { secure?.isHandshaking ?? true }
 
     func sendFrame(_ frame: Data) {
         queue.async { [self] in

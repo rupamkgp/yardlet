@@ -2,55 +2,7 @@ import CryptoKit
 import Foundation
 import Security
 
-// Pairing (§3): a one-time secret the Mac shows as a QR code and a short code, exchanged once for a
-// random device token. The Mac keeps only the token's SHA-256.
-
-public enum RemotePairingCode {
-    /// Crockford base32: no I, L, O or U.
-    static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
-    public static let length = 10
-
-    /// A new secret: ten random Crockford base32 characters (50 bits).
-    public static func generate() -> String {
-        let bytes = RemoteRandom.bytes(length)
-        return String(bytes.map { alphabet[Int($0) % alphabet.count] })
-    }
-
-    /// `XXXXX-XXXXX`, as Settings shows it.
-    public static func display(_ code: String) -> String {
-        let normalized = normalize(code) ?? code
-        guard normalized.count == length else { return normalized }
-        return String(normalized.prefix(5)) + "-" + String(normalized.suffix(5))
-    }
-
-    /// The code as typed, read as Crockford base32: any case, dashes and spaces ignored, O read as 0
-    /// and I or L as 1. Nil when it holds anything else.
-    public static func normalize(_ typed: String) -> String? {
-        var result = ""
-        for character in typed.uppercased() {
-            switch character {
-            case "-", " ": continue
-            case "O": result.append("0")
-            case "I", "L": result.append("1")
-            default:
-                guard alphabet.contains(character) else { return nil }
-                result.append(character)
-            }
-        }
-        return result
-    }
-
-    /// Compares in time that does not depend on where they differ.
-    public static func matches(_ typed: String, _ secret: String) -> Bool {
-        guard let typed = normalize(typed) else { return false }
-        let left = Array(typed.utf8)
-        let right = Array(secret.utf8)
-        guard left.count == right.count else { return false }
-        var difference: UInt8 = 0
-        for index in left.indices { difference |= left[index] ^ right[index] }
-        return difference == 0
-    }
-}
+// Pairing (§12): a one-time secret the Mac shows in a QR code; the phone's key becomes the device.
 
 public enum RemoteRandom {
     public static func bytes(_ count: Int) -> [UInt8] {
@@ -64,21 +16,6 @@ public enum RemoteRandom {
     }
 }
 
-public enum RemoteDeviceToken {
-    /// 32 random bytes, base64url without padding (43 characters).
-    public static func generate() -> String {
-        Data(RemoteRandom.bytes(32)).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
-    /// What the Mac stores in place of the token.
-    public static func hash(_ token: String) -> String {
-        RemoteDigest.sha256(token)
-    }
-}
-
 public enum RemoteDigest {
     /// SHA-256 of the text's UTF-8, hex.
     public static func sha256(_ text: String) -> String {
@@ -86,71 +23,26 @@ public enum RemoteDigest {
     }
 }
 
-/// The one pairing open at a time: a v1 code and a v2 secret, either spends it.
+/// The one pairing open at a time.
 public struct RemotePairingTicket: Equatable, Sendable {
-    /// The normalized secret.
-    public var code: String
-    /// The v2 QR's secret (§12): 32 random bytes.
+    /// The QR's secret (§12): 32 random bytes.
     public var secret: Data
     public var expiresAt: Date
-    public var attemptsLeft: Int
     /// Closed after one successful use (the Mac); the fixture can keep it open.
     public var isSingleUse: Bool
-    /// The phone key that used it on v2, which may use it again until it expires (§12).
+    /// The phone key that used it, which may use it again for a short while (§12).
     public var pairedKey: Data?
 
     public static let lifetime: TimeInterval = 5 * 60
-    public static let attempts = 5
 
-    public init(code: String = RemotePairingCode.generate(), secret: Data = Data(RemoteRandom.bytes(32)), expiresAt: Date,
-                attemptsLeft: Int = RemotePairingTicket.attempts, isSingleUse: Bool = true) {
-        self.code = code
+    public init(secret: Data = Data(RemoteRandom.bytes(32)), expiresAt: Date, isSingleUse: Bool = true) {
         self.secret = secret
         self.expiresAt = expiresAt
-        self.attemptsLeft = attemptsLeft
         self.isSingleUse = isSingleUse
     }
-
-    public var displayCode: String { RemotePairingCode.display(code) }
 }
 
-/// What the QR code holds (§3.1).
-public enum RemotePairingURL {
-    public static func make(code: String, hosts: [String], port: UInt16, macName: String) -> URL? {
-        var components = URLComponents()
-        components.scheme = RemoteProtocol.pairingScheme
-        components.host = "pair"
-        components.queryItems = [
-            URLQueryItem(name: "v", value: String(RemoteProtocol.version)),
-            URLQueryItem(name: "code", value: RemotePairingCode.display(code)),
-            URLQueryItem(name: "port", value: String(port))
-        ] + hosts.map { URLQueryItem(name: "host", value: $0) }
-            + [URLQueryItem(name: "name", value: macName)]
-        // `URLComponents` leaves `:` in IPv6 hosts and spaces escaped as %20, which every reader takes.
-        return components.url
-    }
-
-    public struct Parsed: Equatable, Sendable {
-        public var version: Int
-        public var code: String
-        public var port: UInt16
-        public var hosts: [String]
-        public var name: String?
-    }
-
-    public static func parse(_ url: URL) -> Parsed? {
-        guard url.scheme == RemoteProtocol.pairingScheme, url.host == "pair",
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-              let version = items.first(where: { $0.name == "v" })?.value.flatMap(Int.init),
-              let code = items.first(where: { $0.name == "code" })?.value,
-              let port = items.first(where: { $0.name == "port" })?.value.flatMap(UInt16.init) else { return nil }
-        return Parsed(version: version, code: code, port: port,
-                      hosts: items.filter { $0.name == "host" }.compactMap(\.value),
-                      name: items.first { $0.name == "name" }?.value)
-    }
-}
-
-/// What the v2 QR code holds (§12).
+/// What the QR code holds (§12).
 public struct RemoteSecurePairingURL: Equatable, Sendable {
     public var macKey: Data
     public var secret: Data
@@ -204,10 +96,18 @@ public struct RemoteSecurePairingURL: Equatable, Sendable {
     }
 }
 
-/// The six digits both sides show for a link request (§12.1).
+/// The six digits both sides show for a link request (§12.1). Each side adds a random nonce: the phone
+/// commits to its own in message 1, learns the Mac's in message 2, and then reveals its own.
 public enum RemoteLinkCode {
-    public static func code(macKey: Data, phoneKey: Data) -> String {
-        let digest = Array(SHA256.hash(data: Data("yardlet-link/1".utf8) + macKey + phoneKey))
+    public static let nonceLength = 32
+
+    /// What message 1 carries for the phone's nonce.
+    public static func commitment(phoneKey: Data, nonce: Data) -> Data {
+        Data(SHA256.hash(data: Data("yardlet-link-commit/2".utf8) + phoneKey + nonce))
+    }
+
+    public static func code(macKey: Data, phoneKey: Data, macNonce: Data, phoneNonce: Data) -> String {
+        let digest = Array(SHA256.hash(data: Data("yardlet-link/2".utf8) + macKey + phoneKey + macNonce + phoneNonce))
         let value = UInt32(digest[0]) << 24 | UInt32(digest[1]) << 16 | UInt32(digest[2]) << 8 | UInt32(digest[3])
         return String(format: "%06u", value % 1_000_000)
     }
@@ -232,28 +132,22 @@ public struct RemotePushRegistration: Codable, Equatable, Sendable {
 public struct RemoteDevice: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var name: String
-    /// v1: SHA-256 of the device token, hex.
-    public var tokenHash: String?
-    /// v2: the phone's static public key, base64url. The Mac holds nothing secret of the phone's.
-    public var publicKey: String?
+    /// The phone's static public key, base64url. The Mac holds nothing secret of the phone's.
+    public var publicKey: String
     public var platform: String?
     public var push: RemotePushRegistration?
     public var createdAt: Date
     public var lastSeenAt: Date?
 
-    public init(id: String = UUID().uuidString, name: String, tokenHash: String? = nil, publicKey: String? = nil,
-                platform: String? = nil, createdAt: Date, lastSeenAt: Date? = nil) {
+    public init(id: String = UUID().uuidString, name: String, publicKey: String, platform: String? = nil, createdAt: Date,
+                lastSeenAt: Date? = nil) {
         self.id = id
         self.name = name
-        self.tokenHash = tokenHash
         self.publicKey = publicKey
         self.platform = platform
         self.createdAt = createdAt
         self.lastSeenAt = lastSeenAt
     }
-
-    /// Paired over v2.
-    public var isSecure: Bool { publicKey != nil }
 }
 
 /// The paired devices, in a file only the person can read (`~/.yardlet/remote/devices.json` for the
@@ -264,17 +158,34 @@ public actor RemoteDeviceStore {
         var devices: [RemoteDevice]
     }
 
+    /// One entry of the file as read: a device paired with protocol 1 (a token digest and no public key),
+    /// which this Mac no longer serves, reads as nil.
+    private struct StoredDevice: Decodable {
+        let device: RemoteDevice?
+
+        init(from decoder: Decoder) throws {
+            device = try? RemoteDevice(from: decoder)
+        }
+    }
+
+    private struct StoredFile: Decodable {
+        var devices: [StoredDevice]
+    }
+
     private let fileURL: URL?
     private var devices: [RemoteDevice]
     /// A seen time is written at most this often per device.
     private let seenWriteInterval: TimeInterval = 60
 
-    /// `devices` are the ones a store without a file starts with (the fixture's ready-made device).
+    /// `devices` are the ones a store without a file starts with (tests and the fixture). Devices paired with
+    /// protocol 1 are dropped from the file as it is read.
     public init(fileURL: URL?, devices seeded: [RemoteDevice] = []) {
         self.fileURL = fileURL
         if let fileURL, let data = try? Data(contentsOf: fileURL),
-           let file = try? JSONDecoder.remoteDates.decode(File.self, from: data) {
-            devices = file.devices
+           let file = try? JSONDecoder.remoteDates.decode(StoredFile.self, from: data) {
+            let kept = file.devices.compactMap(\.device)
+            devices = kept
+            if kept.count != file.devices.count { Self.write(kept, to: fileURL) }
         } else {
             devices = seeded
         }
@@ -282,25 +193,7 @@ public actor RemoteDeviceStore {
 
     public func all() -> [RemoteDevice] { devices }
 
-    /// A new device and its token, which is shown to the device once and never stored.
-    public func add(name: String, now: Date = Date()) -> (device: RemoteDevice, token: String) {
-        let token = RemoteDeviceToken.generate()
-        let device = RemoteDevice(name: name.isEmpty ? "Phone" : name, tokenHash: RemoteDeviceToken.hash(token),
-                                  createdAt: now, lastSeenAt: now)
-        devices.append(device)
-        save()
-        return (device, token)
-    }
-
-    /// The device a token belongs to, marked seen.
-    public func authenticate(_ token: String, now: Date = Date()) -> RemoteDevice? {
-        let hash = RemoteDeviceToken.hash(token)
-        guard let index = devices.firstIndex(where: { $0.tokenHash.map { Self.equal($0, hash) } == true }) else { return nil }
-        markSeen(at: index, now: now, force: true)
-        return devices[index]
-    }
-
-    /// A v2 device by its public key, marked seen and renamed to what it calls itself now.
+    /// A device by its public key, marked seen and renamed to what it calls itself now.
     public func authenticate(publicKey: Data, name: String?, now: Date = Date()) -> RemoteDevice? {
         let key = RemoteEncoding.base64url(publicKey)
         guard let index = devices.firstIndex(where: { $0.publicKey == key }) else { return nil }
@@ -309,7 +202,7 @@ public actor RemoteDeviceStore {
         return devices[index]
     }
 
-    /// A new v2 device, or the one this key already is.
+    /// A new device, or the one this key already is.
     public func addSecure(name: String, publicKey: Data, platform: String?, now: Date = Date()) -> RemoteDevice {
         if let device = authenticate(publicKey: publicKey, name: name, now: now) { return device }
         let device = RemoteDevice(name: name.isEmpty ? "Phone" : name, publicKey: RemoteEncoding.base64url(publicKey),
@@ -366,6 +259,10 @@ public actor RemoteDeviceStore {
     }
 
     private func save() {
+        Self.write(devices, to: fileURL)
+    }
+
+    private static func write(_ devices: [RemoteDevice], to fileURL: URL?) {
         guard let fileURL else { return }
         let folder = fileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
@@ -373,14 +270,6 @@ public actor RemoteDeviceStore {
         guard let data = try? JSONEncoder.remoteDates.encode(File(devices: devices)) else { return }
         try? data.write(to: fileURL, options: [.atomic])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-    }
-
-    private static func equal(_ lhs: String, _ rhs: String) -> Bool {
-        let left = Array(lhs.utf8), right = Array(rhs.utf8)
-        guard left.count == right.count else { return false }
-        var difference: UInt8 = 0
-        for index in left.indices { difference |= left[index] ^ right[index] }
-        return difference == 0
     }
 }
 

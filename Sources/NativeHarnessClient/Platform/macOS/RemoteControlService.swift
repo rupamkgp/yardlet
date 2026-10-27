@@ -7,10 +7,8 @@ import YardletRemote
 /// The phone remote on this Mac (docs/REMOTE_PROTOCOL.md): off until the person turns it on in
 /// Settings › Remote. While on, it serves protocol v2 (§11–§17) on every path: a listener on every
 /// interface advertised with Bonjour (the same network and Tailscale), and an outgoing socket to the
-/// Yardlet relay when one is configured and allowed. Protocol v1 keeps listening on the Mac's
-/// Tailscale addresses only, and only while a phone paired over v1 remains. It keeps the paired
-/// devices (`~/.yardlet/remote/devices.json`: v2 public keys, v1 token digests, push registrations),
-/// the audit log (`~/.yardlet/remote/audit.log`, no message text) and the Mac's keys in the
+/// Yardlet relay when one is configured and allowed. It keeps the paired devices
+/// (`~/.yardlet/remote/devices.json`: the phones' public keys and push registrations), the audit log (`~/.yardlet/remote/audit.log`, no message text) and the Mac's keys in the
 /// Keychain. The server, listeners and relay run off the main actor; this object holds what
 /// Settings shows.
 @MainActor
@@ -44,10 +42,6 @@ final class RemoteControlService {
 
     private(set) var isEnabled: Bool
     private(set) var isRelayEnabled: Bool
-    /// The v1 listeners' addresses (Tailscale only).
-    private(set) var addresses: [RemoteListenAddress] = []
-    /// What each v1 listener reports; a rendering test sets it where nothing listens.
-    var listenerStates: [RemoteListenAddress: RemoteWebSocketListeners.ListenerState] = [:]
     /// The v2 listener's state; a rendering test sets it where nothing listens.
     var secureState: RemoteSecureListener.State = .stopped
     /// The relay client's state; a rendering test sets it where nothing connects.
@@ -71,7 +65,6 @@ final class RemoteControlService {
     /// Settings shows the account row while signed in, or when the relay offers a sign-in provider: a relay
     /// without OAuth credentials has no accounts, and the phone remote still goes through it.
     var showsAccount: Bool { account != nil || !accountProviders.isEmpty }
-    let port: UInt16
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let environment: [String: String]
@@ -82,8 +75,7 @@ final class RemoteControlService {
     @ObservationIgnored private let deviceStore: RemoteDeviceStore
     @ObservationIgnored private let identityStore: any RemoteIdentityStoring
     @ObservationIgnored private(set) var identity: RemoteIdentity?
-    /// Nil where nothing may listen (tests that drive the server directly, visual fixtures).
-    @ObservationIgnored private let listeners: RemoteWebSocketListeners?
+    /// False where nothing may listen (tests that drive the server directly, visual fixtures).
     @ObservationIgnored private let listens: Bool
     @ObservationIgnored private var secureListener: RemoteSecureListener?
     @ObservationIgnored private var relayClient: RemoteRelayClient?
@@ -107,7 +99,6 @@ final class RemoteControlService {
         interfaces: @escaping @Sendable () -> [RemoteInterfaceAddress] = RemoteAddressSelection.systemInterfaces,
         resolveName: @escaping @Sendable (String) -> String? = RemoteAddressSelection.magicDNSName(for:),
         listens: Bool = true,
-        port: UInt16 = RemoteProtocol.defaultPort,
         macName: String = Host.current().localizedName ?? "Mac",
         appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     ) {
@@ -115,7 +106,6 @@ final class RemoteControlService {
         self.environment = environment
         self.interfaces = interfaces
         self.resolveName = resolveName
-        self.port = port
         self.macName = macName
         self.deviceStore = deviceStore
         self.identityStore = identityStore
@@ -130,7 +120,6 @@ final class RemoteControlService {
             configuration: RemoteServer.Configuration(server: RemoteServerInfo(name: macName, appVersion: appVersion),
                                                       macKey: identity?.noise.publicKey),
             bridge: bridge, devices: deviceStore, audit: audit)
-        listeners = listens ? RemoteWebSocketListeners(server: server, port: port) : nil
     }
 
     /// The remote for the app: its bridge to the model, its files under `~/.yardlet/remote`, and its
@@ -230,9 +219,6 @@ final class RemoteControlService {
         await server.setStatusHandler { [weak self] status in
             Task { @MainActor in await self?.apply(status) }
         }
-        listeners?.onStateChange = { [weak self] states in
-            Task { @MainActor in self?.listenerStates = states }
-        }
         await reloadDevices()
         if isEnabled { activate() }
     }
@@ -306,7 +292,6 @@ final class RemoteControlService {
     func shutdown() async {
         guard started else { return }
         await server.shutdown(reason: "quitting")
-        listeners?.stop()
         secureListener?.stop()
         relayClient?.stop()
     }
@@ -360,9 +345,7 @@ final class RemoteControlService {
     private func deactivate(reason: String) {
         monitor?.cancel()
         monitor = nil
-        addresses = []
         pairing = nil
-        listeners?.listen(on: [])
         secureListener?.stop()
         secureListener = nil
         secureState = .stopped
@@ -391,18 +374,10 @@ final class RemoteControlService {
         Task { await server.setPushSender(nil) }
     }
 
-    /// Reads the interfaces again: the v1 listeners follow the Tailscale addresses, and phones are
-    /// told the v2 addresses.
+    /// Reads the interfaces again: phones are told the addresses to try directly.
     func refreshAddresses() {
         guard isEnabled else { return }
         interfaceAddresses = interfaces()
-        let hasV1Devices = devices.contains { $0.tokenHash != nil }
-        let loopback = RemoteAddressSelection.loopbackEnabled(environment: environment, defaults: defaults)
-        let wanted = hasV1Devices ? RemoteAddressSelection.listenAddresses(among: interfaceAddresses, loopback: loopback) : []
-        if wanted != addresses {
-            addresses = wanted
-            listeners?.listen(on: wanted)
-        }
         publishDirectory()
         if magicDNSName == nil { lookUpMagicDNSName() }
     }

@@ -117,14 +117,20 @@ extension RemoteBridge {
 
 /// The remote's protocol, connection by connection (docs/REMOTE_PROTOCOL.md): authentication and
 /// pairing, rates, snapshots and their change events, conversation pages and their changes, and
-/// commands through the bridge. Transport-free: `RemoteWebSocketListeners` feeds it real
-/// connections, tests feed it channels of their own.
+/// commands through the bridge. Transport-free: `RemoteSecureConnection` hands it each connection once
+/// its Noise handshake is read (the direct listener and the relay client make those), tests hand it
+/// channels of their own.
 public actor RemoteServer {
     public struct Configuration: Sendable {
         public var server: RemoteServerInfo
         public var authTimeout: TimeInterval = 10
+        /// How long a v2 connection may stay before the phone's first message proves it holds the session keys.
+        public var proofTimeout: TimeInterval = 30
         public var idleTimeout: TimeInterval = 75
+        /// Connections of paired devices, counted once they are proven.
         public var maxConnections = 8
+        /// Connections still proving themselves; a new one past this closes the oldest.
+        public var maxWaitingConnections = 8
         public var maxSubscriptions = 8
         public var tasksInterval: Duration = .milliseconds(400)
         public var conversationInterval: Duration = .milliseconds(200)
@@ -157,9 +163,10 @@ public actor RemoteServer {
     private struct Connection {
         let channel: any RemoteChannel
         var deviceID: String?
-        /// 1 for v1 (`pair`/`hello`), 2 for a Noise connection.
-        var version = 1
         var path: RemotePath?
+        /// The phone sent a message under this connection's keys (§13.1); until then the connection neither
+        /// counts as the device's nor holds back its pushes.
+        var isProven = false
         var openedAt: Date
         var lastReceivedAt: Date
         var limiter: RemoteRateLimiter
@@ -168,12 +175,27 @@ public actor RemoteServer {
         var subscriptions: [String: Subscription] = [:]
         var queue: [Data] = []
         var isDraining = false
+
+        /// A paired device's connection, counted against `maxConnections`.
+        var isEstablished: Bool { deviceID != nil && isProven }
     }
 
     private struct Subscription {
         var window: RemoteConversationWindow
         /// The fetch the window last showed; an older fetch that returns late is dropped.
         var generation: Int
+    }
+
+    /// A link request from message 1 until it is answered (§12.1).
+    private struct PendingLink {
+        var connection: UUID
+        var key: Data
+        var name: String
+        var platform: String?
+        var commitment: Data
+        var macNonce: Data
+        /// Set once the phone revealed its nonce: the request Settings and phones are shown.
+        var request: RemoteLinkRequest?
     }
 
     private let configuration: Configuration
@@ -200,7 +222,11 @@ public actor RemoteServer {
     private var directory: (direct: [String], relay: RemoteHandshakeReply.Relay?) = ([], nil)
     /// Link requests are taken while the Mac is signed in to an account (§12.1).
     private var acceptsLinks = false
-    private var linkRequest: (request: RemoteLinkRequest, connection: UUID, key: Data)?
+    private var link: PendingLink?
+    /// When link requests were taken, for `linksPerWindow`.
+    private var linkTimes: [Date] = []
+    /// Devices removed while this server runs: a handshake that read one before it went is refused.
+    private var revokedDeviceIDs: Set<String> = []
     private var pushSender: (@Sendable (RemotePushRequest) async -> RemotePushResult)?
     private var hasPushDevices = false
     /// The Mac's static public key, for link codes (§12.1); made the first time the remote is used.
@@ -239,11 +265,12 @@ public actor RemoteServer {
 
     public var status: Status {
         var paths: [String: RemotePath] = [:]
-        for connection in connections.values.sorted(by: { $0.openedAt < $1.openedAt }) {
+        let established = connections.values.filter(\.isEstablished)
+        for connection in established.sorted(by: { $0.openedAt < $1.openedAt }) {
             if let device = connection.deviceID, let path = connection.path { paths[device] = path }
         }
-        return Status(connectedDeviceIDs: Set(connections.values.compactMap(\.deviceID)), pairing: livePairing,
-                      pairedDeviceID: pairedDeviceID, connectedPaths: paths, linkRequest: linkRequest?.request)
+        return Status(connectedDeviceIDs: Set(established.compactMap(\.deviceID)), pairing: livePairing,
+                      pairedDeviceID: pairedDeviceID, connectedPaths: paths, linkRequest: link?.request)
     }
 
     /// What message 2 tells a phone to try next time (§13.1).
@@ -257,7 +284,12 @@ public actor RemoteServer {
 
     public func setAcceptsLinks(_ accepts: Bool) {
         acceptsLinks = accepts
-        if !accepts, let pending = linkRequest { resolveLink(pending.request.id, approve: false, code: .unauthenticated) }
+        guard !accepts, let pending = link else { return }
+        if let request = pending.request {
+            resolveLink(request.id, approve: false, code: .unauthenticated)
+        } else {
+            close(pending.connection, .unauthenticated)
+        }
     }
 
     /// How pushes leave the Mac; nil turns them off.
@@ -268,33 +300,21 @@ public actor RemoteServer {
 
     // MARK: - Transport
 
-    /// A new connection. Nil when there are too many; the channel is then closed.
-    @discardableResult
-    public func open(_ channel: any RemoteChannel) -> UUID? {
-        guard connections.count < configuration.maxConnections else {
-            channel.close(.unavailable)
-            return nil
-        }
-        let id = UUID()
-        let time = now()
-        connections[id] = Connection(channel: channel, openedAt: time, lastReceivedAt: time,
-                                     limiter: RemoteRateLimiter(now: time))
-        ensureSweeper()
-        return id
-    }
-
     /// A frame the connection received. Frames are handled one at a time, in order.
     public func receive(_ data: Data, on id: UUID) {
         guard let connection = connections[id] else { return }
         // A paired v2 phone's joined chunks can carry images (§13.2, §15.14); a link request still waiting for
         // approval only keeps its connection alive.
-        let limit = connection.version == 2 && connection.deviceID != nil
-            ? RemoteProtocol.maxSecureClientMessageBytes : RemoteProtocol.maxClientFrameBytes
+        let limit = connection.deviceID != nil ? RemoteProtocol.maxSecureClientMessageBytes : RemoteProtocol.maxClientFrameBytes
         guard data.count <= limit else {
             close(id, .messageTooBig)
             return
         }
         connections[id]?.lastReceivedAt = now()
+        if !connection.isProven {
+            connections[id]?.isProven = true
+            publishStatus()
+        }
         connections[id]?.queue.append(data)
         guard connections[id]?.isDraining == false else { return }
         connections[id]?.isDraining = true
@@ -304,10 +324,7 @@ public actor RemoteServer {
     /// The transport saw the connection end.
     public func closed(_ id: UUID) {
         guard connections.removeValue(forKey: id) != nil else { return }
-        if let pending = linkRequest, pending.connection == id {
-            linkRequest = nil
-            broadcastLinkResolved(pending.request.id, approved: false)
-        }
+        forgetLink(on: id)
         Task { await self.updateWatched() }
         publishStatus()
     }
@@ -326,7 +343,7 @@ public actor RemoteServer {
         guard hello.v == RemoteProtocol.secureVersion else {
             return refuse(.unsupportedVersion, "This Mac speaks protocol \(RemoteProtocol.secureVersion)", .unsupportedVersion)
         }
-        guard connections.count < configuration.maxConnections else {
+        guard establishedCount < configuration.maxConnections else {
             return refuse(.unavailable, "Too many connections", .unavailable)
         }
         let name = String((hello.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
@@ -344,14 +361,14 @@ public actor RemoteServer {
                     publishStatus()
                     return refuse(.pairingUnavailable, "No pairing is open on the Mac", .unauthenticated)
                 }
+                // A wrong secret leaves the pairing open: 32 random bytes are not guessed.
                 guard Self.constantTimeEqual(ticket.secret, secret) else {
-                    ticket.attemptsLeft -= 1
-                    pairing = ticket.attemptsLeft > 0 ? ticket : nil
-                    publishStatus()
                     return refuse(.pairingInvalid, "Wrong pairing secret", .unauthenticated)
                 }
                 ticket.pairedKey = publicKey
-                spentPairing = ticket
+                var spent = ticket
+                spent.expiresAt = min(ticket.expiresAt, now().addingTimeInterval(Self.pairingRetryWindow))
+                spentPairing = spent
                 if ticket.isSingleUse { pairing = nil }
             }
             device = await devices.addSecure(name: name, publicKey: publicKey, platform: platform, now: now())
@@ -362,68 +379,104 @@ public actor RemoteServer {
             device = known
         } else if hello.link == true {
             guard acceptsLinks else { return refuse(.linkUnavailable, "This Mac takes no link requests", .unauthenticated) }
-            guard linkRequest == nil else { return refuse(.busy, "Another link request is waiting", .unavailable) }
-            let id = UUID()
+            guard let commitment = hello.linkCommit.flatMap(RemoteEncoding.data(base64url:)), commitment.count == 32 else {
+                return refuse(.unsupportedVersion, "Update the app to link through an account", .unsupportedVersion)
+            }
+            guard link == nil else { return refuse(.busy, "Another link request is waiting", .unavailable) }
             let time = now()
-            connections[id] = Connection(channel: channel, version: 2, path: path, openedAt: time, lastReceivedAt: time,
+            linkTimes.removeAll { time.timeIntervalSince($0) >= Self.linkWindow }
+            guard linkTimes.count < Self.linksPerWindow else {
+                return refuse(.rateLimited, "Too many link requests; try again later", .rateLimited)
+            }
+            linkTimes.append(time)
+            makeRoomForWaiting()
+            let id = UUID()
+            connections[id] = Connection(channel: channel, path: path, openedAt: time, lastReceivedAt: time,
                                          limiter: RemoteRateLimiter(now: time))
-            let request = RemoteLinkRequest(id: UUID().uuidString, name: name.isEmpty ? "Phone" : name, platform: platform,
-                                            code: RemoteLinkCode.code(macKey: macKey ?? Data(), phoneKey: publicKey),
-                                            expiresAt: time.addingTimeInterval(Self.linkLifetime))
-            linkRequest = (request, id, publicKey)
+            let nonce = Data(RemoteRandom.bytes(RemoteLinkCode.nonceLength))
+            link = PendingLink(connection: id, key: publicKey, name: name.isEmpty ? "Phone" : name, platform: platform,
+                               commitment: commitment, macNonce: nonce)
             ensureSweeper()
             var reply = RemoteHandshakeReply(ok: false)
             reply.pending = true
-            reply.code = request.code
-            reply.server = secureServerInfo
-            broadcastLinkRequest(request)
-            Task { await self.pushLinkRequest(request) }
-            audit?.record(device: nil, type: "link", task: nil, result: "pending", at: time)
-            publishStatus()
+            reply.linkNonce = RemoteEncoding.base64url(nonce)
+            reply.server = configuration.server
             return .pending(id, reply)
         } else {
             return refuse(.unknownDevice, "This phone is not paired with this Mac", .revoked)
         }
+        // Removed while this handshake read the device list.
+        guard !revokedDeviceIDs.contains(device.id) else {
+            return refuse(.unknownDevice, "This phone is not paired with this Mac", .revoked)
+        }
+        makeRoomForWaiting()
         let id = UUID()
         let time = now()
-        connections[id] = Connection(channel: channel, deviceID: device.id, version: 2, path: path, openedAt: time,
-                                     lastReceivedAt: time, limiter: RemoteRateLimiter(now: time))
+        connections[id] = Connection(channel: channel, deviceID: device.id, path: path, openedAt: time, lastReceivedAt: time,
+                                     limiter: RemoteRateLimiter(now: time))
         ensureSweeper()
         var reply = RemoteHandshakeReply(ok: true)
         reply.deviceId = device.id
         reply.serverTime = RemoteJSON.milliseconds(time)
         reply.paired = paired ? true : nil
-        reply.server = secureServerInfo
+        reply.server = configuration.server
         reply.direct = directory.direct
         reply.relay = directory.relay
         // A phone that connects while a link request waits can answer it too.
-        if let pending = linkRequest { sendLinkRequest(pending.request, to: id) }
+        if let request = link?.request { sendLinkRequest(request, to: id) }
         publishStatus()
         return .accepted(id, reply)
     }
 
     static let linkLifetime: TimeInterval = 120
+    /// At most this many link requests are taken in `linkWindow`.
+    static let linksPerWindow = 5
+    static let linkWindow: TimeInterval = 10 * 60
+    /// How long the phone that spent a pairing may use it again after losing the Mac's answer.
+    static let pairingRetryWindow: TimeInterval = 60
 
-    private var secureServerInfo: RemoteServerInfo {
-        var info = configuration.server
-        info.protocolVersion = RemoteProtocol.secureVersion
-        return info
+    /// The phone revealed the nonce message 1 committed to: the request is shown with the code both sides compute.
+    private func revealLink(_ nonce: Data, requestID: String, on id: UUID) {
+        guard let pending = link, pending.connection == id, pending.request == nil,
+              Self.constantTimeEqual(RemoteLinkCode.commitment(phoneKey: pending.key, nonce: nonce), pending.commitment) else {
+            respond(.failure(requestID, RemoteError(.badRequest, "The nonce does not match")), to: id)
+            close(id, .unauthenticated)
+            return
+        }
+        let time = now()
+        let request = RemoteLinkRequest(id: UUID().uuidString, name: pending.name, platform: pending.platform,
+                                        code: RemoteLinkCode.code(macKey: macKey ?? Data(), phoneKey: pending.key,
+                                                                  macNonce: pending.macNonce, phoneNonce: nonce),
+                                        expiresAt: time.addingTimeInterval(Self.linkLifetime))
+        link?.request = request
+        respond(RemoteResponse(re: requestID), to: id)
+        broadcastLinkRequest(request)
+        Task { await self.pushLinkRequest(request) }
+        audit?.record(device: nil, type: "link", task: nil, result: "pending", at: time)
+        publishStatus()
+    }
+
+    /// The link request's connection ended.
+    private func forgetLink(on id: UUID) {
+        guard let pending = link, pending.connection == id else { return }
+        link = nil
+        if let request = pending.request { broadcastLinkResolved(request.id, approved: false) }
     }
 
     /// Approves or refuses the waiting link request (Settings, or a phone's `answerLink`).
     @discardableResult
     public func answerLink(_ requestID: String, approve: Bool) async -> Bool {
-        guard let pending = linkRequest, pending.request.id == requestID else { return false }
+        guard let pending = link, let request = pending.request, request.id == requestID else { return false }
         if approve {
             guard connections[pending.connection] != nil else {
-                linkRequest = nil
+                link = nil
                 publishStatus()
                 return false
             }
-            let device = await devices.addSecure(name: pending.request.name, publicKey: pending.key,
-                                                 platform: pending.request.platform, now: now())
-            guard connections[pending.connection] != nil, linkRequest?.request.id == requestID else { return false }
-            linkRequest = nil
+            let device = await devices.addSecure(name: request.name, publicKey: pending.key,
+                                                 platform: request.platform, now: now())
+            guard connections[pending.connection] != nil, link?.request?.id == requestID else { return false }
+            link = nil
             connections[pending.connection]?.deviceID = device.id
             var linked = RemoteEvent(.linked)
             linked.deviceId = device.id
@@ -438,8 +491,8 @@ public actor RemoteServer {
     }
 
     private func resolveLink(_ requestID: String, approve: Bool, code: RemoteCloseCode) {
-        guard let pending = linkRequest, pending.request.id == requestID else { return }
-        linkRequest = nil
+        guard let pending = link, pending.request?.id == requestID else { return }
+        link = nil
         send(RemoteEvent(.linkRefused), to: pending.connection)
         close(pending.connection, code)
         broadcastLinkResolved(requestID, approved: false)
@@ -448,7 +501,7 @@ public actor RemoteServer {
     }
 
     private func broadcastLinkRequest(_ request: RemoteLinkRequest) {
-        for (id, connection) in connections where connection.version == 2 && connection.deviceID != nil {
+        for (id, connection) in connections where connection.deviceID != nil {
             sendLinkRequest(request, to: id)
         }
     }
@@ -467,7 +520,7 @@ public actor RemoteServer {
         var event = RemoteEvent(.linkResolved)
         event.requestId = requestID
         event.approved = approved
-        for (id, connection) in connections where connection.version == 2 && connection.deviceID != nil {
+        for (id, connection) in connections where connection.deviceID != nil {
             send(event, to: id)
         }
     }
@@ -484,14 +537,14 @@ public actor RemoteServer {
     /// Opens a pairing, replacing any open one.
     @discardableResult
     public func openPairing(
-        code: String = RemotePairingCode.generate(),
         secret: Data = Data(RemoteRandom.bytes(32)),
         lifetime: TimeInterval = RemotePairingTicket.lifetime,
         isSingleUse: Bool = true
     ) -> RemotePairingTicket {
-        let ticket = RemotePairingTicket(code: RemotePairingCode.normalize(code) ?? code, secret: secret,
+        let ticket = RemotePairingTicket(secret: secret,
                                          expiresAt: now().addingTimeInterval(lifetime), isSingleUse: isSingleUse)
         pairing = ticket
+        spentPairing = nil
         pairedDeviceID = nil
         publishStatus()
         return ticket
@@ -499,11 +552,15 @@ public actor RemoteServer {
 
     public func cancelPairing() {
         pairing = nil
+        spentPairing = nil
         publishStatus()
     }
 
-    /// Removes a device and disconnects it at once.
+    /// Removes a device and disconnects it at once. The pairing it may have just spent goes too, so the
+    /// same key cannot pair again with it.
     public func revoke(_ deviceID: String) async {
+        revokedDeviceIDs.insert(deviceID)
+        spentPairing = nil
         await devices.remove(deviceID)
         for (id, connection) in connections where connection.deviceID == deviceID {
             send(RemoteEvent(.revoked), to: id)
@@ -523,7 +580,7 @@ public actor RemoteServer {
         }
         pairing = nil
         spentPairing = nil
-        linkRequest = nil
+        link = nil
         sweeper?.cancel()
         sweeper = nil
         publishStatus()
@@ -558,9 +615,17 @@ public actor RemoteServer {
             }
             return
         }
-        if connection.version == 2, connection.deviceID == nil {
-            // A link request waiting for approval may only keep the connection alive.
-            if case .ping = request {
+        if connection.deviceID == nil {
+            // A link request (§12.1): first the nonce message 1 committed to, then nothing but ping until it is
+            // answered.
+            if link?.connection == id, link?.request == nil {
+                if case let .revealLink(nonce) = request {
+                    revealLink(nonce, requestID: envelope.id, on: id)
+                } else {
+                    respond(.failure(envelope.id, RemoteError(.unauthenticated, "Reveal the link nonce first")), to: id)
+                    close(id, .unauthenticated)
+                }
+            } else if case .ping = request {
                 var response = RemoteResponse(re: envelope.id)
                 response.pong = true
                 response.serverTime = RemoteJSON.milliseconds(now())
@@ -570,30 +635,9 @@ public actor RemoteServer {
             }
             return
         }
-        if request.isSecureOnly, connection.version != 2 {
-            switch request {
-            case .sendMessage, .answerApproval:
-                respond(.failure(envelope.id, RemoteError(.badRequest, "Not on protocol 1")), to: id)
-            default:
-                respond(.failure(envelope.id, RemoteError(.unknownType, "Unknown type \(request.type)")), to: id)
-            }
-            return
-        }
-        guard connection.deviceID != nil else {
-            switch request {
-            case let .pair(code, name, version):
-                await pair(envelope.id, code: code, name: name, version: version, on: id)
-            case let .hello(token, version):
-                await hello(envelope.id, token: token, version: version, on: id)
-            default:
-                respond(.failure(envelope.id, RemoteError(.unauthenticated, "Send hello or pair first")), to: id)
-                close(id, .unauthenticated)
-            }
-            return
-        }
         if let deviceID = connection.deviceID { await devices.seen(deviceID, now: now()) }
         switch request {
-        case .pair, .hello:
+        case .revealLink:
             respond(.failure(envelope.id, RemoteError(.badRequest, "Already authenticated")), to: id)
         case let .answerQuestion(taskID, requestID, answers):
             await command(envelope.id, request: request, on: id) {
@@ -739,10 +783,8 @@ public actor RemoteServer {
             var response = RemoteResponse(re: envelope.id)
             response.projects = published?.projects ?? []
             response.tasks = published?.tasks ?? []
-            if connection.version == 2 {
-                response.newTask = published?.newTask
-                response.followUp = published?.followUp
-            }
+            response.newTask = published?.newTask
+            response.followUp = published?.followUp
             response.serverTime = RemoteJSON.milliseconds(now())
             respond(response, to: id)
             connections[id]?.receivesTaskEvents = true
@@ -781,65 +823,6 @@ public actor RemoteServer {
         case let .markRead(taskID):
             await command(envelope.id, request: request, on: id) { await self.bridge.perform(.markRead(taskID: taskID)) }
         }
-    }
-
-    private func pair(_ requestID: String, code: String, name: String, version: Int, on id: UUID) async {
-        guard version == RemoteProtocol.version else {
-            respond(.failure(requestID, RemoteError(.unsupportedVersion, "This Mac speaks protocol \(RemoteProtocol.version)")), to: id)
-            close(id, .unsupportedVersion)
-            return
-        }
-        guard var ticket = livePairing else {
-            pairing = nil
-            respond(.failure(requestID, RemoteError(.pairingUnavailable, "No pairing is open on the Mac")), to: id)
-            audit?.record(device: nil, type: "pair", task: nil, result: RemoteErrorCode.pairingUnavailable.rawValue, at: now())
-            publishStatus()
-            return
-        }
-        guard RemotePairingCode.matches(code, ticket.code) else {
-            ticket.attemptsLeft -= 1
-            pairing = ticket.attemptsLeft > 0 ? ticket : nil
-            respond(.failure(requestID, RemoteError(.pairingInvalid, "Wrong pairing code")), to: id)
-            audit?.record(device: nil, type: "pair", task: nil, result: RemoteErrorCode.pairingInvalid.rawValue, at: now())
-            publishStatus()
-            return
-        }
-        // Spent before the store is written, so no other connection can use it meanwhile.
-        if ticket.isSingleUse { pairing = nil }
-        let (device, token) = await devices.add(name: name, now: now())
-        guard connections[id] != nil else { return }
-        connections[id]?.deviceID = device.id
-        pairedDeviceID = device.id
-        var response = RemoteResponse(re: requestID)
-        response.deviceId = device.id
-        response.token = token
-        response.server = configuration.server
-        response.serverTime = RemoteJSON.milliseconds(now())
-        respond(response, to: id)
-        audit?.record(device: device.id, type: "pair", task: nil, result: "ok", at: now())
-        publishStatus()
-    }
-
-    private func hello(_ requestID: String, token: String, version: Int, on id: UUID) async {
-        guard version == RemoteProtocol.version else {
-            respond(.failure(requestID, RemoteError(.unsupportedVersion, "This Mac speaks protocol \(RemoteProtocol.version)")), to: id)
-            close(id, .unsupportedVersion)
-            return
-        }
-        guard let device = await devices.authenticate(token, now: now()) else {
-            respond(.failure(requestID, RemoteError(.invalidToken, "Pair this device again")), to: id)
-            audit?.record(device: nil, type: "hello", task: nil, result: RemoteErrorCode.invalidToken.rawValue, at: now())
-            close(id, .unauthenticated)
-            return
-        }
-        guard connections[id] != nil else { return }
-        connections[id]?.deviceID = device.id
-        var response = RemoteResponse(re: requestID)
-        response.deviceId = device.id
-        response.server = configuration.server
-        response.serverTime = RemoteJSON.milliseconds(now())
-        respond(response, to: id)
-        publishStatus()
     }
 
     private func command(
@@ -1131,11 +1114,7 @@ public actor RemoteServer {
     // MARK: - Sending and closing
 
     private func respond(_ response: RemoteResponse, to id: UUID) {
-        guard let connection = connections[id] else { return }
-        var response = response
-        if connection.version == 1, let items = response.items { response.items = items.map { $0.forVersion1() } }
-        if connection.version == 1, let tasks = response.tasks { response.tasks = tasks.map { $0.forVersion1() } }
-        connection.channel.send(RemoteJSON.string(response))
+        connections[id]?.channel.send(RemoteJSON.string(response))
     }
 
     private func send(_ event: RemoteEvent, to id: UUID) {
@@ -1143,28 +1122,34 @@ public actor RemoteServer {
         connections[id]?.seq += 1
         var event = event
         event.seq = connection.seq + 1
-        if connection.version == 1 {
-            if let items = event.items { event.items = items.map { $0.forVersion1() } }
-            if let tasks = event.tasks { event.tasks = tasks.map { $0.forVersion1() } }
-            event.pendingKind = nil
-            event.changes = event.changes?.map { change in
-                var change = change
-                change.item = change.item?.forVersion1()
-                return change
-            }
-        }
         connection.channel.send(RemoteJSON.string(event))
     }
 
     private func close(_ id: UUID, _ code: RemoteCloseCode) {
         guard let connection = connections.removeValue(forKey: id) else { return }
+        forgetLink(on: id)
         connection.channel.close(code)
         Task { await self.updateWatched() }
         publishStatus()
     }
 
+    private var establishedCount: Int {
+        connections.values.count(where: \.isEstablished)
+    }
+
+    /// Closes the oldest connection still proving itself when there are `maxWaitingConnections` of them, so
+    /// connections that never finish cannot keep a phone out. A link request that was shown is not one of them.
+    private func makeRoomForWaiting() {
+        let waiting = connections.filter { id, connection in
+            !connection.isEstablished && !(link?.connection == id && link?.request != nil)
+        }
+        guard waiting.count >= configuration.maxWaitingConnections,
+              let oldest = waiting.min(by: { $0.value.openedAt < $1.value.openedAt }) else { return }
+        close(oldest.key, .unavailable)
+    }
+
     private var livePairing: RemotePairingTicket? {
-        guard let pairing, pairing.expiresAt > now(), pairing.attemptsLeft > 0 else { return nil }
+        guard let pairing, pairing.expiresAt > now() else { return nil }
         return pairing
     }
 
@@ -1194,18 +1179,22 @@ public actor RemoteServer {
     func sweep() {
         let time = now()
         for (id, connection) in connections {
-            if connection.deviceID == nil, time.timeIntervalSince(connection.openedAt) > configuration.authTimeout {
+            let age = time.timeIntervalSince(connection.openedAt)
+            if connection.deviceID == nil {
+                // A link request that was shown waits for its answer until it expires, below.
+                if link?.connection == id, link?.request != nil { continue }
+                if age > configuration.authTimeout { close(id, .idle) }
+            } else if !connection.isProven, age > configuration.proofTimeout {
                 close(id, .idle)
-            } else if connection.deviceID != nil,
-                      time.timeIntervalSince(connection.lastReceivedAt) > configuration.idleTimeout {
+            } else if time.timeIntervalSince(connection.lastReceivedAt) > configuration.idleTimeout {
                 close(id, .idle)
             }
         }
         if pairing != nil, livePairing == nil { pairing = nil }
         if let spent = spentPairing, spent.expiresAt <= time { spentPairing = nil }
         uploads.sweep(now: time)
-        if let pending = linkRequest, pending.request.expiresAt <= time {
-            resolveLink(pending.request.id, approve: false, code: .idle)
+        if let request = link?.request, request.expiresAt <= time {
+            resolveLink(request.id, approve: false, code: .idle)
         }
         publishStatus()
     }
@@ -1264,7 +1253,7 @@ public actor RemoteServer {
     /// Seals the event for each device that registered for pushes and has no v2 connection open.
     private func deliver(_ payload: RemoteEvent, urgent: Bool, collapse: String) async {
         guard let pushSender else { return }
-        let connected = Set(connections.values.filter { $0.version == 2 }.compactMap(\.deviceID))
+        let connected = Set(connections.values.filter(\.isEstablished).compactMap(\.deviceID))
         let plaintext = Data(RemoteJSON.string(payload).utf8)
         for device in await devices.all() where !connected.contains(device.id) {
             guard let registration = device.push, let key = RemoteEncoding.data(base64url: registration.key),

@@ -3,16 +3,14 @@ import XCTest
 @testable import YardletRemote
 
 /// The phone remote's wire contract (docs/REMOTE_PROTOCOL.md) without a connection: requests decode
-/// and encode back the same, responses and events are the documented JSON, pairing codes and URLs
-/// read back, the listen addresses are Tailscale's only (loopback only under the developer flag),
-/// and a conversation window pages whole turns and describes updates as changes a client can apply.
+/// and encode back the same, responses and events are the documented JSON, devices are kept by their
+/// public keys in a file only the person reads, Tailscale and LAN addresses are told apart, and a
+/// conversation window pages whole turns and describes updates as changes a client can apply.
 final class RemoteProtocolTests: XCTestCase {
     // MARK: - Requests
 
     func testEveryRequestDecodesWhatItEncodes() throws {
         let requests: [RemoteRequest] = [
-            .pair(code: "7KQ2M-X9D4T", deviceName: "Pixel 9", protocolVersion: 1),
-            .hello(token: "q0Pj3w", protocolVersion: 1),
             .snapshot,
             .subscribeTask(taskID: "T1"),
             .loadOlder(taskID: "T1", cursor: "t:turn-3"),
@@ -53,7 +51,8 @@ final class RemoteProtocolTests: XCTestCase {
             .actOnSuggestion(taskID: "T1", suggestionID: "task_1", action: .start),
             .setPinned(taskID: "T1", pinned: false),
             .archiveTask(taskID: "T1"),
-            .answerLink(requestID: "L", approve: true)
+            .answerLink(requestID: "L", approve: true),
+            .revealLink(nonce: Data(repeating: 9, count: 32))
         ]
         for (index, request) in requests.enumerated() {
             let envelope = RemoteRequestEnvelope(id: "\(index)", request: request)
@@ -66,8 +65,8 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertEqual(markRead, RemoteRequestEnvelope(id: "17", request: .markRead(taskID: "4C1F")))
         let answer = try decode(#"{"id":"8","type":"answerApproval","taskId":"T","requestId":"toolu_01","answer":"allowOnce","extra":true}"#)
         XCTAssertEqual(answer.request, .answerApproval(taskID: "T", requestID: "toolu_01", answer: .allowOnce))
-        let pair = try decode(#"{"id":"1","type":"pair","protocolVersion":1,"code":"7KQ2M-X9D4T","deviceName":"  Pixel 9  "}"#)
-        XCTAssertEqual(pair.request, .pair(code: "7KQ2M-X9D4T", deviceName: "Pixel 9", protocolVersion: 1))
+        let reveal = try decode(#"{"id":"1","type":"revealLink","nonce":"\#(RemoteEncoding.base64url(Data(repeating: 1, count: 32)))"}"#)
+        XCTAssertEqual(reveal.request, .revealLink(nonce: Data(repeating: 1, count: 32)))
     }
 
     func testRequestsThatCannotBeReadSayWhy() {
@@ -82,7 +81,9 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertEqual(failure(#"{"id":"4","type":"markRead"}"#)?.error.code, .badRequest)
         XCTAssertEqual(failure(#"{"id":"5","type":"answerApproval","taskId":"T","requestId":"r","answer":"allowAlways"}"#)?.error.code, .badRequest)
         XCTAssertEqual(failure(#"{"id":6,"type":"ping"}"#)?.error.code, .badRequest)
-        XCTAssertEqual(failure(#"{"id":"7","type":"hello","token":"x"}"#)?.id, "7")
+        // Protocol 1's requests are gone.
+        XCTAssertEqual(failure(#"{"id":"7","type":"hello","token":"x"}"#), .init(id: "7", error: RemoteError(.unknownType, "Unknown type hello")))
+        XCTAssertEqual(failure(#"{"id":"8","type":"revealLink","nonce":"AAAA"}"#)?.error.code, .badRequest)
     }
 
     // MARK: - Responses and events
@@ -126,102 +127,46 @@ final class RemoteProtocolTests: XCTestCase {
                      "linked", "linkRefused", "linkRequest", "linkResolved"] {
             XCTAssertTrue(document.contains("\"event\": \"\(name)\""), name)
         }
-        XCTAssertTrue(document.contains("**Port: `\(RemoteProtocol.defaultPort)`**"))
         XCTAssertTrue(document.contains("port **\(RemoteProtocol.securePort)**"))
         XCTAssertTrue(document.contains("prologue the 16 ASCII bytes `\(String(decoding: RemoteNoise.prologue, as: UTF8.self))`"))
     }
 
     // MARK: - Pairing
 
-    func testPairingCodesReadAsTypedAndCompareWhole() {
-        let code = RemotePairingCode.generate()
-        XCTAssertEqual(code.count, 10)
-        XCTAssertTrue(code.allSatisfy { RemotePairingCode.alphabet.contains($0) })
-        XCTAssertNotEqual(code, RemotePairingCode.generate())
-        XCTAssertEqual(RemotePairingCode.display("7KQ2MX9D4T"), "7KQ2M-X9D4T")
-        XCTAssertEqual(RemotePairingCode.normalize("7kq2m-x9d4t"), "7KQ2MX9D4T")
-        XCTAssertEqual(RemotePairingCode.normalize("ABCDE 12345"), "ABCDE12345")
-        XCTAssertEqual(RemotePairingCode.normalize("o1l1i"), "01111")
-        XCTAssertNil(RemotePairingCode.normalize("ABCDU-12345"))
-        XCTAssertTrue(RemotePairingCode.matches("7kq2m x9d4t", "7KQ2MX9D4T"))
-        XCTAssertFalse(RemotePairingCode.matches("7KQ2M-X9D4", "7KQ2MX9D4T"))
-        XCTAssertFalse(RemotePairingCode.matches("7KQ2M-X9D4V", "7KQ2MX9D4T"))
-    }
-
-    func testDeviceTokensAreRandomAndStoredOnlyAsDigests() async throws {
-        let token = RemoteDeviceToken.generate()
-        XCTAssertEqual(token.count, 43)
-        XCTAssertFalse(token.contains("=") || token.contains("+") || token.contains("/"))
-        XCTAssertEqual(RemoteDeviceToken.hash(token).count, 64)
-
+    func testDevicesAreKeptByPublicKeyInAFileOnlyThePersonReads() async throws {
         let folder = FileManager.default.temporaryDirectory.appending(path: "remote-devices-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
         let file = folder.appending(path: "devices.json")
         let store = RemoteDeviceStore(fileURL: file)
-        let (device, issued) = await store.add(name: "Pixel 9")
-        let saved = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertFalse(saved.contains(issued))
-        XCTAssertTrue(saved.contains(RemoteDeviceToken.hash(issued)))
+        let key = Data(repeating: 4, count: 32)
+        let device = await store.addSecure(name: "Pixel 9", publicKey: key, platform: "android")
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
 
         let reopened = RemoteDeviceStore(fileURL: file)
-        let authenticated = await reopened.authenticate(issued)
-        XCTAssertEqual(authenticated?.id, device.id)
-        let stranger = await reopened.authenticate(RemoteDeviceToken.generate())
+        let known = await reopened.authenticate(publicKey: key, name: nil)
+        XCTAssertEqual(known?.id, device.id)
+        let stranger = await reopened.authenticate(publicKey: Data(repeating: 5, count: 32), name: nil)
         XCTAssertNil(stranger)
         await reopened.remove(device.id)
-        let removed = await reopened.authenticate(issued)
+        let removed = await reopened.authenticate(publicKey: key, name: nil)
         XCTAssertNil(removed)
-    }
-
-    func testThePairingURLNamesItsHostsInOrder() throws {
-        let url = try XCTUnwrap(RemotePairingURL.make(code: "7KQ2MX9D4T",
-            hosts: ["100.64.12.34", "mac.tail1234.ts.net", "fd7a:115c:a1e0::1234"], port: 47615, macName: "MacBook Pro"))
-        XCTAssertTrue(url.absoluteString.hasPrefix("yardlet-remote://pair?v=1&code=7KQ2M-X9D4T&port=47615&host=100.64.12.34"))
-        let parsed = try XCTUnwrap(RemotePairingURL.parse(url))
-        XCTAssertEqual(parsed, .init(version: 1, code: "7KQ2M-X9D4T", port: 47615,
-            hosts: ["100.64.12.34", "mac.tail1234.ts.net", "fd7a:115c:a1e0::1234"], name: "MacBook Pro"))
     }
 
     // MARK: - Addresses
 
-    func testTheRemoteListensOnTailscaleAddressesOnly() {
-        let interfaces = [
-            RemoteInterfaceAddress(interface: "lo0", address: "127.0.0.1", family: .ipv4),
-            RemoteInterfaceAddress(interface: "lo0", address: "::1", family: .ipv6),
-            RemoteInterfaceAddress(interface: "en0", address: "192.168.0.12", family: .ipv4),
-            RemoteInterfaceAddress(interface: "en0", address: "fe80::1c2b:3a4d:5e6f:7081%en0", family: .ipv6),
-            RemoteInterfaceAddress(interface: "en0", address: "10.0.0.4", family: .ipv4),
-            RemoteInterfaceAddress(interface: "utun4", address: "fd7a:115c:a1e0::1234", family: .ipv6),
-            RemoteInterfaceAddress(interface: "utun4", address: "100.64.12.34", family: .ipv4),
-            // Outside Tailscale's ranges: CGNAT's neighbours, another ULA.
-            RemoteInterfaceAddress(interface: "utun5", address: "100.128.0.1", family: .ipv4),
-            RemoteInterfaceAddress(interface: "utun5", address: "100.63.255.255", family: .ipv4),
-            RemoteInterfaceAddress(interface: "utun6", address: "fd7a:115c:a1e1::1", family: .ipv6),
-            RemoteInterfaceAddress(interface: "bridge0", address: "0.0.0.0", family: .ipv4)
-        ]
-        XCTAssertEqual(RemoteAddressSelection.listenAddresses(among: interfaces, loopback: false), [
-            RemoteListenAddress(host: "100.64.12.34", family: .ipv4, kind: .tailscale),
-            RemoteListenAddress(host: "fd7a:115c:a1e0::1234", family: .ipv6, kind: .tailscale)
-        ])
-        XCTAssertEqual(RemoteAddressSelection.listenAddresses(among: interfaces, loopback: true).last,
-                       RemoteListenAddress(host: "127.0.0.1", family: .ipv4, kind: .loopback))
-        XCTAssertEqual(RemoteAddressSelection.listenAddresses(among: [], loopback: false), [])
+    func testTailscaleAndLANAddressesAreToldApart() {
         XCTAssertTrue(RemoteAddressSelection.isTailscale("100.64.0.0"))
         XCTAssertTrue(RemoteAddressSelection.isTailscale("100.127.255.255"))
+        XCTAssertTrue(RemoteAddressSelection.isTailscale("fd7a:115c:a1e0::1234"))
+        // Outside Tailscale's ranges: CGNAT's neighbours, another ULA, a malformed address.
+        XCTAssertFalse(RemoteAddressSelection.isTailscale("100.128.0.1"))
+        XCTAssertFalse(RemoteAddressSelection.isTailscale("100.63.255.255"))
+        XCTAssertFalse(RemoteAddressSelection.isTailscale("fd7a:115c:a1e1::1"))
         XCTAssertFalse(RemoteAddressSelection.isTailscale("100.100.100.100.1"))
-        XCTAssertEqual(RemoteListenAddress(host: "fd7a:115c:a1e0::1", family: .ipv6, kind: .tailscale).urlHost, "[fd7a:115c:a1e0::1]")
-    }
-
-    func testTheDeveloperLoopbackNeedsItsFlag() throws {
-        let suite = testDefaultsSuite("remote-loopback")
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        XCTAssertFalse(RemoteAddressSelection.loopbackEnabled(environment: [:], defaults: defaults))
-        XCTAssertTrue(RemoteAddressSelection.loopbackEnabled(environment: ["YARDLET_REMOTE_LOOPBACK": "1"], defaults: defaults))
-        XCTAssertFalse(RemoteAddressSelection.loopbackEnabled(environment: ["YARDLET_REMOTE_LOOPBACK": "0"], defaults: defaults))
-        defaults.set(true, forKey: RemoteAddressSelection.loopbackDefaultsKey)
-        XCTAssertTrue(RemoteAddressSelection.loopbackEnabled(environment: [:], defaults: defaults))
+        XCTAssertTrue(RemoteAddressSelection.isPrivateLAN("192.168.0.12"))
+        XCTAssertTrue(RemoteAddressSelection.isPrivateLAN("10.0.0.4"))
+        XCTAssertFalse(RemoteAddressSelection.isPrivateLAN("100.64.12.34"))
     }
 
     func testTheSystemInterfacesIncludeLoopback() {

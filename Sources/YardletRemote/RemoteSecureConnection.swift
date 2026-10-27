@@ -50,14 +50,35 @@ public final class RemoteSecureConnection: RemoteChannel, @unchecked Sendable {
 
     /// A frame the transport received.
     public func receive(_ frame: Data) {
-        let start = lock.withLock { () -> Bool in
-            if case .closed = state { return false }
+        let start = lock.withLock { () -> Bool? in
+            switch state {
+            case .closed:
+                return false
+            case .deciding:
+                return nil
+            case .awaitingHello where isDraining || !inbox.isEmpty:
+                return nil
+            case .awaitingHello, .open:
+                break
+            }
             inbox.append(frame)
             guard !isDraining else { return false }
             isDraining = true
             return true
         }
+        // A phone sends nothing but message 1 before message 2; nothing more is held for it.
+        guard let start else { return fail(.unauthenticated) }
         if start { Task { await drain() } }
+    }
+
+    /// Message 2 has not gone out, nor has the connection closed.
+    public var isHandshaking: Bool {
+        lock.withLock {
+            switch state {
+            case .awaitingHello, .deciding: true
+            case .open, .closed: false
+            }
+        }
     }
 
     /// The transport saw the connection end.

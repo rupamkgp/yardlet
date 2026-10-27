@@ -1957,7 +1957,6 @@
 "%@ wants to connect to this Mac" = "%@ 기기가 이 Mac에 연결하려 합니다";
 "Link code" = "확인 숫자";
 "Allow it if the phone shows the same number." = "휴대폰에 같은 숫자가 보이면 허용하세요.";
-"Earlier app" = "이전 앱";
 "Sign in with %@" = "%@로 로그인";
 "Find this Mac from a new phone without the QR code." = "새 휴대폰에서 QR 코드 없이 이 Mac을 찾습니다.";
 "The sign-in did not finish." = "로그인이 끝나지 않았습니다.";

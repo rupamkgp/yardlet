@@ -19,54 +19,8 @@ public struct RemoteInterfaceAddress: Equatable, Hashable, Sendable {
     }
 }
 
-/// An address the remote listens on.
-public struct RemoteListenAddress: Equatable, Hashable, Sendable {
-    public enum Kind: Sendable {
-        case tailscale
-        /// The developer loopback (§1), only under its flag.
-        case loopback
-    }
-
-    public var host: String
-    public var family: RemoteInterfaceAddress.Family
-    public var kind: Kind
-
-    public init(host: String, family: RemoteInterfaceAddress.Family, kind: Kind) {
-        self.host = host
-        self.family = family
-        self.kind = kind
-    }
-
-    /// The host as a URL writes it: an IPv6 address in brackets.
-    public var urlHost: String { family == .ipv6 ? "[\(host)]" : host }
-}
-
-/// Which addresses the remote binds (§1): the Mac's Tailscale addresses, IPv4 in `100.64.0.0/10` and
-/// IPv6 in `fd7a:115c:a1e0::/48`, and `127.0.0.1` only under the developer flag. Never a LAN address
-/// or every interface.
+/// Which of the Mac's addresses a phone is told about (§11.4, §13.3).
 public enum RemoteAddressSelection {
-    public static let loopbackEnvironmentKey = "YARDLET_REMOTE_LOOPBACK"
-    public static let loopbackDefaultsKey = "Yardlet.remote.loopback"
-
-    public static func listenAddresses(
-        among interfaces: [RemoteInterfaceAddress],
-        loopback: Bool
-    ) -> [RemoteListenAddress] {
-        var seen = Set<String>()
-        var addresses: [RemoteListenAddress] = []
-        // IPv4 first: the QR code names hosts in the order to try them.
-        for family in [RemoteInterfaceAddress.Family.ipv4, .ipv6] {
-            for interface in interfaces where interface.family == family && isTailscale(interface.address)
-                && seen.insert(interface.address).inserted {
-                addresses.append(RemoteListenAddress(host: interface.address, family: family, kind: .tailscale))
-            }
-        }
-        if loopback {
-            addresses.append(RemoteListenAddress(host: "127.0.0.1", family: .ipv4, kind: .loopback))
-        }
-        return addresses
-    }
-
     /// An address Tailscale assigns: IPv4 `100.64.0.0/10` (CGNAT) or IPv6 `fd7a:115c:a1e0::/48`.
     public static func isTailscale(_ address: String) -> Bool {
         var ipv4 = in_addr()
@@ -89,14 +43,6 @@ public enum RemoteAddressSelection {
         guard inet_pton(AF_INET, address, &ipv4) == 1 else { return false }
         let value = UInt32(bigEndian: ipv4.s_addr)
         return value & 0xFF00_0000 == 0x0A00_0000 || value & 0xFFF0_0000 == 0xAC10_0000 || value & 0xFFFF_0000 == 0xC0A8_0000
-    }
-
-    /// The developer loopback is on: `YARDLET_REMOTE_LOOPBACK=1` or the defaults key.
-    public static func loopbackEnabled(environment: [String: String], defaults: UserDefaults) -> Bool {
-        if let value = environment[loopbackEnvironmentKey] {
-            return ["1", "true", "yes"].contains(value.lowercased())
-        }
-        return defaults.bool(forKey: loopbackDefaultsKey)
     }
 
     /// Every IPv4 and IPv6 address of the Mac's interfaces that are up (`getifaddrs`). Reads only.

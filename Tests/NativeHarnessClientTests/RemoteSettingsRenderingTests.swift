@@ -8,8 +8,8 @@ import XCTest
 ///
 /// - `remote-off-*.png`: the switch off, nothing else.
 /// - `remote-pairing-*.png`: on, reachable on the same Wi-Fi, Tailscale and the Yardlet server, a pairing
-///   open with its QR code and time left, and two paired phones: one connected over v2, one from the
-///   earlier app.
+///   open with its QR code and time left, and two paired phones: one connected now, one last seen
+///   yesterday.
 /// - `remote-link-*.png`: a phone asking to link through the account, with its number.
 /// - `remote-paired-*.png`: after the pairing and the link, with the paired phone named.
 ///
@@ -28,19 +28,18 @@ final class RemoteSettingsRenderingTests: XCTestCase {
         XCTAssertFalse(offElements.contains { $0.label == L10n.string("Pair a phone") })
 
         service.setEnabled(true)
-        // The earlier app's phone keeps its Tailscale-only v1 listener.
-        XCTAssertEqual(service.addresses.map(\.host), ["100.101.102.103", "fd7a:115c:a1e0::1234"])
         service.secureState = .ready(port: RemoteProtocol.securePort)
         service.relayState = .connected
         XCTAssertEqual(service.reach, .init(direct: true, tailscale: true, relay: .connected, directFailure: nil))
 
-        // One phone connected now, over v2 on the same network.
+        // One phone connected now, on the same network: its first message makes it the device's connection.
         let ticket = await service.server.openPairing()
         let phone = try await PipePhone.connect(
             server: service.server, macStatic: identity.noise, phoneKey: .generate(),
             hello: RemoteHandshakeHello(name: "Pixel 9", pair: RemoteEncoding.base64url(ticket.secret)),
             targetKey: identity.noise.publicKey, expectsReply: true)
         XCTAssertEqual(phone.reply.ok, true)
+        _ = try await phone.request(#"{"id":"p","type":"ping"}"#)
         try await waitUntil { service.devices.count == 2 && service.connectedPaths.values.contains(.local) }
 
         await service.startPairing()
@@ -69,11 +68,8 @@ final class RemoteSettingsRenderingTests: XCTestCase {
 
         // A phone signed in to the account asks to link; the Mac shows its number.
         await service.server.setAcceptsLinks(true)
-        let linking = try await PipePhone.connect(
-            server: service.server, macStatic: identity.noise, phoneKey: .generate(),
-            hello: RemoteHandshakeHello(name: "Pixel 10", link: true), targetKey: identity.noise.publicKey, expectsReply: true)
-        XCTAssertEqual(linking.reply.pending, true)
-        try await waitUntil { service.linkRequest?.code == linking.reply.code }
+        let (linking, code, _) = try await PipePhone.link(server: service.server, macStatic: identity.noise, name: "Pixel 10")
+        try await waitUntil { service.linkRequest?.code == code }
         try render("remote-link", service: service, in: directory, size: size)
         await service.answerLink(approve: true)
         _ = try await linking.event(.linked)
@@ -92,8 +88,9 @@ final class RemoteSettingsRenderingTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set("wss://relay.example.test", forKey: RemoteControlService.relayURLKey)
         let store = RemoteDeviceStore(fileURL: nil)
-        // A phone paired with the earlier app (v1), last seen yesterday.
-        _ = await store.add(name: "Work phone", now: Date().addingTimeInterval(-86_400))
+        // A phone paired before, last seen yesterday.
+        _ = await store.addSecure(name: "Work phone", publicKey: Data(repeating: 3, count: 32), platform: "android",
+                                  now: Date().addingTimeInterval(-86_400))
         let identity = RemoteIdentity.generate()
         let service = RemoteControlService(
             bridge: FakeBridge(), deviceStore: store, audit: nil, identityStore: RemoteMemoryIdentityStore(identity),

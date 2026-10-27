@@ -208,9 +208,9 @@ struct RemoteSettingsView: View {
             Spacer(minLength: 8)
             Button(L10n.string("Decline")) { Task { await service.answerLink(approve: false) } }
                 .controlSize(.small)
+            // Not the default button: adding a device takes a click after comparing the numbers, not Return.
             Button(L10n.string("Allow")) { Task { await service.answerLink(approve: true) } }
                 .controlSize(.small)
-                .keyboardShortcut(.defaultAction)
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 12)
@@ -273,7 +273,6 @@ struct RemoteSettingsView: View {
 
     private func deviceDetail(_ device: RemoteDevice) -> String {
         var parts: [String] = []
-        if !device.isSecure { parts.append(L10n.string("Earlier app")) }
         if service.connectedDeviceIDs.contains(device.id) {
             parts.append(L10n.string("Connected"))
             switch service.connectedPaths[device.id] {

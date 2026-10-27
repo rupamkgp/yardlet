@@ -44,9 +44,8 @@ Status: designed and implemented on 2026-10-24 (Mac, relay and Android). The pro
   approvals, questions, plan review, diffs, a new task and notifications. It uses no network and no storage (section 8).
   Distribution starts with a GitHub Releases APK and Obtainium. The Play closed test fills up slowly through demo mode
   and real users after the Mac release (section 12).
-- **v1 phones do not break.** The v1 listener (Tailscale addresses, 47615, plain JSON and a token) stays. v1 devices
-  already paired keep working, and new pairing shows only the v2 QR. The new app does not speak v1, so it pairs again
-  once.
+- **v1 has been removed.** The v1 listener (Tailscale addresses, 47615, plain JSON and a token) is gone, and the Mac
+  drops v1 devices from its list. A phone paired with the earlier app pairs again with the current app (section 9).
 
 ## 1. Comparison with reference products
 
@@ -105,7 +104,7 @@ Wormhole](https://magic-wormhole.readthedocs.io/en/latest/welcome.html),
 - The first message's payload is the phone's name and, when pairing, the one-time secret from the QR. It is encrypted
   with a key made from the Mac's static key and the phone's static key, so only the Mac can read it and only the owner
   of the phone's key can make it.
-- Messages after the handshake are the same JSON requests, responses and events as in v1. A Noise message cannot exceed
+- Messages after the handshake are the JSON requests, responses and events of REMOTE_PROTOCOL §2 and §4–§8. A Noise message cannot exceed
   65,535 bytes, so large JSON (one page of conversation can be several MB) is split into fragments (the first byte says
   "continues" or "end").
 - It is the same on every route: `ws://` on the same Wi-Fi, `ws://` over Tailscale, `wss://` through the relay. There is
@@ -120,7 +119,7 @@ Wormhole](https://magic-wormhole.readthedocs.io/en/latest/welcome.html),
 ### 2.2 Direct connection on the same Wi-Fi
 
 - The Mac opens the v2 listener on TCP 47616 on every interface (a free port if that one is in use). There is no reason
-  to bind to chosen addresses as v1 does: a peer that cannot complete the handshake gets nothing (like Syncthing's
+  to bind to chosen addresses as v1 did: a peer that cannot complete the handshake gets nothing (like Syncthing's
   22000).
 - The Mac advertises `_yardlet._tcp` over Bonjour. The instance name and the TXT `id` are a 16-character hash derived
   from the Mac's public key, so the Mac's name is not visible on the LAN. The phone makes the same hash from the Mac key
@@ -138,7 +137,6 @@ Wormhole](https://magic-wormhole.readthedocs.io/en/latest/welcome.html),
 
 - A Tailscale address is also one of the Mac's interfaces, so the v2 listener accepts it as is. When the VPN is on, the
   phone tries the saved Tailscale address as a direct route. Nothing else is needed.
-- The v1 listener (Tailscale addresses only, 47615, plain text) stays for v1 devices.
 
 ### 2.4 Yardlet relay server
 
@@ -156,8 +154,9 @@ Mac ──wss /v1/rooms/<room>/host──▶ Room(DO) ◀──wss /v1/rooms/<ro
   (`open`). After that it forwards binary frames both ways, adding and removing the number. The Mac keeps one Noise
   responder per connection. If the Mac is not there, the room answers the phone's upgrade request with 404.
 - **What it does not do:** store content, write content to logs or authenticate phones (anyone who knows the room ID can
-  come in, but the Mac's handshake cuts them off). Limits: 8 phone connections per room, 65,535 bytes per phone frame
-  (one Noise message), 10 seconds before authentication and 120 seconds for a silent connection.
+  come in, but the Mac's handshake cuts them off). Limits: 8 phone connections per room that the Mac answered, and
+  apart from those a few waiting for the Mac's first frame (2 per address, 8 per room, 15 seconds each), 65,535 bytes
+  per phone frame (one Noise message), 10 seconds before authentication and 120 seconds for a silent connection.
 - **Sleeping:** sockets are accepted through the Hibernation API, so when no messages pass, the DO can be evicted while
   the connections stay, and no duration charge accrues. The Mac's keepalive ping gets an automatic response
   (`ping`→`pong`), so it does not wake the DO.
@@ -222,9 +221,10 @@ account shows that person's Macs and lets them add a new phone. End-to-end encry
   4. Once allowed, that connection is authenticated at once and receives the list. With no answer within 2 minutes, or a
      refusal, the Mac drops it.
 - **Why there is a confirmation number:** if the account server swapped the Mac's public key (a server breach, or the
-  operator), the phone would talk to a fake Mac. Each side computes the number from the two public keys it holds, so a
-  swap makes the numbers on the two screens differ. That way the account server does not need to be trusted (the same
-  idea as KDE Connect's verification string and Signal's safety number).
+  operator), the phone would talk to a fake Mac. Each side computes the number from the two public keys it holds and a
+  random nonce from each side, and the phone commits to its nonce before it learns the Mac's (commit, then reveal, as in
+  Bluetooth's numeric comparison), so a swap makes the numbers on the two screens differ except by a one-in-a-million
+  chance. That way the account server does not need to be trusted. The Mac takes at most 5 link requests in 10 minutes.
 - **When away:** if the person is not at the Mac, a phone already connected approves. With no connected phone and nobody
   at the Mac, a new phone cannot be added. That is the safe side.
 - **Sign-in methods:** GitHub and Google come first (OAuth 2.0 authorization code with PKCE; the apps use browser
@@ -250,7 +250,7 @@ account shows that person's Macs and lets them add a new phone. End-to-end encry
   finishes or fails; a wait is resolved on the Mac (the notification is withdrawn, normal priority). When the phone app
   leaves the screen, it closes the connection and relies on notifications (with "Background notifications" on, it stays
   connected).
-- The content is the same JSON as v1's `attention` event, encrypted with ChaCha20-Poly1305 (the notification key, a
+- The content is the JSON of the `attention` event (REMOTE_PROTOCOL §5.2), encrypted with ChaCha20-Poly1305 (the notification key, a
   random nonce). FCM data messages are limited to 4 KB, so the summary is capped at 120 characters. Google and the relay
   see only the token, the size and the time.
 - A high-priority data message must lead to a visible notification, or its priority gets lowered (FCM docs). Waits and
@@ -485,7 +485,7 @@ nearby-device authentication remotely.
 - The phone app does only the frequent things, and does them well (seeing waiting tasks, approvals, answering questions,
   messages, reading conversations, new tasks). Pinned tasks sit at the top of the list so the coordinating task is easy
   to find. The Mac's settings screens are not brought to the phone.
-- "This must be handled on the Mac" is an honest marker, like v1's `moreOnMac`. It shows in one line what needs doing
+- "This must be handled on the Mac" is an honest marker, like `moreOnMac`. It shows in one line what needs doing
   (for example "Confirm with Touch ID on the Mac") and does not pretend the phone can do it.
 
 ### 6.3 Taking over a browser tab (design for the next step)
@@ -646,14 +646,13 @@ sidebar, and no boxed cards with badges or "01/02" number labels.
 - **Notifications:** "Approval requested · task title" / a one-line summary. Tapping opens that conversation, with the
   request above the composer.
 
-## 9. v1 compatibility
+## 9. v1 (removed)
 
-- The v1 listener, `pair`, `hello` and token devices stay as they are. The new requests (`answerQuestion`, `reviewPlan`,
-  `createTask`, `registerPush`) are accepted only on v2 connections. Approval items sent on a v1 connection keep only
-  the answers v1 knows, and the rest become `moreOnMac`.
-- The Mac's settings show only the v2 QR. v1 devices appear in the list as "Earlier app" and can be removed.
-- The new Android app does not speak v1, so it needs a new Mac build to connect. A v1 app already installed keeps
-  working with the current Mac.
+- v1 pairing has been removed; pair again with the current app. The Mac no longer runs the v1 listener or accepts
+  `pair` and `hello`, and when it reads its device list it drops the devices paired over v1 and saves the list without
+  them. A v1 app already installed no longer connects.
+- The Android app that speaks v2 needs a Mac build from 2026-10-24 or later; account linking (section 3.1) needs one
+  with the link nonce of REMOTE_PROTOCOL §12.1.
 
 ## 10. Security summary
 
@@ -667,14 +666,14 @@ sidebar, and no boxed cards with badges or "01/02" number labels.
 | Lost phone | Removing it on the Mac cuts it off at once, Android screen lock, only the public version of notifications on the lock screen | Someone with a lost, unlocked phone can operate it until it is removed, unless app lock (section 5.2, off by default) is on |
 | The Mac's keys leak | Keys are in the keychain (open only to the app's signature) | Malware running with the same user's rights is a risk, as it is for other Yardlet data |
 | Notification content | Encrypted with the notification key, which travels only over the secure channel after pairing | Google and the relay know that a notification came and when |
-| Credentials, account tokens, environment values | Not sent (same as v1) | — |
+| Credentials, account tokens, environment values | Not sent | — |
 
 ## 11. What stays on the Mac
 
 - While it is on: the v2 listener, the Bonjour advertisement and one outgoing connection to the relay. Turning it off
   closes all three at once, and the relay room disappears from memory.
 - What always stays (Yardlet's own data): `~/.yardlet/remote/devices.json` (phones' public keys, names, times,
-  notification tokens and keys, v1 token hashes), `audit.log` (command kinds and task IDs, no content) and keychain
+  notification tokens and keys), `audit.log` (command kinds and task IDs, no content) and keychain
   items (the Mac's Noise key and relay key, and the session token if signed in to an account). Nothing is written to
   harnesses, provider accounts or repositories.
 - Preventing sleep and screen lock is a power assertion held by the process, so macOS releases it when Yardlet quits.

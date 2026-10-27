@@ -3,9 +3,9 @@ import Foundation
 import XCTest
 @testable import YardletRemote
 
-/// Protocol v2 (docs/REMOTE_PROTOCOL.md §11–§17): the Noise IK vectors both the Mac and the phone app
+/// The protocol (docs/REMOTE_PROTOCOL.md §11–§17): the Noise IK vectors both the Mac and the phone app
 /// check byte for byte, pairing by QR and then by the phone's key, link requests a paired phone approves,
-/// what v1 phones still see, encrypted pushes to phones that are away, and one real socket round trip.
+/// encrypted pushes to phones that are away, and real socket round trips.
 final class RemoteSecureTests: XCTestCase {
     // MARK: - Vectors (§17)
 
@@ -112,7 +112,6 @@ final class RemoteSecureTests: XCTestCase {
         let devices = await harness.devices.all()
         XCTAssertEqual(devices.map(\.name), ["Pixel 9"])
         XCTAssertEqual(devices.first?.publicKey, RemoteEncoding.base64url(phoneKey.publicKey))
-        XCTAssertNil(devices.first?.tokenHash)
 
         // The same phone again, without the secret: its key is enough.
         let again = try await harness.phone(key: phoneKey, hello: RemoteHandshakeHello(name: "Pixel 9"))
@@ -157,11 +156,21 @@ final class RemoteSecureTests: XCTestCase {
         XCTAssertEqual(refusedWhileSignedOut.reply.error?.code, .linkUnavailable)
 
         await harness.server.setAcceptsLinks(true)
-        let newKey = RemoteKeyPair.generate()
-        let newPhone = try await harness.phone(key: newKey, hello: RemoteHandshakeHello(name: "Pixel 10", platform: "android", link: true))
-        XCTAssertEqual(newPhone.reply.pending, true)
-        let code = RemoteLinkCode.code(macKey: harness.identity.noise.publicKey, phoneKey: newKey.publicKey)
-        XCTAssertEqual(newPhone.reply.code, code)
+        // A phone that commits to no nonce is told to update.
+        let uncommitted = try await harness.phone(key: .generate(), hello: RemoteHandshakeHello(name: "Tablet", link: true))
+        XCTAssertEqual(uncommitted.reply.error?.code, .unsupportedVersion)
+        // Nothing is shown before the phone reveals its nonce, and a nonce other than the committed one ends it.
+        let changed = try await PipePhone.link(server: harness.server, macStatic: harness.identity.noise, name: "Tablet",
+                                               revealing: Data(RemoteRandom.bytes(32)))
+        XCTAssertEqual(changed.reveal?.error?.code, .badRequest)
+        try await changed.phone.waitUntilClosed(.unauthenticated)
+        let shownEarly = await harness.server.status.linkRequest
+        XCTAssertNil(shownEarly)
+
+        let (newPhone, linkCode, reveal) = try await PipePhone.link(server: harness.server, macStatic: harness.identity.noise,
+                                                                     name: "Pixel 10", platform: "android")
+        XCTAssertEqual(reveal?.ok, true)
+        let code = try XCTUnwrap(linkCode)
         XCTAssertEqual(code.count, 6)
         // Waiting: nothing but ping.
         let early = try await newPhone.request(#"{"id":"1","type":"snapshot"}"#)
@@ -186,67 +195,27 @@ final class RemoteSecureTests: XCTestCase {
         XCTAssertEqual(resolved.approved, true)
 
         // Refused from the Mac's Settings.
-        let declined = try await harness.phone(key: .generate(), hello: RemoteHandshakeHello(name: "Unknown", link: true))
+        let declined = try await PipePhone.link(server: harness.server, macStatic: harness.identity.noise, name: "Unknown").phone
         let waiting = await harness.server.status.linkRequest
         await harness.server.answerLink(try XCTUnwrap(waiting?.id), approve: false)
         _ = try await declined.event(.linkRefused)
         try await declined.waitUntilClosed(.revoked)
-    }
 
-    // MARK: - What each version sees (§15)
+        // A shown request outlives the time a connection has to authenticate.
+        let patient = try await PipePhone.link(server: harness.server, macStatic: harness.identity.noise, name: "Patient").phone
+        harness.clock.advance(by: 60)
+        await harness.server.sweep()
+        let stillWaiting = await harness.server.status.linkRequest
+        XCTAssertEqual(stillWaiting?.name, "Patient")
+        patient.disconnect()
+        try await Self.waitUntilNoLinkRequest(harness.server)
 
-    func testV1PhonesSeeOnlyTheAnswersTheyKnow() async throws {
-        let harness = try await SecureHarness()
-        var question = RemoteItem(id: "req:q1", turnId: "T1", kind: .approval)
-        question.requestId = "q1"
-        question.requestKind = "question"
-        question.status = "pending"
-        question.questionSteps = [RemoteQuestionStep(id: "q", text: "Which name?", options: [.init(label: "Juniper")])]
-        question.options = [RemoteProtocol.answerOption]
-        var header = RemoteItem(id: "turn:T1", turnId: "T1", kind: .turn)
-        header.status = "running"
-        await harness.bridge.setConversation(RemoteConversation(turns: [RemoteTurn(id: "T1", items: [header, question])]), for: "A")
-
-        let v2 = try await harness.pairedPhone()
-        let page2 = try await v2.request(#"{"id":"1","type":"subscribeTask","taskId":"A"}"#)
-        let asked2 = try XCTUnwrap(page2.items?.last)
-        XCTAssertEqual(asked2.options, ["answer"])
-        XCTAssertEqual(asked2.questionSteps?.first?.options.first?.label, "Juniper")
-
-        let (_, token) = await harness.devices.add(name: "Old phone")
-        let v1 = TestChannel()
-        v1.id = await harness.server.open(v1)
-        await harness.server.receive(Data(#"{"id":"h","type":"hello","protocolVersion":1,"token":"\#(token)"}"#.utf8), on: try XCTUnwrap(v1.id))
-        _ = try await v1.response("h")
-        await harness.server.receive(Data(#"{"id":"1","type":"subscribeTask","taskId":"A"}"#.utf8), on: try XCTUnwrap(v1.id))
-        let page1 = try await v1.response("1")
-        let asked1 = try XCTUnwrap(page1.items?.last)
-        XCTAssertEqual(asked1.options, [])
-        XCTAssertEqual(asked1.moreOnMac, true)
-        XCTAssertNil(asked1.questionSteps)
-        // v2 requests are unknown to a v1 connection.
-        await harness.server.receive(Data(#"{"id":"2","type":"createTask","projectId":"P","text":"Hi"}"#.utf8), on: try XCTUnwrap(v1.id))
-        let refused = try await v1.response("2")
-        XCTAssertEqual(refused.error?.code, .unknownType)
-        // So are the answers and fields v2 added to v1's own requests (§15.12).
-        await harness.server.receive(Data(#"{"id":"3","type":"answerApproval","taskId":"A","requestId":"r","answer":"allowForSession"}"#.utf8),
-                                     on: try XCTUnwrap(v1.id))
-        let session = try await v1.response("3")
-        XCTAssertEqual(session.error?.code, .badRequest)
-        // Nor does a v1 phone see what v2 added to tasks.
-        var snapshot = FakeBridge.snapshot
-        snapshot.tasks[0].acceptsImages = true
-        snapshot.tasks[0].steers = true
-        snapshot.followUp = .steer
-        await harness.bridge.setSnapshot(snapshot)
-        await harness.server.receive(Data(#"{"id":"4","type":"snapshot"}"#.utf8), on: try XCTUnwrap(v1.id))
-        let old = try await v1.response("4")
-        XCTAssertEqual(old.tasks?.first?.acceptsImages, nil)
-        XCTAssertEqual(old.tasks?.first?.steers, nil)
-        XCTAssertNil(old.followUp)
-        let new = try await v2.request(#"{"id":"5","type":"snapshot"}"#)
-        XCTAssertEqual(new.tasks?.first?.acceptsImages, true)
-        XCTAssertEqual(new.followUp, .steer)
+        // Five requests in ten minutes; the next one waits.
+        let fifth = try await PipePhone.link(server: harness.server, macStatic: harness.identity.noise, name: "Fifth").phone
+        fifth.disconnect()
+        try await Self.waitUntilNoLinkRequest(harness.server)
+        let limited = try await PipePhone.link(server: harness.server, macStatic: harness.identity.noise, name: "Sixth")
+        XCTAssertEqual(limited.phone.reply.error?.code, .rateLimited)
     }
 
     func testNewRequestsReachTheBridge() async throws {
@@ -456,6 +425,8 @@ final class RemoteSecureTests: XCTestCase {
         let phoneEphemeral = try RemoteKeyPair(privateKey: key(0x70))
         let macEphemeral = try RemoteKeyPair(privateKey: key(0xA0))
         let relayKey = key(0xD0)
+        let linkMacNonce = key(0x60)
+        let linkPhoneNonce = key(0x90)
         let identity = try RemoteIdentity(noisePrivateKey: mac.privateKey, relayPrivateKey: relayKey)
         let secret = key(0x33)
 
@@ -502,7 +473,11 @@ final class RemoteSecureTests: XCTestCase {
             "relayPublicKey": RemoteEncoding.hex(identity.relayPublicKey),
             "room": identity.room,
             "discoveryId": identity.discoveryID,
-            "linkCode": RemoteLinkCode.code(macKey: mac.publicKey, phoneKey: phone.publicKey),
+            "linkMacNonce": RemoteEncoding.hex(linkMacNonce),
+            "linkPhoneNonce": RemoteEncoding.hex(linkPhoneNonce),
+            "linkCommit": RemoteEncoding.base64url(RemoteLinkCode.commitment(phoneKey: phone.publicKey, nonce: linkPhoneNonce)),
+            "linkCode": RemoteLinkCode.code(macKey: mac.publicKey, phoneKey: phone.publicKey, macNonce: linkMacNonce,
+                                            phoneNonce: linkPhoneNonce),
             "pushKey": RemoteEncoding.hex(pushKey),
             "pushKeyId": RemotePushSeal.keyID(pushKey),
             "pushNonce": RemoteEncoding.hex(pushNonce),
@@ -514,6 +489,14 @@ final class RemoteSecureTests: XCTestCase {
                                                  hosts: ["192.168.1.20:47616", "100.64.12.34:47616"],
                                                  relayURL: "wss://relay.example.test", room: identity.room).url?.absoluteString ?? ""
         ]
+    }
+
+    static func waitUntilNoLinkRequest(_ server: RemoteServer) async throws {
+        for _ in 0..<200 {
+            if await server.status.linkRequest == nil { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw TestChannel.TimedOut(description: "The link request stayed")
     }
 
     static func waitForPort(_ listener: RemoteSecureListener) async throws -> UInt16 {
@@ -624,6 +607,23 @@ final class PipePhone: @unchecked Sendable {
         phone.send = send
         phone.receive = receive
         return phone
+    }
+
+    /// Asks to link (§12.1): commits to a nonce in message 1 and reveals it once message 2 is in. The code is
+    /// the one the phone shows; nil when the Mac refused in message 2.
+    static func link(server: RemoteServer, macStatic: RemoteKeyPair, phoneKey: RemoteKeyPair = .generate(), name: String,
+                     platform: String? = nil, nonce: Data = Data(RemoteRandom.bytes(32)),
+                     revealing revealed: Data? = nil) async throws -> (phone: PipePhone, code: String?, reveal: RemoteResponse?) {
+        let commitment = RemoteLinkCode.commitment(phoneKey: phoneKey.publicKey, nonce: nonce)
+        let hello = RemoteHandshakeHello(name: name, platform: platform, link: true, linkCommit: RemoteEncoding.base64url(commitment))
+        let phone = try await connect(server: server, macStatic: macStatic, phoneKey: phoneKey, hello: hello,
+                                      targetKey: macStatic.publicKey, expectsReply: true)
+        guard phone.reply.pending == true, let macNonce = phone.reply.linkNonce.flatMap(RemoteEncoding.data(base64url:)) else {
+            return (phone, nil, nil)
+        }
+        let response = try await phone.request(#"{"id":"reveal","type":"revealLink","nonce":"\#(RemoteEncoding.base64url(revealed ?? nonce))"}"#)
+        let code = RemoteLinkCode.code(macKey: macStatic.publicKey, phoneKey: phoneKey.publicKey, macNonce: macNonce, phoneNonce: nonce)
+        return (phone, code, response)
     }
 
     private var transport: FramePipe { pipe }

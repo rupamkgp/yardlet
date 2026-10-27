@@ -1,20 +1,18 @@
 import Foundation
 
-// The wire contract of the phone remote (docs/REMOTE_PROTOCOL.md): versioned JSON over a WebSocket.
+// The wire contract of the phone remote (docs/REMOTE_PROTOCOL.md): JSON inside a Noise channel (§11–§13).
 // Client requests are `{id, type, ...}`, responses `{re, ok, error?, ...}`, events `{event, seq, ...}`.
 // Everything here is plain data, so it encodes and decodes without a connection.
 
 public enum RemoteProtocol {
-    public static let version = 1
-    /// The one fixed port the Mac listens on.
-    public static let defaultPort: UInt16 = 47615
-    /// The largest frame a client may send; a larger one closes the connection (1009).
+    /// The largest message a phone may send before it is a device (a link request waiting); a larger one
+    /// closes the connection (1009).
     public static let maxClientFrameBytes = 65_536
     /// The longest message `sendMessage` takes, in characters.
     public static let maxMessageCharacters = 32_000
     /// The QR code's URL scheme.
     public static let pairingScheme = "yardlet-remote"
-    /// Protocol v2: the same messages inside a Noise channel, over any path (§11).
+    /// The protocol: messages inside a Noise channel, over any path (§11). Protocol 1 has been removed.
     public static let secureVersion = 2
     /// The port the Mac's v2 listener tries first, on every interface.
     public static let securePort: UInt16 = 47616
@@ -48,7 +46,6 @@ public enum RemoteErrorCode: String, Codable, Sendable, CaseIterable {
     case unknownType
     case unsupportedVersion
     case unauthenticated
-    case invalidToken
     case pairingUnavailable
     case pairingInvalid
     case notFound
@@ -199,17 +196,6 @@ public struct RemoteTask: Codable, Equatable, Sendable {
         self.pinned = pinned
         self.lastActivityAt = lastActivityAt
         self.parentTaskId = parentTaskId
-    }
-}
-
-extension RemoteTask {
-    /// The task as a v1 phone gets it (§15.12): without the fields v2 added since 2026-10-27.
-    public func forVersion1() -> RemoteTask {
-        var task = self
-        task.acceptsImages = nil
-        task.steers = nil
-        task.acceptsFiles = nil
-        return task
     }
 }
 
@@ -405,33 +391,6 @@ public struct RemoteItem: Codable, Equatable, Sendable {
     }
 }
 
-extension RemoteItem {
-    /// The item as a v1 phone gets it (§15.12): only the answers v1 knows, `moreOnMac` for the rest, and
-    /// none of v2's fields.
-    public func forVersion1() -> RemoteItem {
-        var item = self
-        item.questionSteps = nil
-        item.hasDetail = nil
-        item.suggestionId = nil
-        item.suggestionState = nil
-        item.startedTaskId = nil
-        item.optionTitles = nil
-        item.macNote = nil
-        item.autoContinue = nil
-        item.choices = nil
-        item.formFields = nil
-        guard let options else { return item }
-        if kind == .approval {
-            let known = options.filter { RemoteApprovalAnswer(rawValue: $0)?.isVersion1 == true }
-            if known.count != options.count { item.moreOnMac = true }
-            item.options = known
-        } else {
-            item.options = nil
-        }
-        return item
-    }
-}
-
 /// Text cut to what the protocol allows for a field.
 public enum RemoteText {
     /// The text and whether it was cut. Cuts at a character boundary.
@@ -507,11 +466,8 @@ public struct RemoteChange: Codable, Equatable, Sendable {
 public enum RemoteApprovalAnswer: String, Codable, Sendable {
     case allowOnce
     case deny
-    /// v2: the narrowest allow that lasts for the task's session (§15.13).
+    /// The narrowest allow that lasts for the task's session (§15.13).
     case allowForSession
-
-    /// An answer protocol 1 knows.
-    public var isVersion1: Bool { self != .allowForSession }
 }
 
 /// Where a message sent while a turn runs goes (§15.15).
@@ -701,8 +657,6 @@ public enum RemoteSuggestionAction: String, Codable, Sendable, CaseIterable {
 
 /// A request a client sends, after decoding.
 public enum RemoteRequest: Equatable, Sendable {
-    case pair(code: String, deviceName: String, protocolVersion: Int)
-    case hello(token: String, protocolVersion: Int)
     case snapshot
     case subscribeTask(taskID: String)
     case loadOlder(taskID: String, cursor: String)
@@ -738,11 +692,11 @@ public enum RemoteRequest: Equatable, Sendable {
     case setPinned(taskID: String, pinned: Bool)
     case archiveTask(taskID: String)
     case answerLink(requestID: String, approve: Bool)
+    /// A link request's first message: the nonce message 1 committed to (§12.1).
+    case revealLink(nonce: Data)
 
     public var type: String {
         switch self {
-        case .pair: "pair"
-        case .hello: "hello"
         case .snapshot: "snapshot"
         case .subscribeTask: "subscribeTask"
         case .loadOlder: "loadOlder"
@@ -771,6 +725,7 @@ public enum RemoteRequest: Equatable, Sendable {
         case .setPinned: "setPinned"
         case .archiveTask: "archiveTask"
         case .answerLink: "answerLink"
+        case .revealLink: "revealLink"
         }
     }
 
@@ -782,8 +737,8 @@ public enum RemoteRequest: Equatable, Sendable {
              let .reviewPlan(id, _, _, _), let .itemDetail(id, _), let .actOnSuggestion(id, _, _), let .setPinned(id, _),
              let .archiveTask(id), let .limitAccounts(id), let .continueWithAccount(id, _), let .setAutoContinue(id, _),
              let .actOnQueued(id, _, _), let .answerHandoff(id, _, _), let .chooseAnswer(id, _, _, _, _): id
-        case .pair, .hello, .snapshot, .ping, .createTask, .newTaskOptions, .registerPush, .unregisterPush, .forgetDevice,
-             .answerLink, .uploadFile: nil
+        case .snapshot, .ping, .createTask, .newTaskOptions, .registerPush, .unregisterPush, .forgetDevice,
+             .answerLink, .uploadFile, .revealLink: nil
         }
     }
 
@@ -794,18 +749,6 @@ public enum RemoteRequest: Equatable, Sendable {
         case .sendMessage, .answerApproval, .stopTurn, .markRead, .answerQuestion, .reviewPlan, .createTask,
              .actOnSuggestion, .setPinned, .archiveTask, .answerLink, .continueWithAccount, .setAutoContinue, .actOnQueued,
              .answerHandoff, .chooseAnswer: true
-        default: false
-        }
-    }
-
-    /// Only a v2 connection may send it (§15.12).
-    public var isSecureOnly: Bool {
-        switch self {
-        case .answerQuestion, .reviewPlan, .createTask, .registerPush, .unregisterPush, .forgetDevice, .itemDetail,
-             .actOnSuggestion, .setPinned, .archiveTask, .answerLink, .newTaskOptions, .limitAccounts, .continueWithAccount,
-             .setAutoContinue, .actOnQueued, .answerHandoff, .chooseAnswer, .uploadFile: true
-        case let .sendMessage(_, _, images, followUp, files): !images.isEmpty || followUp != nil || !files.isEmpty
-        case let .answerApproval(_, _, answer, note): !answer.isVersion1 || note != nil
         default: false
         }
     }
@@ -829,10 +772,7 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
     private struct Wire: Codable {
         var id: String?
         var type: String?
-        var protocolVersion: Int?
         var token: String?
-        var code: String?
-        var deviceName: String?
         var taskId: String?
         var cursor: String?
         var text: String?
@@ -865,6 +805,7 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
         var size: Int?
         var offset: Int?
         var data: String?
+        var nonce: String?
     }
 
     private struct WireImage: Codable {
@@ -903,15 +844,6 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
         guard let type = wire.type else { return fail(.badRequest, "Missing type") }
         let request: RemoteRequest
         switch type {
-        case "pair":
-            guard let code = required(wire.code) else { return fail(.badRequest, "Missing code") }
-            guard let version = wire.protocolVersion else { return fail(.badRequest, "Missing protocolVersion") }
-            let name = wire.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            request = .pair(code: code, deviceName: String(name.prefix(64)), protocolVersion: version)
-        case "hello":
-            guard let token = required(wire.token) else { return fail(.badRequest, "Missing token") }
-            guard let version = wire.protocolVersion else { return fail(.badRequest, "Missing protocolVersion") }
-            request = .hello(token: token, protocolVersion: version)
         case "snapshot":
             request = .snapshot
         case "ping":
@@ -1055,6 +987,11 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
                 return fail(.badRequest, "Missing requestId or approve")
             }
             request = .answerLink(requestID: requestID, approve: approve)
+        case "revealLink":
+            guard let nonce = wire.nonce.flatMap(RemoteEncoding.data(base64url:)), nonce.count == RemoteLinkCode.nonceLength else {
+                return fail(.badRequest, "Missing or invalid nonce")
+            }
+            request = .revealLink(nonce: nonce)
         default:
             return fail(.unknownType, "Unknown type \(type)")
         }
@@ -1065,13 +1002,6 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
     public func encoded() -> Data {
         var wire = Wire(id: id, type: request.type)
         switch request {
-        case let .pair(code, deviceName, version):
-            wire.code = code
-            wire.deviceName = deviceName
-            wire.protocolVersion = version
-        case let .hello(token, version):
-            wire.token = token
-            wire.protocolVersion = version
         case .snapshot, .ping:
             break
         case let .subscribeTask(taskID), let .unsubscribeTask(taskID), let .stopTurn(taskID), let .markRead(taskID):
@@ -1160,6 +1090,8 @@ public struct RemoteRequestEnvelope: Equatable, Sendable {
         case let .answerLink(requestID, approve):
             wire.requestId = requestID
             wire.approve = approve
+        case let .revealLink(nonce):
+            wire.nonce = RemoteEncoding.base64url(nonce)
         }
         return (try? RemoteJSON.encoder.encode(wire)) ?? Data()
     }
@@ -1177,7 +1109,7 @@ public struct RemoteServerInfo: Codable, Equatable, Sendable {
     public var appVersion: String
     public var protocolVersion: Int
 
-    public init(name: String, app: String = "Yardlet", appVersion: String, protocolVersion: Int = RemoteProtocol.version) {
+    public init(name: String, app: String = "Yardlet", appVersion: String, protocolVersion: Int = RemoteProtocol.secureVersion) {
         self.name = name
         self.app = app
         self.appVersion = appVersion
@@ -1192,7 +1124,6 @@ public struct RemoteResponse: Codable, Equatable, Sendable {
     public var error: RemoteError?
 
     public var deviceId: String?
-    public var token: String?
     public var server: RemoteServerInfo?
     public var projects: [RemoteProject]?
     public var tasks: [RemoteTask]?
@@ -1455,15 +1386,18 @@ public struct RemoteHandshakeHello: Codable, Equatable, Sendable {
     public var pair: String?
     /// Asks to link through the account (§12.1).
     public var link: Bool?
+    /// With `link`: the commitment to the nonce the phone reveals once message 2 is in (§12.1), base64url.
+    public var linkCommit: String?
 
     public init(v: Int = RemoteProtocol.secureVersion, name: String? = nil, platform: String? = nil,
-                appVersion: String? = nil, pair: String? = nil, link: Bool? = nil) {
+                appVersion: String? = nil, pair: String? = nil, link: Bool? = nil, linkCommit: String? = nil) {
         self.v = v
         self.name = name
         self.platform = platform
         self.appVersion = appVersion
         self.pair = pair
         self.link = link
+        self.linkCommit = linkCommit
     }
 }
 
@@ -1485,7 +1419,8 @@ public struct RemoteHandshakeReply: Codable, Equatable, Sendable {
     public var serverTime: Int64?
     public var paired: Bool?
     public var pending: Bool?
-    public var code: String?
+    /// With `pending`: the Mac's nonce for the link code (§12.1), base64url.
+    public var linkNonce: String?
     public var server: RemoteServerInfo?
     public var direct: [String]?
     public var relay: Relay?

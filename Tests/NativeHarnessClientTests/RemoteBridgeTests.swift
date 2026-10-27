@@ -91,9 +91,8 @@ final class RemoteBridgeTests: XCTestCase {
         XCTAssertEqual(turn.items[1].foldsWork, true)
     }
 
-    /// A v2 phone answers questions and plan reviews the way the Mac's card does (§15.2–§15.4); a v1
-    /// phone still sees them as the Mac's to answer.
-    func testQuestionsAndPlanReviewsAreAnsweredFromV2Phones() throws {
+    /// A phone answers questions and plan reviews the way the Mac's card does (§15.2–§15.4).
+    func testQuestionsAndPlanReviewsAreAnsweredFromPhones() throws {
         let question = PermissionRequest(
             id: "question-1", title: "Question", detail: nil, command: nil,
             structured: .questions([PermissionQuestion(question: "Which layout?", options: [.init(label: "Grid"), .init(label: "List")],
@@ -105,8 +104,6 @@ final class RemoteBridgeTests: XCTestCase {
             XCTAssertEqual(item.requestKind, kind)
             XCTAssertEqual(item.options, options)
             XCTAssertNil(item.moreOnMac)
-            XCTAssertEqual(item.forVersion1().options, [String]())
-            XCTAssertEqual(item.forVersion1().moreOnMac, true)
         }
         let asked = try XCTUnwrap(RemoteConversationProjection.conversation(Self.waiting(on: question), workspaceURL: nil)
             .turns.last?.items.last)
@@ -171,9 +168,6 @@ final class RemoteBridgeTests: XCTestCase {
         let item = RemoteConversationProjection.request(try XCTUnwrap(pending(session)), turnID: "t", inWork: false)
         XCTAssertEqual(item.optionTitles?["allowForSession"], "Allow and switch to Accept edits mode for this session")
         XCTAssertNil(item.moreOnMac)
-        XCTAssertEqual(item.forVersion1().options, ["allowOnce", "deny"], "A v1 phone never sees the session's allow")
-        XCTAssertEqual(item.forVersion1().moreOnMac, true)
-        XCTAssertNil(item.forVersion1().optionTitles)
         let saved = [
             PermissionRequestAction(id: "allow", label: "Allow", decision: .allow, kind: "allow_once"),
             PermissionRequestAction(id: "allow_always", label: "Always allow in this project (saved to .claude/settings.local.json)",
@@ -187,7 +181,6 @@ final class RemoteBridgeTests: XCTestCase {
         XCTAssertEqual(kept.choices?.filter { $0.standing == true }.map(\.title),
                        ["Always allow in this project (saved to .claude/settings.local.json)"])
         XCTAssertEqual(item.choices?.contains { $0.standing == true }, false, "Allow for session ends with the task")
-        XCTAssertNil(kept.forVersion1().choices)
         XCTAssertTrue(RemoteApprovalPolicy.leavesStandingRule(.codex(.mcpElicitation(action: .accept, meta: .object(["persist": .string("always")])))))
         XCTAssertFalse(RemoteApprovalPolicy.leavesStandingRule(.codex(.mcpElicitation(action: .accept, meta: .object(["persist": .string("session")])))))
         XCTAssertTrue(RemoteApprovalPolicy.leavesStandingRule(.codex(.command(.acceptWithExecpolicyAmendment(["swift", "test"])))))

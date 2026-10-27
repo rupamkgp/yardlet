@@ -60,10 +60,8 @@ final class RemoteAccountTests: XCTestCase {
         XCTAssertEqual(registered.name, "MacBook Pro")
 
         // Signed in: a phone of the account may ask to link.
-        let asking = try await PipePhone.connect(server: service.server, macStatic: identity.noise, phoneKey: .generate(),
-                                                 hello: RemoteHandshakeHello(name: "Pixel 10", link: true),
-                                                 targetKey: identity.noise.publicKey, expectsReply: true)
-        XCTAssertEqual(asking.reply.pending, true)
+        let asking = try await PipePhone.link(server: service.server, macStatic: identity.noise, name: "Pixel 10")
+        XCTAssertEqual(asking.reveal?.ok, true)
         await service.answerLink(approve: false)
 
         await service.signOut()

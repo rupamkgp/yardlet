@@ -2,121 +2,53 @@ import Foundation
 import XCTest
 @testable import YardletRemote
 
-/// The remote server over channels the test holds (no sockets): authentication refuses everything
-/// but a paired token or an open pairing, a pairing works once and not after it expires or after
-/// wrong codes, snapshots and their change and attention events, conversation pages and changes, and
-/// commands reaching the bridge with their audit lines — never the message text.
+/// The remote server over channels the test holds (no sockets, no Noise: a channel is handed over as its
+/// handshake would hand it): connections that never prove themselves, removed devices and their pairing,
+/// connection limits, devices paired with protocol 1 dropped from the file, snapshots and their change and
+/// attention events, conversation pages and changes, and commands reaching the bridge with their audit
+/// lines — never the message text.
 final class RemoteServerTests: XCTestCase {
-    func testAConnectionMustAuthenticateFirst() async throws {
-        let harness = try await ServerHarness()
-        let channel = await harness.connect()
-        await harness.send(#"{"id":"1","type":"snapshot"}"#, on: channel)
-        let response = try await channel.response("1")
-        XCTAssertEqual(response.error?.code, .unauthenticated)
-        try await channel.waitUntilClosed(.unauthenticated)
-
-        let garbage = await harness.connect()
-        await harness.send("{", on: garbage)
-        try await garbage.waitUntilClosed(.unauthenticated)
-    }
-
-    func testAWrongOrMissingTokenIsRefused() async throws {
-        let harness = try await ServerHarness()
-        let wrong = await harness.connect()
-        await harness.send(#"{"id":"1","type":"hello","protocolVersion":1,"token":"not-a-device"}"#, on: wrong)
-        let awaited1 = try await wrong.response("1").error?.code
-        XCTAssertEqual(awaited1, .invalidToken)
-        try await wrong.waitUntilClosed(.unauthenticated)
-
-        let missing = await harness.connect()
-        await harness.send(#"{"id":"2","type":"hello","protocolVersion":1}"#, on: missing)
-        let awaited2 = try await missing.response("2").error?.code
-        XCTAssertEqual(awaited2, .badRequest)
-        try await missing.waitUntilClosed(.unauthenticated)
-
-        let future = await harness.connect()
-        let (_, token) = await harness.devices.add(name: "Pixel")
-        await harness.send(#"{"id":"3","type":"hello","protocolVersion":2,"token":"\#(token)"}"#, on: future)
-        let awaited3 = try await future.response("3").error?.code
-        XCTAssertEqual(awaited3, .unsupportedVersion)
-        try await future.waitUntilClosed(.unsupportedVersion)
-    }
-
-    func testAPairingWorksOnceAndItsTokenThenAuthenticates() async throws {
-        let harness = try await ServerHarness()
-        let ticket = await harness.server.openPairing()
-        let phone = await harness.connect()
-        await harness.send(#"{"id":"1","type":"pair","protocolVersion":1,"code":"\#(ticket.displayCode.lowercased())","deviceName":"Pixel 9"}"#, on: phone)
-        let paired = try await phone.response("1")
-        XCTAssertTrue(paired.ok)
-        let token = try XCTUnwrap(paired.token)
-        XCTAssertEqual(paired.server?.protocolVersion, 1)
-        // Authenticated by the pairing itself.
-        await harness.send(#"{"id":"2","type":"ping"}"#, on: phone)
-        let awaited4 = try await phone.response("2").pong
-        XCTAssertEqual(awaited4, true)
-
-        // Reused: the secret is spent.
-        let second = await harness.connect()
-        await harness.send(#"{"id":"1","type":"pair","protocolVersion":1,"code":"\#(ticket.code)","deviceName":"Other"}"#, on: second)
-        let awaited5 = try await second.response("1").error?.code
-        XCTAssertEqual(awaited5, .pairingUnavailable)
-
-        XCTAssertEqual(paired.serverTime, RemoteJSON.milliseconds(RemoteTestClock().now))
-        let later = await harness.connect()
-        await harness.send(#"{"id":"1","type":"hello","protocolVersion":1,"token":"\#(token)"}"#, on: later)
-        let hello = try await later.response("1")
-        XCTAssertTrue(hello.ok)
-        XCTAssertEqual(hello.serverTime, RemoteJSON.milliseconds(RemoteTestClock().now))
-        XCTAssertEqual(hello.deviceId, paired.deviceId)
-        let devices = await harness.devices.all()
-        XCTAssertEqual(devices.map(\.name), ["Pixel 9"])
-        let status = await harness.server.status
-        XCTAssertEqual(status.pairedDeviceID, paired.deviceId)
-        XCTAssertNil(status.pairing)
-    }
-
-    func testAnExpiredPairingIsRefused() async throws {
+    func testUnprovenAndQuietConnectionsAreClosed() async throws {
         let clock = RemoteTestClock()
         let harness = try await ServerHarness(clock: clock)
-        let ticket = await harness.server.openPairing(lifetime: 300)
-        clock.advance(by: 301)
-        let phone = await harness.connect()
-        await harness.send(#"{"id":"1","type":"pair","protocolVersion":1,"code":"\#(ticket.code)","deviceName":"Pixel"}"#, on: phone)
-        let awaited6 = try await phone.response("1").error?.code
-        XCTAssertEqual(awaited6, .pairingUnavailable)
-        let devices = await harness.devices.all()
-        XCTAssertTrue(devices.isEmpty)
-    }
-
-    func testWrongCodesCloseThePairing() async throws {
-        let harness = try await ServerHarness()
-        let ticket = await harness.server.openPairing()
-        let phone = await harness.connect()
-        for attempt in 1...5 {
-            await harness.send(#"{"id":"\#(attempt)","type":"pair","protocolVersion":1,"code":"00000-00000","deviceName":"Guess"}"#, on: phone)
-            let awaited7 = try await phone.response("\(attempt)").error?.code
-            XCTAssertEqual(awaited7, .pairingInvalid)
-        }
-        await harness.send(#"{"id":"6","type":"pair","protocolVersion":1,"code":"\#(ticket.code)","deviceName":"Late"}"#, on: phone)
-        let awaited8 = try await phone.response("6").error?.code
-        XCTAssertEqual(awaited8, .pairingUnavailable)
-        let audit = harness.audit.entries().map(\.result)
-        XCTAssertEqual(audit.filter { $0 == "pairingInvalid" }.count, 5)
-    }
-
-    func testUnauthenticatedAndQuietConnectionsAreClosed() async throws {
-        let clock = RemoteTestClock()
-        let harness = try await ServerHarness(clock: clock)
-        let silent = await harness.connect()
+        // A handshake whose phone never sends a message (message 1 sent again by someone else) does not count
+        // as the device's connection, and closes.
+        let replayed = try await harness.authenticatedPhone(proving: false)
+        let shown = await harness.server.status.connectedDeviceIDs
+        XCTAssertTrue(shown.isEmpty)
         let phone = try await harness.authenticatedPhone()
-        clock.advance(by: 11)
+        let connected = await harness.server.status.connectedDeviceIDs
+        XCTAssertEqual(connected.count, 1)
+        clock.advance(by: 31)
         await harness.server.sweep()
-        try await silent.waitUntilClosed(.idle)
+        try await replayed.waitUntilClosed(.idle)
         XCTAssertFalse(phone.isClosed)
         clock.advance(by: 80)
         await harness.server.sweep()
         try await phone.waitUntilClosed(.idle)
+    }
+
+    func testDevicesPairedWithTheFirstProtocolAreDropped() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "remote-devices-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appending(path: "devices.json")
+        // The same phone paired once with each protocol, under the same name.
+        try Data(#"""
+        {"version": 2, "devices": [
+          {"id": "OLD-PHONE", "name": "Pixel 9", "tokenHash": "\#(String(repeating: "a", count: 64))",
+           "createdAt": "2026-10-01T09:00:00Z", "lastSeenAt": "2026-10-20T09:00:00Z"},
+          {"id": "NEW-PHONE", "name": "Pixel 9", "publicKey": "\#(RemoteEncoding.base64url(Data(repeating: 7, count: 32)))",
+           "platform": "android", "createdAt": "2026-10-21T09:00:00Z", "lastSeenAt": "2026-10-22T09:00:00Z"}
+        ]}
+        """#.utf8).write(to: file)
+        let devices = await RemoteDeviceStore(fileURL: file).all()
+        XCTAssertEqual(devices.map(\.id), ["NEW-PHONE"])
+        XCTAssertEqual(devices.first?.platform, "android")
+        // Written back without it, so it does not come back.
+        let reread = await RemoteDeviceStore(fileURL: file).all()
+        XCTAssertEqual(reread, devices)
+        XCTAssertFalse(try String(contentsOf: file, encoding: .utf8).contains("tokenHash"))
     }
 
     func testTheSnapshotThenItsChangesAndAttention() async throws {
@@ -297,22 +229,34 @@ final class RemoteServerTests: XCTestCase {
         XCTAssertEqual(awaited20, .rateLimited)
     }
 
-    func testRemovingADeviceDisconnectsIt() async throws {
+    func testRemovingADeviceDisconnectsItAndEndsItsPairing() async throws {
         let harness = try await ServerHarness()
-        let (device, token) = await harness.devices.add(name: "Pixel")
-        let phone = await harness.connect()
-        await harness.send(#"{"id":"1","type":"hello","protocolVersion":1,"token":"\#(token)"}"#, on: phone)
-        let awaited21 = try await phone.response("1").ok
-        XCTAssertTrue(awaited21)
+        let ticket = await harness.server.openPairing()
+        let key = Data(RemoteRandom.bytes(32))
+        let pairing = RemoteHandshakeHello(name: "Pixel", pair: RemoteEncoding.base64url(ticket.secret))
+        let phone = TestChannel()
+        guard case let .accepted(id, reply) = await harness.server.acceptHandshake(pairing, publicKey: key, channel: phone, path: .local) else {
+            return XCTFail("The pairing was refused")
+        }
+        phone.id = id
+        XCTAssertEqual(reply.paired, true)
+        await harness.send(#"{"id":"1","type":"ping"}"#, on: phone)
+        _ = try await phone.response("1")
+        let deviceID = try XCTUnwrap(reply.deviceId)
         let connected = await harness.server.status.connectedDeviceIDs
-        XCTAssertEqual(connected, [device.id])
-        await harness.server.revoke(device.id)
+        XCTAssertEqual(connected, [deviceID])
+
+        await harness.server.revoke(deviceID)
         _ = try await phone.event(.revoked)
         try await phone.waitUntilClosed(.revoked)
-        let again = await harness.connect()
-        await harness.send(#"{"id":"1","type":"hello","protocolVersion":1,"token":"\#(token)"}"#, on: again)
-        let awaited22 = try await again.response("1").error?.code
-        XCTAssertEqual(awaited22, .invalidToken)
+        let again = await harness.server.acceptHandshake(RemoteHandshakeHello(name: "Pixel"), publicKey: key, channel: TestChannel(), path: .local)
+        guard case let .refused(refused, code) = again else { return XCTFail("A removed key connected") }
+        XCTAssertEqual(refused.error?.code, .unknownDevice)
+        XCTAssertEqual(code, .revoked)
+        // Nor does the secret it spent pair the same key again.
+        let repaired = await harness.server.acceptHandshake(pairing, publicKey: key, channel: TestChannel(), path: .local)
+        guard case let .refused(stillRefused, _) = repaired else { return XCTFail("A removed key paired again") }
+        XCTAssertEqual(stillRefused.error?.code, .pairingUnavailable)
     }
 
     func testTurningTheRemoteOffClosesEveryConnection() async throws {
@@ -325,10 +269,25 @@ final class RemoteServerTests: XCTestCase {
     }
 
     func testTooManyConnectionsAreTurnedAway() async throws {
-        let harness = try await ServerHarness()
-        for _ in 0..<8 { _ = await harness.connect() }
-        let ninth = await harness.connect(expectingID: false)
-        try await ninth.waitUntilClosed(.unavailable)
+        let clock = RemoteTestClock()
+        let harness = try await ServerHarness(clock: clock)
+        // Unproven connections make room for a new one: the oldest closes.
+        var waiting: [TestChannel] = []
+        for _ in 0..<8 {
+            waiting.append(try await harness.authenticatedPhone(proving: false))
+            clock.advance(by: 1)
+        }
+        _ = try await harness.authenticatedPhone(proving: false)
+        try await waiting[0].waitUntilClosed(.unavailable)
+        XCTAssertFalse(waiting[1].isClosed)
+        // Eight proven ones turn the next one away.
+        for _ in 0..<8 { _ = try await harness.authenticatedPhone() }
+        let key = Data(RemoteRandom.bytes(32))
+        _ = await harness.devices.addSecure(name: "Ninth", publicKey: key, platform: nil)
+        let ninth = await harness.server.acceptHandshake(RemoteHandshakeHello(name: "Ninth"), publicKey: key, channel: TestChannel(), path: .local)
+        guard case let .refused(reply, code) = ninth else { return XCTFail("A ninth connection was taken") }
+        XCTAssertEqual(reply.error?.code, .unavailable)
+        XCTAssertEqual(code, .unavailable)
     }
 }
 
@@ -464,24 +423,26 @@ struct ServerHarness {
         await server.start()
     }
 
-    func connect(expectingID: Bool = true) async -> TestChannel {
-        let channel = TestChannel()
-        channel.id = await server.open(channel)
-        if expectingID { XCTAssertNotNil(channel.id) }
-        return channel
-    }
-
     func send(_ text: String, on channel: TestChannel) async {
         guard let id = channel.id else { return }
         await server.receive(Data(text.utf8), on: id)
     }
 
-    func authenticatedPhone() async throws -> TestChannel {
-        let (_, token) = await devices.add(name: "Phone")
-        let phone = await connect()
-        await send(#"{"id":"hello","type":"hello","protocolVersion":1,"token":"\#(token)"}"#, on: phone)
-        let awaited24 = try await phone.response("hello").ok
-        XCTAssertTrue(awaited24)
+    /// A paired phone's connection, handed over as its handshake would. `proving` sends its first message,
+    /// which makes the connection count as the device's.
+    func authenticatedPhone(proving: Bool = true) async throws -> TestChannel {
+        let key = Data(RemoteRandom.bytes(32))
+        _ = await devices.addSecure(name: "Phone", publicKey: key, platform: nil)
+        let phone = TestChannel()
+        guard case let .accepted(id, _) = await server.acceptHandshake(RemoteHandshakeHello(name: "Phone"), publicKey: key,
+                                                                      channel: phone, path: .local) else {
+            throw TestChannel.TimedOut(description: "The handshake was refused")
+        }
+        phone.id = id
+        if proving {
+            await send(#"{"id":"proof","type":"ping"}"#, on: phone)
+            _ = try await phone.response("proof")
+        }
         return phone
     }
 }

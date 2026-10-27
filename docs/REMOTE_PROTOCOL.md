@@ -1,48 +1,27 @@
 # Yardlet Remote Protocol
 
-Status: v1 and v2 contract. The Mac side (Yardlet) implements it in `Sources/YardletRemote` and
+Status: the contract (protocol 2; protocol 1 has been removed, §1). The Mac side (Yardlet) implements it in `Sources/YardletRemote` and
 `Sources/NativeHarnessClient/Remote`; the phone apps implement the client side against this file; the relay
 in `relay/` implements §14. The design is in [REMOTE_V2_DESIGN](REMOTE_V2_DESIGN.md).
 
 A phone watches and drives the tasks running in Yardlet on the person's Mac: it lists projects and tasks
 with the sidebar's attention states, reads a task's conversation (latest first, older on scroll, live while
 it streams), sends a message to a task, answers a pending approval (allow once or deny), stops a running
-turn, and marks a task read. Protocol v2 adds answering questions and plan reviews, starting a task (on a
+turn, and marks a task read. It also answers questions and plan reviews, starting a task (on a
 harness, model and worktree the phone picks), images, a line's output and diffs, suggested and queued messages,
 continuing a task a plan limit stopped under another account, answering a browser handoff, and push
 notifications. Nothing else: no settings, connectors, file browsing or terminals.
 
-**Two versions.**
+**One version.** The JSON messages of §2 and §4–§8 travel inside a Noise IK channel (§11–§16), over any
+path: the same network (port 47616 on every interface, found with Bonjour), Tailscale, or the Yardlet relay.
+The handshake authenticates both ends with their static keys. Where §2 and §4–§8 and §11–§16 differ, §11–§16
+win.
 
-- **v1** (§1–§10): plain JSON over `ws://` on the Mac's Tailscale addresses only (port 47615), with a
-  pairing code and a bearer device token. Kept for phones paired before v2; new pairings use v2.
-- **v2** (§11–§16): the same JSON messages inside a Noise IK channel, over any path: the same network
-  (port 47616 on every interface, found with Bonjour), Tailscale, or the Yardlet relay. The handshake
-  authenticates both ends with their static keys, so `pair` and `hello` are not used. Everything in
-  §2 and §4–§8 applies to v2 except where §11–§16 say otherwise.
+## 1. Protocol 1 (removed)
 
-## 1. Transport (v1)
-
-- **WebSocket over TCP, no TLS** (`ws://`). Tailscale (WireGuard) already encrypts the link and
-  authenticates both devices. The Mac never listens on its LAN or on all interfaces.
-- **Port: `47615`** (fixed default).
-- **Hosts.** Yardlet listens only on the Mac's Tailscale addresses: IPv4 in `100.64.0.0/10` and IPv6
-  in `fd7a:115c:a1e0::/48`. The pairing QR names them, and the Mac's MagicDNS name when it can read
-  one (`mac-name.tailnet-name.ts.net`). An IPv6 host goes in brackets: `ws://[fd7a:115c:a1e0::1]:47615/`.
-- **Developer loopback.** With `YARDLET_REMOTE_LOOPBACK=1` in Yardlet's environment, or
-  `defaults write <Yardlet's bundle identifier> Yardlet.remote.loopback -bool true`, Yardlet also listens on
-  `127.0.0.1:47615` while the remote is on. The Android emulator reaches it as `ws://10.0.2.2:47615/`.
-  Pairing is still required. The fixture server (§9) listens on loopback only.
-- **Path:** the server ignores it; use `/`.
-- **No `Origin` header.** A handshake that carries `Origin` (every browser sends one) is refused with HTTP 400. Native WebSocket clients (OkHttp, Ktor) do not send it unless told to.
-- **Frames.** Text frames only, one UTF-8 JSON object per frame. A binary frame closes the connection
-  (1003). A client frame larger than **65,536 bytes** closes the connection (1009). Server frames can be
-  large (a page of conversation); accept frames up to 8 MiB.
-- **Keepalive.** The server answers WebSocket ping frames. Clients send a `ping` message (§4.3) or a
-  ping frame at least every 30 s; the server closes a connection that sent nothing for 75 s (4408).
-- **Mac sleep.** Yardlet keeps the Mac from idle-sleeping only while a turn is working (not while it
-  waits for an approval). When the Mac sleeps, the connection drops; reconnect with `hello` when it
-  is reachable again.
+Protocol 1, plain JSON on the Mac's Tailscale addresses with a pairing code and a device token, has been
+removed: the Mac no longer listens for it, and it drops the devices paired with it from its list. A phone
+paired that way pairs again with the current app (§12).
 
 ## 2. Envelopes
 
@@ -79,7 +58,7 @@ Server → client, an event (pushed, not a response):
 - Both sides ignore fields they do not know. A client ignores events it does not know. Optional fields
   may be absent; absent means null/false/empty.
 - Times are integers: **milliseconds since the Unix epoch** (fields ending in `At`), durations in
-  milliseconds (`…Ms`). They are the Mac's clock. The `pair`, `hello` and `snapshot` responses carry
+  milliseconds (`…Ms`). They are the Mac's clock. Message 2 (§13.1) and the `snapshot` response carry
   `serverTime`, the Mac's clock when it answered; a phone that keeps `serverTime − its own time at
   receipt` as an offset can show `lastActivityAt` and turn times without clock skew (never in the
   future).
@@ -87,69 +66,13 @@ Server → client, an event (pushed, not a response):
 
 ## 3. Pairing and authentication
 
-### 3.1 Pairing on the Mac
-
-Settings › Remote › "Pair a phone" opens one pairing at a time. It shows a QR code and the same
-secret as a short manual code. The pairing **expires after 5 minutes, after one successful use, or
-after 5 wrong codes**, whichever comes first. Opening a new pairing cancels the previous one.
-
-The QR code holds a URL:
-
-```
-yardlet-remote://pair?v=1&code=7KQ2M-X9D4T&port=47615&host=100.64.12.34&host=mac.tail1234.ts.net&host=fd7a:115c:a1e0::1234&name=MacBook%20Pro
-```
-
-- `v`: the protocol version (1). `code`: the pairing secret. `port`: the port. `host`: one or more,
-  in the order to try (Tailscale IPv4, then the MagicDNS name, then Tailscale IPv6; `127.0.0.1` when
-  the developer loopback is on). `name`: the Mac's name, for display. Values are percent-encoded.
-- The manual code is the same secret: 10 characters of Crockford base32 shown as `XXXXX-XXXXX`.
-  Accept it typed in any case, with or without the dash and spaces; read `O` as `0` and `I`/`L` as `1`.
-  The Mac shows its Tailscale address beside the code for manual entry.
-
-### 3.2 `pair` — exchange the secret for a device token
-
-The first message of a connection from a new device.
-
-```json
-{"id": "1", "type": "pair", "protocolVersion": 1, "code": "7KQ2M-X9D4T", "deviceName": "Pixel 9"}
-```
-
-```json
-{"re": "1", "ok": true, "deviceId": "B0D2…", "token": "q0Pj3w…43 chars…", "serverTime": 1792158000000,
- "server": {"name": "MacBook Pro", "app": "Yardlet", "appVersion": "1.0", "protocolVersion": 1}}
-```
-
-- `token`: 32 random bytes, base64url without padding (43 characters). The Mac stores only its
-  SHA-256, with the device name, when it was paired and when it was last seen. Keep the token in the
-  phone's secure storage (Android Keystore-backed); it is the device's credential from now on.
-- After a successful `pair` the connection is authenticated as that device; no `hello` is needed.
-- `deviceName`: up to 64 characters, shown in the Mac's device list.
-- Errors: `pairingUnavailable` (no pairing open: never opened, expired, used, cancelled, or closed by
-  wrong codes), `pairingInvalid` (wrong code; the connection stays open for another try),
-  `unsupportedVersion`, `badRequest`.
-
-### 3.3 `hello` — authenticate a paired device
-
-The first message of every later connection.
-
-```json
-{"id": "1", "type": "hello", "protocolVersion": 1, "token": "q0Pj3w…"}
-```
-
-```json
-{"re": "1", "ok": true, "deviceId": "B0D2…", "serverTime": 1792158000000,
- "server": {"name": "MacBook Pro", "app": "Yardlet", "appVersion": "1.0", "protocolVersion": 1}}
-```
-
-- Errors, after which the server closes the connection: `invalidToken` (unknown or removed device;
-  pair again), `unsupportedVersion`, `badRequest`.
+Pairing is §12 and authentication the handshake (§13.1); protocol 1's code, `pair` and `hello` have been
+removed (§1).
 
 ### 3.4 Rules
 
-- The first message must be `pair` or `hello`, within 10 s of connecting. Anything else gets
-  `unauthenticated` and the connection closes (4401).
 - A device removed in the Mac's Settings is disconnected at once: the server sends
-  `{"event": "revoked"}` and closes (4403). Its token no longer works.
+  `{"event": "revoked"}` and closes (4403). Its key no longer connects.
 - Turning the remote off, or quitting Yardlet, sends `{"event": "closing", "reason": "disabled"}`
   (or `"quitting"`) and closes (4503).
 
@@ -533,7 +456,11 @@ The provider's notices beside the turn (a model reroute, a warning) and context 
 - Requests: a burst of 30, then 10 per second per connection. Commands (`sendMessage`,
   `answerApproval`, `stopTurn`, `markRead`): a burst of 10, then one per 3 s. Over the limit a request
   gets `rateLimited` and is dropped; 20 in a row closes the connection (4429).
-- At most 8 connections at once; more are closed (4503). At most 8 subscriptions per connection.
+- At most 8 connections of paired devices at once; more are closed (4503). A v2 connection counts once the
+  phone's first message after message 2 arrives (§13.1). Besides those, at most 8 connections may still be
+  authenticating; a new one closes the oldest of them (4503). At most 8 subscriptions per connection.
+- A listener holds at most 4 connections from one address, and 16 in all, that have not finished their
+  WebSocket and Noise handshakes; a new one closes the oldest of them, and one not done within 10 s is closed.
 - Pairing: 5 wrong codes close the open pairing.
 
 ## 8. Error codes
@@ -542,11 +469,10 @@ The provider's notices beside the turn (a model reroute, a warning) and context 
 |---|---|
 | `badRequest` | not JSON, not an object, or a missing or wrong field |
 | `unknownType` | a `type` the server does not know |
-| `unsupportedVersion` | `protocolVersion` is not 1 |
-| `unauthenticated` | the first message was not `pair` or `hello` |
-| `invalidToken` | the token names no paired device |
-| `pairingUnavailable` | no pairing is open (expired, used, cancelled, or closed by wrong codes) |
-| `pairingInvalid` | wrong pairing code |
+| `unsupportedVersion` | message 1's `v` is not 2, or a link request without `linkCommit` (§12.1) |
+| `unauthenticated` | a request before the connection is a device's (a link request waiting, §12.1) |
+| `pairingUnavailable` | no pairing is open (expired, used or cancelled) |
+| `pairingInvalid` | wrong pairing secret |
 | `notFound` | no listed task with that ID |
 | `notSubscribed` | `loadOlder` for a task not subscribed |
 | `invalidCursor` | the cursor no longer names a place in the conversation |
@@ -564,9 +490,9 @@ The provider's notices beside the turn (a model reroute, a warning) and context 
 | `unknownDevice` | v2 handshake: the phone's key is not paired, or the device was removed (§13.1) |
 | `linkUnavailable` | v2 handshake: a link request to a Mac not signed in to an account (§12.1) |
 
-Close codes: 1000 normal, 1003 binary frame, 1009 frame too large, 4401 unauthenticated or invalid
-token, 4403 device removed, 4408 idle or no `hello` in time, 4426 unsupported version, 4429 rate
-limited, 4503 remote off, Yardlet quitting, or too many connections.
+Close codes: 1000 normal, 1003 text frame, 1009 frame too large, 4401 handshake, decryption or link nonce
+failed, 4403 device removed, 4408 idle or nothing in time, 4426 unsupported version, 4429 rate limited,
+4503 remote off, Yardlet quitting, or too many connections.
 
 ## 9. Fixture server
 
@@ -574,14 +500,16 @@ A loopback server with the same protocol and realistic fixture tasks, for develo
 without a Mac running Yardlet's real tasks:
 
 ```sh
-swift run --build-system native yardlet-remote-fixture            # ws://127.0.0.1:47615/
-swift run --build-system native yardlet-remote-fixture --port 47700 --single-use-pairing
+swift run --build-system native yardlet-remote-fixture            # ws://127.0.0.1:47616/
+swift run --build-system native yardlet-remote-fixture --secure-port 47700 --single-use-pairing
 ```
 
-- Android emulator: `ws://10.0.2.2:47615/`. It binds `127.0.0.1` only.
-- Pairing code `ABCDE-12345` (reusable unless `--single-use-pairing`, which also expires it after
-  5 minutes like the Mac). Or skip pairing: `hello` with token `yardlet-fixture-token`.
-- It prints its QR URL. Its device list is kept in memory and is gone when it stops.
+- Android emulator: `ws://10.0.2.2:47616/`. It binds `127.0.0.1` only. Its Mac key is fixed, so a phone paired
+  once stays paired.
+- It prints its pairing URL (§12). Its secret is fixed and reusable unless `--single-use-pairing`, which also
+  expires it after 5 minutes like the Mac. `--relay` opens its room on a local relay and `--approve-links`
+  approves a link request (§12.1) three seconds after it is shown. Its device list is kept in memory and is
+  gone when it stops.
 - Fixture tasks (projects Yardlet, Website and Chats):
   - "Approve the index migration" (Claude Code) waits on a Bash approval (`allowOnce`, `deny`,
     `moreOnMac`; `running: true`, so `stopTurn` applies and expires the request). Allow once: the
@@ -602,7 +530,7 @@ swift run --build-system native yardlet-remote-fixture --port 47700 --single-use
 
 ## 10. Revisions
 
-Still protocol version 1: every revision only adds optional fields or states a rule.
+Every revision of protocol 2 only adds optional fields or states a rule, except where it says otherwise.
 
 - 2026-10-16, after the first Android client build:
   - §5.3: `after` always names an item the phone holds once it has applied what came before in order;
@@ -620,6 +548,9 @@ Still protocol version 1: every revision only adds optional fields or states a r
   harness, model, effort, permission mode and worktree (§15.16), continuing a task a plan limit stopped (§15.17),
   and answering a browser handoff (§15.18). Later the same day: every answer the Mac's card gives, MCP forms and
   secret answers (§15.19), and files in resumable parts (§15.20).
+- 2026-10-27, not only additions: protocol 1 removed (§1); a link request commits to a nonce and reveals it
+  (§12.1), and older link requests get `unsupportedVersion`; limits on connections that are still authenticating
+  (§7, §13.1, §14.3).
 
 ## 11. v2 transport
 
@@ -631,7 +562,7 @@ handshake and encryption run on every path:
 
 | path | phone connects to | notes |
 |---|---|---|
-| direct (same network, Tailscale, the emulator) | `ws://<host>:<port>/` | The Mac listens on every interface, port **47616** by default (another free port when 47616 is taken; Bonjour and §13.3 name the real one). No `Origin` header (HTTP 400, as v1). |
+| direct (same network, Tailscale, the emulator) | `ws://<host>:<port>/` | The Mac listens on every interface, port **47616** by default (another free port when 47616 is taken; Bonjour and §13.3 name the real one). No `Origin` header (HTTP 400). |
 | relay | `wss://<relay>/v1/rooms/<room>/connect` | §14. The relay forwards frames and cannot read them. |
 
 No TLS on direct paths: the Noise handshake authenticates the Mac by its static key, whatever the path.
@@ -681,12 +612,13 @@ yardlet-remote://pair?v=2&k=<Mac static public key>&s=<secret>&n=MacBook%20Pro&h
   `h`: zero or more direct addresses `host:port` in the order to try (an IPv6 host in brackets). `r` and
   `i`: the relay's base URL and the Mac's room, present when the Mac uses a relay. Values are
   percent-encoded; unknown parameters are ignored.
-- A pairing **expires after 5 minutes**, closes after 5 handshakes with a wrong secret, and opening a new
-  one cancels it. It is spent by its first successful use, except that the **same phone key** may use it
-  again until it expires (a phone that lost the Mac's answer simply pairs again).
+- A pairing **expires after 5 minutes**, and opening a new one cancels it. A wrong secret is refused
+  (`pairingInvalid`) without closing the pairing. It is spent by its first successful use, except that the
+  **same phone key** may use it again for 60 s (a phone that lost the Mac's answer simply pairs again);
+  removing that device, cancelling the pairing or opening a new one ends this.
 - A phone key is a device: pairing again with a new key adds a new device. A phone that pairs a Mac again
   sends `forgetDevice` with its old key first, if it still can.
-- There is no manual code in v2: a short code typed by hand needs a PAKE to be safe without accounts.
+- There is no manual code: a short code typed by hand needs a PAKE to be safe without accounts.
   The QR also opens the app from the phone's camera (the `yardlet-remote` scheme).
 
 ### 12.1 Linking through an account
@@ -694,21 +626,26 @@ yardlet-remote://pair?v=2&k=<Mac static public key>&s=<secret>&n=MacBook%20Pro&h
 A phone signed in to the person's account (§14.4) learns the account's Macs (name, room, keys) without a QR
 code and asks one to link:
 
-- Message 1's payload carries `"link": true` instead of `pair`. Message 2 answers
-  `{"ok": false, "pending": true, "code": "482913", "server": {…}}` when the Mac takes the request, and the
-  connection stays open but unauthenticated: the phone may only send `ping`.
-- **Code:** the first 4 bytes of `SHA-256("yardlet-link/1" ‖ Mac static public key ‖ phone static public key)`
-  as a big-endian unsigned integer, modulo 1,000,000, written with 6 digits (shown `482 913`). Both sides
-  compute it from the keys they hold, so a server that handed the phone another Mac key shows mismatched codes.
-  The phone shows the code it computed itself; when message 2's `code` differs, it stops (the Mac it reached
-  holds other keys).
+- The phone makes a nonce, 32 random bytes. Message 1's payload carries `"link": true` instead of `pair`, and
+  `"linkCommit"`: `SHA-256("yardlet-link-commit/2" ‖ phone static public key ‖ phone nonce)`.
+- Message 2 answers `{"ok": false, "pending": true, "linkNonce": "<the Mac's nonce, 32 random bytes>",
+  "server": {…}}` when the Mac takes the request, and the connection stays open but unauthenticated.
+- The phone's first message, within 10 s, is `{"id": "…", "type": "revealLink", "nonce": "<phone nonce>"}`. The
+  Mac answers `{"re": "…", "ok": true}` when it matches `linkCommit` and only then shows the request. Anything
+  else, or a nonce that does not match, gets an error and close 4401. After that the phone may only send `ping`.
+- **Code:** the first 4 bytes of `SHA-256("yardlet-link/2" ‖ Mac static public key ‖ phone static public key ‖
+  Mac nonce ‖ phone nonce)` as a big-endian unsigned integer, modulo 1,000,000, written with 6 digits (shown
+  `482 913`). Each side computes it from what it holds, and the phone shows its own once `revealLink` is
+  answered.
 - A v2 phone that connects while a request waits gets the `linkRequest` event too.
 - The Mac shows the request (name, platform, code) in Settings and to its connected v2 phones (event
   `linkRequest`, §15.11). The first approval or refusal wins. Approved: the Mac sends the encrypted event
   `{"event": "linked", "deviceId": "…"}` and the connection is authenticated as that new device from then on.
   Refused: `{"event": "linkRefused"}` and close 4403. No answer in 120 s: `linkRefused` and close 4408.
 - Errors in message 2: `linkUnavailable` (the Mac is not signed in to an account; 4401), `busy` (another link
-  request is pending; 4503).
+  request is pending; 4503), `rateLimited` (the Mac took 5 link requests in the last 10 minutes; 4429),
+  `unsupportedVersion` (no `linkCommit`: an older phone app; 4426).
+- Approving in Settings takes a click: the Allow button is not the default button.
 
 ## 13. v2 handshake and messages
 
@@ -749,13 +686,15 @@ Message 2's payload:
   `relay`: absent when the Mac uses none; a phone replaces what it stored with it.
 - Errors, after which the Mac closes: `unknownDevice` (the phone key is not paired, or was removed:
   4403), `pairingUnavailable` and `pairingInvalid` (4401), `unsupportedVersion` (4426), `badRequest`
-  (4401).
+  (4401), `unavailable` (too many connections, §7; 4503).
+- A phone sends nothing but message 1 before message 2; another frame closes the connection (4401). The Mac
+  counts an accepted connection as the device's (Settings shows it connected, and pushes to it stop) once the
+  phone's first message arrives; one that sends none within 30 s is closed (4408).
 - A message 1 the Mac cannot read (another Mac key, a damaged frame) is closed with 4401 and no
   message 2. The phone sends message 1 within 10 s of the WebSocket opening; each side gives the
   other 10 s.
 - After message 2 both sides `Split()`: the phone sends with the first cipher and receives with the
-  second; the Mac the other way round. The connection is authenticated as `deviceId`; `pair` and
-  `hello` get `badRequest`.
+  second; the Mac the other way round. The connection is authenticated as `deviceId`.
 
 ### 13.2 Messages
 
@@ -777,7 +716,7 @@ more Noise transport messages:
   75 s (4408). WebSocket ping frames do not reach the Mac over the relay.
 - Close codes are those of §8, plus: 4401 handshake or decryption failed, 4403 device unknown or
   removed, 4404 the Mac is not on the relay (§14.3), 4409 the Mac reconnected to the relay.
-- The Mac sends `revoked` and `closing` (§3.4) as encrypted events before closing, as in v1.
+- The Mac sends `revoked` and `closing` (§3.4) as encrypted events before closing.
 
 ## 14. Relay
 
@@ -787,7 +726,7 @@ more Noise transport messages:
 |---|---|---|
 | `GET /v1/health` | anyone | `200 ok` |
 | `GET /v1/rooms/<room>/host` (WebSocket) | the Mac | §14.2 |
-| `GET /v1/rooms/<room>/connect` (WebSocket) | a phone | §14.3. `404` when no Mac holds the room, `429` when the room has 8 phones, `400` for a malformed room |
+| `GET /v1/rooms/<room>/connect` (WebSocket) | a phone | §14.3. `404` when no Mac holds the room, `429` when the room has 8 phones the Mac answered, `400` for a malformed room |
 
 One room per Mac. The relay keeps a room only in memory while its Mac is connected; it stores nothing
 and logs no frame contents. What it sees: rooms, IP addresses, when sockets open and close, frame sizes
@@ -826,6 +765,10 @@ and times, and a push's FCM token while sending it.
 
 Binary frames only (a text frame closes it, 1003), each at most 65,535 bytes (1009). The relay closes a
 phone socket that sent nothing for 120 s (4408), and every phone socket of a room whose Mac left (4404).
+
+A socket the Mac has not yet sent a frame to is waiting. The relay keeps at most 2 waiting sockets from one
+address and 8 in a room; a new one closes the oldest of them (4503). A socket still waiting after 15 s is closed
+(4408).
 
 ### 14.4 Accounts
 
@@ -1005,11 +948,9 @@ As the sidebar's Pin and Archive. Commands. An archived task leaves the list (`r
 - `{"type": "answerLink", "requestId": "…", "approve": true}`: approve or refuse it. A command. Errors:
   `requestNotFound`.
 
-### 15.12 On v1 connections
+### 15.12 Protocol 1 connections (removed)
 
-The requests of §15.3–§15.11 and §15.13–§15.20 get `unknownType`. Approval items sent to a v1 connection keep only
-`allowOnce` and `deny` in `options` and set `moreOnMac` when they dropped another answer. None of the fields
-§15.13–§15.20 add reach a v1 connection.
+Protocol 1 has been removed (§1).
 
 The sections below were added on 2026-10-27 (REMOTE_V2_DESIGN 5.2). Each only adds optional fields and
 requests, so a phone learns what a Mac offers from the fields it sends: an older Mac never sends them, and a phone
