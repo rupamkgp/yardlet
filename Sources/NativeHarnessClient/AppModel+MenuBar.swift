@@ -16,6 +16,8 @@ extension AppModel {
         )
         menu.keepsScreenAwake = keepsScreenAwake
         menu.screenAwakePausedForBattery = screenAwakePausedForBattery
+        menu.keepsAwakeWithLidClosed = keepsAwakeWithLidClosed
+        menu.lidAwakePause = lidAwakePause
         return menu
     }
 

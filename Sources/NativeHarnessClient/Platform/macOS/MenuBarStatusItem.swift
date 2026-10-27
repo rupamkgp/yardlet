@@ -86,6 +86,15 @@ final class MenuBarMenuController: NSObject, NSMenuDelegate {
                 return item
             })
         }
+        if contents.keepsAwakeWithLidClosed || contents.lidAwakePause != nil {
+            let state = switch contents.lidAwakePause {
+            case .battery: "Not keeping the Mac awake with the lid closed: battery under 20%"
+            case .heat: "Not keeping the Mac awake with the lid closed: the Mac is too hot"
+            case nil: "Keeping tasks working with the lid closed"
+            }
+            groups.insert([plainItem(L10n.string(state)),
+                           actionItem(L10n.string("Turn Off"), #selector(chooseLetLidSleep(_:)))], at: 0)
+        }
         if contents.keepsScreenAwake || contents.screenAwakePausedForBattery {
             let state = contents.keepsScreenAwake ? "Keeping the screen unlocked" : "Not keeping the screen unlocked: battery under 20%"
             groups.insert([plainItem(L10n.string(state)),
@@ -153,6 +162,7 @@ final class MenuBarMenuController: NSObject, NSMenuDelegate {
     @objc func chooseQuit(_ sender: NSMenuItem) { actions.quit() }
     @objc func chooseInstallUpdate(_ sender: NSMenuItem) { actions.installUpdate() }
     @objc func chooseLetScreenLock(_ sender: NSMenuItem) { UserDefaults.yardlet.set(false, forKey: KeepScreenAwakePreference.key) }
+    @objc func chooseLetLidSleep(_ sender: NSMenuItem) { UserDefaults.yardlet.set(false, forKey: LidClosedWorkPreference.key) }
 }
 
 /// Yardlet's item in the menu bar, shown while Settings › General › "Show in menu bar" is on

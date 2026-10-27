@@ -88,8 +88,21 @@ struct MenuBarMenu: Equatable, Sendable {
     var keepsScreenAwake = false
     /// The setting is on, but a battery under 20% lets the screen lock: the menu says so first.
     var screenAwakePausedForBattery = false
+    /// The Mac stays awake with its lid closed while tasks work: the menu says so first, with a way
+    /// to stop it.
+    var keepsAwakeWithLidClosed = false
+    /// The lid setting is on, but the battery or the heat lets the Mac sleep: the menu says so first.
+    var lidAwakePause: LidAwakePause?
 
     static let empty = MenuBarMenu()
+}
+
+/// Why "Keep tasks working with the lid closed" lets the Mac sleep for now (`RunningWorkActivity`).
+enum LidAwakePause: Equatable, Sendable {
+    /// On a battery under 20%, until the Mac is on power.
+    case battery
+    /// At a critical heat, until the Mac cools down.
+    case heat
 }
 
 enum MenuBarMenuProjection {

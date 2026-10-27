@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Signs an assembled Yardlet bundle from the inside out (docs/BROWSER_HOST.md §7): the CEF
 # framework's libraries, the framework, the helper apps, the browser host, Sparkle's helpers and
-# framework, the MCP server, then the app. Each bundle keeps the identifier in its own Info.plist,
-# so a QA copy under another identifier (scripts/browser-host-qa/prepare-qa.sh) signs the same way.
+# framework, the MCP server, the lid helper, then the app. Each bundle keeps the identifier in its own
+# Info.plist, so a QA copy under another identifier (scripts/browser-host-qa/prepare-qa.sh) signs the
+# same way.
 #
 #   YARDLET_SIGNING_IDENTITY          "-" (default) signs ad-hoc as before. Any other value is a
 #                                     codesigning identity (its name, part of it, or its SHA-1):
@@ -39,6 +40,8 @@ HOST_FRAMEWORKS="$HOST_APP/Contents/Frameworks"
 CEF_FRAMEWORK="$HOST_FRAMEWORKS/Chromium Embedded Framework.framework"
 CEF_BINARY="$CEF_FRAMEWORK/Versions/A/Chromium Embedded Framework"
 MCP="$APP/Contents/Helpers/yardlet-mcp"
+LID_HELPER="$APP/Contents/Helpers/yardlet-lid-helper"
+LAUNCH_DAEMONS="$APP/Contents/Library/LaunchDaemons"
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 
 if [[ "$IDENTITY" == "-" ]]; then
@@ -66,6 +69,12 @@ if [[ "$IDENTITY" == "-" ]]; then
     # Sparkle comes signed ad-hoc by its authors and stays so.
     # A bare executable has no Info.plist to name it, so the identifier is given explicitly.
     [[ -f "$MCP" ]] && sign "$APP_IDENTIFIER.mcp" "$MCP" --identifier "$APP_IDENTIFIER.mcp"
+    # The lid helper's identifier is its launchd label, which the app's XPC connection requires.
+    [[ -f "$LID_HELPER" ]] && sign "$APP_IDENTIFIER.lid-helper" "$LID_HELPER" --identifier "$APP_IDENTIFIER.lid-helper"
+    # Its launch constraint names a team, which an ad-hoc signature has none of: without the
+    # property list this build offers no helper (LidSleepHelperIdentity.peerRequirement).
+    /bin/rm -rf "$LAUNCH_DAEMONS"
+    /bin/rmdir "$APP/Contents/Library" 2>/dev/null || true
     sign "$APP_IDENTIFIER" "$APP"
     exit 0
 fi
@@ -186,5 +195,13 @@ if [[ -d "$SPARKLE" ]]; then
     sign_runtime "$SPARKLE"
 fi
 [[ -f "$MCP" ]] && sign_runtime --identifier "$APP_IDENTIFIER.mcp" "$MCP"
+[[ -f "$LID_HELPER" ]] && sign_runtime --identifier "$APP_IDENTIFIER.lid-helper" "$LID_HELPER"
+# launchd starts the root lid helper only as signed by this team with its identifier (SpawnConstraint
+# in its property list), so a changed executable in the user's bundle does not run as root.
+for daemon in "$LAUNCH_DAEMONS"/*.plist(N); do
+    /usr/bin/sed -i '' "s|@TEAM_IDENTIFIER@|$TEAM|g" "$daemon"
+    [[ "$(/usr/libexec/PlistBuddy -c "Print :SpawnConstraint:team-identifier" "$daemon")" == "$TEAM" ]] \
+        || { print -u2 "error: $daemon has no launch constraint for team $TEAM"; exit 1; }
+done
 sign_runtime --entitlements "$ENTITLEMENTS/Yardlet.entitlements" "$APP"
 print -u2 "Signed with $IDENTITY_NAME (team $TEAM), hardened runtime$([[ "$TIMESTAMP" == 1 ]] && print ', secure timestamp')"

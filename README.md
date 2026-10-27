@@ -83,7 +83,10 @@ login item, launch agent or system helper: its installer runs only while an upda
 ### Uninstall
 
 Quit Yardlet and move it to the Trash, or run `brew uninstall --cask zzunkie/tap/yardlet`. Your
-agents, their sign-ins and their sessions do not change. To remove Yardlet's own data as well:
+agents, their sign-ins and their sessions do not change. If **Settings > General > Keep tasks
+working with the lid closed** is on, turn it off first: macOS keeps an app's background item after
+the app is deleted. It has nothing left to run then, and you can also turn Yardlet off in **System
+Settings > General > Login Items & Extensions**. To remove Yardlet's own data as well:
 
 - `~/.yardlet` (task list, drafts, reading state) and `~/Library/Application Support/Yardlet`
   (browser profiles, staged updates). `brew uninstall --zap --cask zzunkie/tap/yardlet` removes
@@ -209,6 +212,13 @@ YARDLET_SIGNING_IDENTITY="Developer ID Application: <name> (<team>)" ./scripts/b
   and USB for passkeys; the app Bluetooth for the host it launches, and Apple Events, microphone and
   camera for the commands it runs (harnesses, their tools, the terminal), which macOS attributes to
   Yardlet; each has its usage string in `Info.plist`.
+- The lid helper behind Settings › General › "Keep tasks working with the lid closed"
+  (`Contents/Helpers/yardlet-lid-helper`, with its launchd property list in
+  `Contents/Library/LaunchDaemons`) is signed with its label, `<app identifier>.lid-helper`, as its
+  identifier. The app and the helper accept each other only when signed by the same team, and the
+  property list's launch constraint (`SpawnConstraint`), whose team `sign-app.sh` fills in, lets
+  launchd start no other executable as root. A build signed ad hoc has no team, so it carries no
+  property list and offers no helper.
 - A Developer ID identity signs with a secure timestamp (Apple's timestamp server); other identities,
   such as Apple Development for local checks, sign without one unless `YARDLET_SIGNING_TIMESTAMP=1`.
   Only a Developer ID build can be notarized.

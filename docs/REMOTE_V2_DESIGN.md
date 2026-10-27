@@ -38,7 +38,7 @@ Status: designed and implemented on 2026-10-24 (Mac, relay and Android). The pro
   phone also covers command output, diffs, suggested tasks, pinning, archiving and several Macs (section 5).
 - **Preventing sleep and screen lock while a task works (decided the same day).** A setting turns it on (off by
   default), and only while a task works does it also keep the display from turning off. It stops below 20% battery and
-  when the Mac overheats. Lid-closed operation is left out because it needs administrator rights (section 6.5).
+  when the Mac overheats. Lid-closed operation was left out because it needs administrator rights, then added on 2026-10-27 (section 6.5).
 - **Exploring without a Mac, and the APK first (decided the same day).** Tapping "Explore without a Mac" on the first
   screen attaches the app to a demo Mac inside the phone, where the person can try the task list, conversations,
   approvals, questions, plan review, diffs, a new task and notifications. It uses no network and no storage (section 8).
@@ -546,6 +546,41 @@ this replaces the first recommendation ("leave it out").
 - **Lid-closed operation is left out.** It needs the administrator password, and the system setting can remain after
   Yardlet quits or is deleted (a product principle: Yardlet leaves nothing behind once removed). With an external
   display and power, macOS stays awake with the lid closed (clamshell mode).
+- **Revised 2026-10-27: tasks keep working with the lid closed.** Apps such as Amphetamine show people want it, so the
+  decision above changed; what it guards against is handled instead of avoided. Settings › General "Keep tasks working
+  with the lid closed", off by default, registers a launch daemon inside the bundle with `SMAppService.daemon`
+  (`Contents/Library/LaunchDaemons/<app identifier>.lid-helper.plist`, program `Contents/Helpers/yardlet-lid-helper`).
+  macOS asks the person to allow it once in System Settings › General › Login Items & Extensions, and until then one
+  line under the setting says so beside Open System Settings; turning the setting off unregisters it. A local build signed ad hoc, a QA copy under another identifier and a UI fixture offer no helper.
+  - The helper (root) turns on the system power setting `SleepDisabled`, as `pmset -a disablesleep 1` does, only while
+    a connected Yardlet says over XPC that its tasks are working (`AppModel.keepsMacAwake`). That setting is stored in
+    `/Library/Preferences/com.apple.PowerManagement.plist` and outlives the process and a restart, so the helper puts it
+    back whenever any of these happens: the work ends, the connection ends (Yardlet quits, crashes or is killed), the
+    helper starts (launchd starts it once at every boot) and the helper receives SIGTERM (unregistered, shutdown).
+  - Before turning the setting on, the helper writes a record file under `/Library/Application Support/Yardlet/`
+    that also says how to undo it by hand, and removes it once the setting is off. It turns off only a setting it
+    turned on: one already on without its record (`pmset`, Amphetamine) is used and left as it was.
+  - The app and the helper accept each other only when signed by the same team. With nothing to do, the helper exits
+    after 10 seconds, so no root process stays resident.
+  - The helper runs as root from a bundle its user can change, and commands Yardlet starts count as Yardlet when they
+    change it. Its property list therefore carries a launch constraint (`SpawnConstraint` with `team-identifier` and
+    `signing-identifier`), which the OS enforces for a property list registered with `SMAppService`: launchd starts
+    only an executable signed by Yardlet's team with the helper's identifier. `sign-app.sh` puts in the team; a bundle
+    signed ad hoc has no team to name and carries no property list. Tested on 2026-10-27 with throwaway agents in the
+    user's own launchd domain: an executable signed ad hoc with the helper's identifier ran under no constraint and
+    under an identifier-only constraint, and was stopped under the team constraint ("Launch Constraint Violation").
+  - If the helper cannot write its record, it leaves `SleepDisabled` off, since nothing would put it back.
+  - A client's "working" lasts 10 minutes unless the client says it again; Yardlet says it every minute while its
+    tasks work. A Yardlet that stopped running, or whose connection stays open while it does not answer, therefore
+    lets a closed Mac sleep within 10 minutes.
+  - On battery under 20%, Yardlet lets the Mac sleep again, sends one notification and shows the state in the menu bar
+    menu; it keeps the Mac awake again on power. Heat has two levels: at `thermalState` serious with the lid closed it
+    sends one notification and keeps working; at critical it lets the Mac sleep, which is what cools a closed Mac,
+    sends one notification and shows the state in the menu bar menu, and keeps the Mac awake again once it is out of
+    critical. The helper applies the battery and critical rules itself as well, so a Yardlet that stopped answering
+    cannot keep a closed Mac awake on an empty battery or at a critical heat.
+  - While it holds, the top of the menu bar menu shows "Keeping tasks working with the lid closed" with Turn Off. Apple
+    menu › Sleep does not work during that time either, since `SleepDisabled` blocks all sleep, as in Amphetamine.
 - **The risk is handled with the default and a short indicator.** While it is actually blocking, the top of the menu bar
   item's menu shows one line, "Keeping the screen unlocked". There is no explanatory text next to the setting.
 - If this setting is off and the harness's screen control fails because the screen is locked, the phone shows that
@@ -557,7 +592,7 @@ this replaces the first recommendation ("leave it out").
 |---|---|
 | Answering approvals, questions and plans; new tasks; messages (including to the coordinating task); pinned tasks at the top; command output and diffs | Taking over a browser tab's screen (section 6.3) |
 | A browser tab handed to the person: its reason and site, "I'm done" and "Decline" (item 6 of section 5.2, 2026-10-27) | Seeing the tab's screen and typing into it (section 6.3) |
-| Preventing sleep and screen lock while a task works (section 6.5) | Lid closed (left out) |
+| Preventing sleep and screen lock while a task works (section 6.5), keeping tasks working with the lid closed (2026-10-27) | |
 | Only the public version of notifications on the lock screen; app lock (item 7 of section 5.2, off by default) | Vault confirmation with phone biometrics (section 6.4), re-authentication before takeover |
 | Requests answer with every choice the Mac's card gives (section 5.3); one Yardlet answers nothing for says why (`macNote`) | One line for steps that are not requests, such as Touch ID, an iCloud passkey or a system prompt (the Mac does not signal them yet) |
 | Device removal and disconnecting from the phone side | — |
@@ -644,6 +679,13 @@ sidebar, and no boxed cards with badges or "01/02" number labels.
   harnesses, provider accounts or repositories.
 - Preventing sleep and screen lock is a power assertion held by the process, so macOS releases it when Yardlet quits.
   System settings (`pmset`) are not changed.
+- Only while "Keep tasks working with the lid closed" is on: macOS's background item registration (removed when the
+  setting is turned off), and while tasks work, `SleepDisabled` and the helper's record file under
+  `/Library/Application Support/Yardlet/`. Both go back when Yardlet quits. Deleting the app with the setting on leaves
+  only the registration, which has nothing left to run and can be turned off in System Settings › General › Login
+  Items & Extensions (deleting an app does not unregister its `SMAppService` items). `SleepDisabled` stays only if the
+  helper is killed while holding (a power cut included) and the app is deleted before the helper starts again; the
+  record file then says to run `sudo pmset -a disablesleep 0`.
 - macOS remembers the local network permission (it can be turned off in System Settings › Privacy & Security).
 
 ## 12. Settings needed for distribution

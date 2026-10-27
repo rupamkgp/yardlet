@@ -2073,7 +2073,8 @@ struct MainWindow: View {
                 remote: model.remoteControl,
                 cliUpdates: model.cliUpdates,
                 instructions: model.yardletInstructions,
-                evaluation: model.routingEvaluation
+                evaluation: model.routingEvaluation,
+                lidHelper: model.lidSleepHelper
             )
         }
         .sheet(item: $connectorAddStart, onDismiss: finishShellModal) { start in

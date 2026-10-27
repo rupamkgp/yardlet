@@ -42,6 +42,10 @@ let package = Package(
         // The Yardlet MCP server a harness starts over stdio; build-app.sh places it in
         // Contents/Helpers. It forwards tool calls to the running app (docs/AGENT_BROWSER_TOOLS.md).
         .executable(name: "yardlet-mcp", targets: ["YardletMCP"]),
+        // The launch daemon behind Settings › General › "Keep tasks working with the lid closed";
+        // build-app.sh places it in Contents/Helpers beside its launchd property list
+        // (docs/REMOTE_V2_DESIGN.md §6.5).
+        .executable(name: "yardlet-lid-helper", targets: ["YardletLidHelper"]),
         // The phone remote's fixture server: the remote protocol on loopback with fixture tasks, for
         // building the Android client without real tasks (docs/REMOTE_PROTOCOL.md §9).
         .executable(name: "yardlet-remote-fixture", targets: ["YardletRemoteFixture"])
@@ -89,6 +93,15 @@ let package = Package(
             name: "YardletMCP",
             dependencies: ["YardletAgentTools"]
         ),
+        // The lid helper's state, its XPC interface and the power readings it shares with the app.
+        .target(
+            name: "YardletLidSleep",
+            linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("Security")]
+        ),
+        .executableTarget(
+            name: "YardletLidHelper",
+            dependencies: ["YardletLidSleep"]
+        ),
         // The phone remote (docs/REMOTE_PROTOCOL.md): the protocol, pairing and the server, with no
         // UI, and the WebSocket listeners (Network.framework). The app adds the bridge to its model.
         .target(
@@ -104,6 +117,7 @@ let package = Package(
             dependencies: [
                 "CSQLite",
                 "YardletAgentTools",
+                "YardletLidSleep",
                 "YardletRemote",
                 .target(name: "YardletSurfacePort", condition: .when(platforms: [.macOS])),
                 .product(name: "Markdown", package: "swift-markdown"),
@@ -126,6 +140,7 @@ let package = Package(
                 "NativeHarnessClient",
                 "YardletAgentTools",
                 "YardletMCP",
+                "YardletLidSleep",
                 "YardletRemote",
                 "YardletRemoteFixture",
                 "CSQLite",

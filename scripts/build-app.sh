@@ -64,6 +64,8 @@ cd "$PROJECT_ROOT"
 swift build --build-system "$BUILD_SYSTEM" -c "$CONFIGURATION" --product NativeHarnessClient
 # The Yardlet MCP server harnesses start over stdio (docs/AGENT_BROWSER_TOOLS.md).
 swift build --build-system "$BUILD_SYSTEM" -c "$CONFIGURATION" --product yardlet-mcp
+# The launch daemon behind "Keep tasks working with the lid closed" (docs/REMOTE_V2_DESIGN.md §6.5).
+swift build --build-system "$BUILD_SYSTEM" -c "$CONFIGURATION" --product yardlet-lid-helper
 if [[ -n "$CEF_DIR" ]]; then
     swift build --build-system "$BUILD_SYSTEM" -c "$CONFIGURATION" --product YardletCEFHelper
     swift build --build-system "$BUILD_SYSTEM" -c "$CONFIGURATION" --product YardletBrowserHost
@@ -212,6 +214,17 @@ HELPERS_DIR="$CONTENTS_DIR/Helpers"
 mkdir -p "$HELPERS_DIR"
 cp "$BIN_DIR/yardlet-mcp" "$HELPERS_DIR/yardlet-mcp"
 chmod 755 "$HELPERS_DIR/yardlet-mcp"
+# The lid helper and its launchd property list, named from the bundle identifier
+# (LidSleepHelperIdentity), which SMAppService.daemon(plistName:) finds in Contents/Library/LaunchDaemons.
+cp "$BIN_DIR/yardlet-lid-helper" "$HELPERS_DIR/yardlet-lid-helper"
+chmod 755 "$HELPERS_DIR/yardlet-lid-helper"
+LAUNCH_DAEMONS_DIR="$CONTENTS_DIR/Library/LaunchDaemons"
+rm -rf "$LAUNCH_DAEMONS_DIR"
+mkdir -p "$LAUNCH_DAEMONS_DIR"
+LID_HELPER_LABEL="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$CONTENTS_DIR/Info.plist").lid-helper"
+sed -e "s|@LABEL@|$LID_HELPER_LABEL|g" "$PROJECT_ROOT/Packaging/LidHelper-LaunchDaemon.plist" \
+    > "$LAUNCH_DAEMONS_DIR/$LID_HELPER_LABEL.plist"
+/usr/bin/plutil -lint -s "$LAUNCH_DAEMONS_DIR/$LID_HELPER_LABEL.plist"
 
 # A previous CEF build must not leave Chromium inside a bundle built without it.
 if [[ -e "$FRAMEWORKS_DIR" ]]; then

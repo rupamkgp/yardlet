@@ -339,6 +339,14 @@ final class AppModel {
     @ObservationIgnored var keepsScreenAwake = false
     /// The setting wants the display on, but a battery under 20% lets the screen lock (`RunningWorkActivity`).
     @ObservationIgnored var screenAwakePausedForBattery = false
+    /// The lid helper keeps the Mac awake with its lid closed while tasks work ("Keep tasks working
+    /// with the lid closed"), which the menu bar menu says (`RunningWorkActivity`).
+    @ObservationIgnored var keepsAwakeWithLidClosed = false
+    /// The lid setting wants the Mac awake, but the battery or the heat lets it sleep (`RunningWorkActivity`).
+    @ObservationIgnored var lidAwakePause: LidAwakePause?
+    /// Yardlet's lid helper, for Settings › General. The app sets it; nil in tests and fixtures,
+    /// where the setting is left out.
+    var lidSleepHelper: LidSleepHelper?
     /// Harness CLI update checks (Settings › CLI Updates). The app sets it after restoring the index;
     /// nil in tests and fixtures.
     var cliUpdates: CLIUpdateCenter?

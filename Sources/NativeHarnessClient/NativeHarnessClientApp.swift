@@ -465,6 +465,11 @@ struct NativeHarnessClientApp: App {
                 }
                 .task {
                     appDelegate.model = model
+                    if !model.usesVisualFixture, appDelegate.workActivity.lidHelper == nil {
+                        let lidHelper = LidSleepHelper.live()
+                        model.lidSleepHelper = lidHelper
+                        appDelegate.workActivity.lidHelper = lidHelper
+                    }
                     appDelegate.workActivity.follow(model)
                     if !model.usesVisualFixture, appDelegate.menuBar == nil {
                         appDelegate.menuBar = MenuBarStatusItem.live(

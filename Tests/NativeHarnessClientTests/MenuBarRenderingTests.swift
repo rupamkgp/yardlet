@@ -17,6 +17,9 @@ import XCTest
 /// - `settings-general-*.png`: Settings › General with "Show in menu bar" first.
 /// - `settings-general-updates-*.png`: the same in a build that updates with Sparkle, which adds
 ///   "Automatically check for updates" last.
+/// - `settings-general-lid-*.png` and `menu-lid-*.png`: "Keep tasks working with the lid closed" on
+///   while macOS waits for the person to allow the helper, and the menu's first lines while the screen
+///   and the lid are kept awake; `menu-lid-hot-*.png` while a critical heat lets the Mac sleep.
 @MainActor
 final class MenuBarRenderingTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_792_158_000) // 2026-10-16 13:40 UTC
@@ -103,6 +106,60 @@ final class MenuBarRenderingTests: XCTestCase {
         updates.settle()
         let updateSwitches = updates.accessibilityElements().filter { $0.role == NSAccessibility.Role.checkBox.rawValue }
         XCTAssertEqual(updateSwitches.last?.label, L10n.string("Automatically check for updates"))
+    }
+
+    func testTheLidSettingAndItsMenuLinesDraw() throws {
+        let directory = try WindowlessRender.directory("menu-bar-qa")
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite("MenuBarRendering")))
+        defaults.set(true, forKey: LidClosedWorkPreference.key)
+        let helper = LidSleepHelper(backend: FakeLidSleepHelperBackend(status: .needsApproval))
+        let size = NSSize(width: 820, height: 620)
+        func settings(_ appearance: WindowlessRender.Appearance) -> some View {
+            SettingsCenterView(notificationCenter: MenuBarQuietNotificationCenter(), lidHelper: helper)
+                .defaultAppStorage(defaults)
+                .environment(\.colorScheme, appearance.colorScheme)
+        }
+        try WindowlessRender.hostedInBothAppearances("settings-general-lid", in: directory, size: size) { settings($0) }
+        let host = WindowlessRender.Host(settings(.light), size: size)
+        defer { host.close() }
+        host.settle()
+        let visible = host.accessibilityElements(visibleOnly: true).map { "\($0.label) \($0.value)" }
+        for text in ["Keep tasks working with the lid closed", "Allow Yardlet in the background in System Settings",
+                     "Open System Settings"] {
+            XCTAssertTrue(visible.contains { $0.contains(L10n.string(text)) }, "\(text) in \(visible)")
+        }
+
+        var menu = MenuBarMenu.empty
+        menu.keepsScreenAwake = true
+        menu.keepsAwakeWithLidClosed = true
+        let controller = MenuBarMenuController(content: { menu }, actions: .init())
+        controller.rebuild()
+        let lines = MenuLine.lines(controller.menu.items)
+        XCTAssertEqual(controller.menu.items.prefix(5).map(\.title), [L10n.string("Keeping the screen unlocked"),
+            L10n.string("Turn Off"), "", L10n.string("Keeping tasks working with the lid closed"), L10n.string("Turn Off")])
+        let menuSize = NSSize(width: 440, height: MenuPanel.height(lines) + 40)
+        try WindowlessRender.hostedInBothAppearances("menu-lid", in: directory, size: menuSize) { appearance in
+            MenuPanel(lines: lines, width: 400)
+                .padding(20)
+                .frame(width: menuSize.width, height: menuSize.height, alignment: .topLeading)
+                .background(appearance == .dark ? Color(white: 0.1) : Color(white: 0.85))
+                .environment(\.colorScheme, appearance.colorScheme)
+        }
+
+        menu = .empty
+        menu.lidAwakePause = .heat
+        controller.rebuild()
+        XCTAssertEqual(controller.menu.items.prefix(2).map(\.title), [
+            L10n.string("Not keeping the Mac awake with the lid closed: the Mac is too hot"), L10n.string("Turn Off")])
+        let hotLines = MenuLine.lines(controller.menu.items)
+        let hotSize = NSSize(width: 440, height: MenuPanel.height(hotLines) + 40)
+        try WindowlessRender.hostedInBothAppearances("menu-lid-hot", in: directory, size: hotSize) { appearance in
+            MenuPanel(lines: hotLines, width: 400)
+                .padding(20)
+                .frame(width: hotSize.width, height: hotSize.height, alignment: .topLeading)
+                .background(appearance == .dark ? Color(white: 0.1) : Color(white: 0.85))
+                .environment(\.colorScheme, appearance.colorScheme)
+        }
     }
 
     // MARK: - Fixture

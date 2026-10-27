@@ -136,6 +136,9 @@ struct SettingsCenterView: View {
     let instructions: YardletInstructionsStore?
     /// The routing evaluation's switch, shown with Yardlet Instructions; nil leaves it out.
     let evaluation: RoutingEvaluationStore?
+    /// Yardlet's lid helper; nil where the app has none (tests, fixtures), and General leaves its
+    /// switch out.
+    let lidHelper: LidSleepHelper?
     @State private var section: SettingsSection
     @State private var focusedSection: SettingsSection?
     /// The section list takes the keyboard when Settings opens, as the sidebar list it replaced did.
@@ -164,6 +167,8 @@ struct SettingsCenterView: View {
     @AppStorage(KeepScreenAwakePreference.key) private var keepsScreenAwake = false
     /// Read by the browser host client as it changes and by each memory check (`MemorySaverPreference`).
     @AppStorage(MemorySaverPreference.key) private var savesMemory = true
+    /// `RunningWorkActivity` registers or removes the lid helper as it changes.
+    @AppStorage(LidClosedWorkPreference.key) private var keepsWorkingWithLidClosed = false
     /// Asked of a Claude Code task's CLI when it starts or resumes; the composer reads it live.
     @AppStorage(NextMessageSuggestionPreference.key) private var suggestsNextMessage = true
     @AppStorage(PullRequestAutoFixPrompt.preferenceKey) private var autoFixPrompt = PullRequestAutoFixPrompt.ask.rawValue
@@ -193,7 +198,8 @@ struct SettingsCenterView: View {
         remote: RemoteControlService? = nil,
         cliUpdates: CLIUpdateCenter? = nil,
         instructions: YardletInstructionsStore? = nil,
-        evaluation: RoutingEvaluationStore? = nil
+        evaluation: RoutingEvaluationStore? = nil,
+        lidHelper: LidSleepHelper? = nil
     ) {
         self.size = size
         self.connectors = connectors
@@ -203,6 +209,7 @@ struct SettingsCenterView: View {
         self.cliUpdates = cliUpdates
         self.instructions = instructions
         self.evaluation = evaluation
+        self.lidHelper = lidHelper
         self.notificationCenter = notificationCenter
         _notifications = State(initialValue: SystemNotificationSettingsModel(center: notificationCenter))
         _section = State(initialValue: SettingsSection.initial(initialSection, available: SettingsSection.available(
@@ -462,6 +469,10 @@ struct SettingsCenterView: View {
                         .controlSize(.small)
                 }
                 .padding(.vertical, 14)
+                if let lidHelper {
+                    Divider().padding(.leading, Self.dividerLeading)
+                    lidClosedWorkRow(lidHelper)
+                }
                 Divider().padding(.leading, Self.dividerLeading)
                 HStack(spacing: 12) {
                     settingsControlIcon("memorychip")
@@ -610,6 +621,39 @@ struct SettingsCenterView: View {
     /// Where a General row's divider starts: under the words, past the 30 pt icon and the 12 pt
     /// gap, as Connectors' rows divide.
     static let dividerLeading: CGFloat = 30 + 12
+
+    /// "Keep tasks working with the lid closed", with one line while it is on and macOS has not let
+    /// the helper run yet.
+    private func lidClosedWorkRow(_ helper: LidSleepHelper) -> some View {
+        let note: String? = switch (keepsWorkingWithLidClosed, helper.status) {
+        case (true, .needsApproval): L10n.string("Allow Yardlet in the background in System Settings")
+        case (true, .off): L10n.string("macOS did not add Yardlet's helper")
+        case (true, .unavailable): L10n.string("Not available in this copy of Yardlet")
+        default: nil
+        }
+        return HStack(spacing: 12) {
+            settingsControlIcon("laptopcomputer")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.string("Keep tasks working with the lid closed")).font(.callout.weight(.medium))
+                if let note {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            if keepsWorkingWithLidClosed, helper.status == .needsApproval || helper.status == .off {
+                Button(L10n.string("Open System Settings")) { helper.openSystemSettings() }
+                    .controlSize(.small)
+            }
+            Toggle(L10n.string("Keep tasks working with the lid closed"), isOn: $keepsWorkingWithLidClosed)
+                .labelsHidden()
+                .toggleStyle(.paritySwitch)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 14)
+    }
 
     private func settingsControlIcon(_ systemName: String) -> some View {
         Image(systemName: systemName)

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Yardlet's lid helper (Settings › General › "Keep tasks working with the lid closed"), registered
+  with SMAppService.daemon only while that setting is on. build-app.sh writes it to
+  Contents/Library/LaunchDaemons/@LABEL@.plist. launchd starts the helper when Yardlet connects, and
+  once at startup so a setting an earlier run left on goes back even if Yardlet never opens again.
+  The helper runs as root from a bundle its user can change, so launchd starts only an executable
+  signed by Yardlet's team with the helper's identifier (SpawnConstraint, a launch constraint);
+  sign-app.sh puts in the team, and leaves this file out of a bundle signed ad hoc, which has none.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>@LABEL@</string>
+    <key>BundleProgram</key>
+    <string>Contents/Helpers/yardlet-lid-helper</string>
+    <key>MachServices</key>
+    <dict>
+        <key>@LABEL@</key>
+        <true/>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>SpawnConstraint</key>
+    <dict>
+        <key>team-identifier</key>
+        <string>@TEAM_IDENTIFIER@</string>
+        <key>signing-identifier</key>
+        <string>@LABEL@</string>
+    </dict>
+</dict>
+</plist>
