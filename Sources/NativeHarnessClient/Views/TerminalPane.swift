@@ -26,8 +26,8 @@ struct TerminalPane: View {
     let onClose: () -> Void
     var folder: TerminalFolderContext? = nil
     @State private var session: NativeTerminalSession
-    /// The task's workspace keeps the shell (`TaskWorkspaceState.terminal`), which ends once no panel
-    /// shows it; otherwise the panel's own shell ends with the panel.
+    /// The task's workspace keeps the shell (`TaskWorkspaceState.terminal`), which goes on while no
+    /// panel shows it; otherwise the panel's own shell ends with the panel.
     private let isShared: Bool
     @State private var confirmsRestart = false
     @State private var confirmsFolderRestart = false
@@ -243,7 +243,7 @@ final class NativeTerminalSession: NSObject, @MainActor LocalProcessTerminalView
     private(set) var generation = 0
     /// The folder the person last dismissed the notice for (`TerminalFolderContext`).
     var dismissedFolderNotice: URL?
-    /// No panel showed the shell any more, so it ended; its task's workspace opens a new one next.
+    /// The shell ended for good (`end()`); its task's workspace opens a new one next.
     private(set) var hasEnded = false
 
     /// The shell's view, kept with the shell rather than by the panel, so a panel drawn again for the
@@ -296,13 +296,16 @@ final class NativeTerminalSession: NSObject, @MainActor LocalProcessTerminalView
         shownPanels += 1
     }
 
-    /// A panel stopped showing it. Once none does the shell ends, as a task's terminal ends when the
-    /// task leaves the screen; that is checked after the window's update, so a panel drawn again in
-    /// the same update (the task the new-task screen started, the same task in another place) keeps it.
+    /// A panel stopped showing it. A running shell goes on without one, as the Codex app's and VS
+    /// Code's terminals do when their panel hides or another thread shows: it ends when the person
+    /// exits or restarts it, with its task (`TaskWorkspaceState.endTerminal`), or when Yardlet quits.
+    /// One that exited, or never started, ends once no panel shows it, so the next panel opens a new
+    /// shell. That is checked after the window's update, so a panel drawn again in the same update
+    /// (the task the new-task screen started, the same task in another place) keeps it.
     func panelDisappeared() {
         shownPanels = max(0, shownPanels - 1)
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.shownPanels == 0, !self.hasEnded else { return }
+            guard let self, self.shownPanels == 0, !self.hasEnded, !self.isRunning else { return }
             self.end()
         }
     }

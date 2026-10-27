@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftTerm
 import SwiftUI
 import XCTest
 @testable import NativeHarnessClient
@@ -614,7 +615,7 @@ final class RestartResumeTests: XCTestCase {
 
     /// What keeps a task's CLI through the memory saver, also past three hours under critical pressure: an approval it
     /// waits on, a message waiting to go, a background shell, a session job, a child task still working. An idle task
-    /// beside them ends.
+    /// beside them ends, and its terminal's shell, which does not keep it, goes on.
     func testTheMemorySaverKeepsTheCLIOfATaskThatStillHasWork() async throws {
         let fixture = try ClaudeFixture()
         let now = Date()
@@ -636,6 +637,17 @@ final class RestartResumeTests: XCTestCase {
         await shell.emit(try frame(#"{"type":"system","subtype":"task_started","task_id":"bdev","tool_use_id":"toolu_dev","description":"npm run dev","task_type":"local_bash","is_backgrounded":true}"#))
         await shell.emit(try frame(#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_dev","content":"Running in the background"}]}}"#))
         await shell.emit(try frame(#"{"type":"result","subtype":"success","is_error":false,"result":"Started.","session_id":"s"}"#))
+        let shellHome = FileManager.default.temporaryDirectory.appending(path: "restart-resume-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: shellHome, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: shellHome) }
+        let terminal = model.taskWorkspaces.state(for: tasks[5].id)
+            .terminal(in: shellHome, launch: .isolatedZsh(in: shellHome), taskID: tasks[5].id)
+        defer { terminal.stop() }
+        _ = terminal.view {
+            LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 300),
+                                     font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                                     options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 100))
+        }
         func keeps() -> [String?] {
             tasks.map { task in model.store.sessions.first { $0.id == task.id }.flatMap(model.memorySaverKeeps) }
         }
@@ -643,6 +655,7 @@ final class RestartResumeTests: XCTestCase {
 
         await model.checkHarnessMemory(now: now.addingTimeInterval(4 * 3_600), pressure: .critical, physicalMemory: 16 << 30)
         XCTAssertEqual(tasks.map { model.isAttached($0.id) }, [true, true, true, true, true, false])
+        XCTAssertTrue(terminal.isRunning)
         await model.shutdown()
     }
 

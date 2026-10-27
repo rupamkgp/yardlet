@@ -5436,8 +5436,8 @@ final class AppModel {
     /// What keeps an attached task's runtime whatever the memory saver's rules say, in a word for the log and tests;
     /// nil when the saver may end it. When in doubt it keeps the runtime: the task on screen, a turn or its question,
     /// messages waiting to go, the harness's background shells and schedules, a server of the task or its processes
-    /// keeping a core busy, its terminal, child tasks and subagents still working, and an edit, move or continuation
-    /// under way.
+    /// keeping a core busy (its terminal's among them), child tasks and subagents still working, and an edit, move or
+    /// continuation under way. An idle terminal does not keep it: the shell goes on without the runtime.
     func memorySaverKeeps(_ session: SessionRecord) -> String? {
         let id = session.id
         if memorySaverOnScreenIDs().contains(id) { return "on screen" }
@@ -5453,7 +5453,6 @@ final class AppModel {
         if !BackgroundTasksProjection(entries: transcriptBySessionID[id] ?? []).rows.isEmpty { return "background" }
         if !sessionJobs(of: id).isEmpty { return "schedule" }
         if !resourceMonitor.servers(of: id).isEmpty || !resourceMonitor.busyCPU(of: [id]).isEmpty { return "processes" }
-        if taskWorkspaces.hasRunningTerminal(id) { return "terminal" }
         if sessionTools.runs(hostedBy: id).contains(where: { !$0.state.isFinished })
             || sessionTools.queue.contains(where: { $0.callerID == id })
             || store.sessions.contains(where: { $0.parentTaskID == id && ($0.status == .running || $0.status == .waitingForApproval) }) {

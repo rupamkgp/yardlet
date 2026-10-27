@@ -299,8 +299,8 @@ final class DraftToolsQATests: XCTestCase {
             host.settle(passes: 20, interval: 0.03)
             try draw(host, "home-files", appearance)
 
-            // The terminal, from the title bar. ⌘1 returns to the composer (closing the terminal ends
-            // its shell, as on a task); ⌘3 and ⌘4 open the terminal and the browser, as on a task.
+            // The terminal, from the title bar. ⌘1 returns to the composer (the terminal hides and its
+            // shell goes on, as on a task); ⌘3 and ⌘4 open the terminal and the browser, as on a task.
             XCTAssertTrue(press(showTerminal, in: host, titleBar: true))
             XCTAssertTrue(draftWorkspace.panels.isTerminalPresented)
             let one = commandKey("1", in: host)
@@ -381,7 +381,8 @@ final class DraftToolsQATests: XCTestCase {
                 "Browser model and file state are the same objects, the new-task screen's panels are empty"
             ])
 
-            // Back on the new-task screen: empty; its next shell is a new one, and leaving ends it.
+            // Back on the new-task screen: empty, and its next shell is a new one. The task left the
+            // screen for the new tab and its shell goes on, as a thread's terminal does in the Codex app.
             model.splits.newTab()
             host.settle(passes: 20, interval: 0.03)
             XCTAssertFalse(terminalText(in: host).contains("DRAFT-draft-"), "a new draft has no terminal")
@@ -390,26 +391,42 @@ final class DraftToolsQATests: XCTestCase {
             XCTAssertTrue(waitFor("NEXT-none", in: host), terminalText(in: host))
             let nextPID = try XCTUnwrap(terminalView(in: host.hosting)?.process.shellPid)
             XCTAssertNotEqual(nextPID, shellPID)
-            // The task left the screen for the new tab, so its shell ended, as before this change.
-            let taskShellEnded = !Self.isAlive(shellPID)
-            XCTAssertTrue(taskShellEnded, "a task's shell ends when the task leaves the screen")
+            let taskShellLives = Self.isAlive(shellPID)
+            XCTAssertTrue(taskShellLives, "a task's shell goes on while the task is off screen")
+
+            // The task again: the same shell, with its output and variables.
             let nextShell = draftWorkspace.terminal(in: fixture.folder, launch: fixture.launch, taskID: nil)
+            defer { nextShell.end() }
             model.splits.selectTab(.session(created.id))
             host.settle(passes: 20, interval: 0.05)
-            XCTAssertTrue(nextShell.hasEnded, "no panel shows the new-task screen's shell")
-            XCTAssertFalse(nextShell.isRunning)
-            let deadline = ContinuousClock.now + .seconds(5)
-            while Self.isAlive(nextPID), ContinuousClock.now < deadline { host.settle(passes: 1, interval: 0.05) }
-            let draftShellEnded = !Self.isAlive(nextPID)
-            XCTAssertTrue(draftShellEnded, "leaving the new-task screen ends its shell, as leaving a task does")
+            XCTAssertEqual(terminalView(in: host.hosting)?.process.shellPid, shellPID, "the same shell")
+            XCTAssertTrue(terminalText(in: host).contains("TASK-draft-"), "its output: \(terminalText(in: host))")
+            run("printf 'BACK-%s\\n' \"$DRAFT_MARK\"", in: host)
+            XCTAssertTrue(waitFor("BACK-draft-", in: host), "its variables: \(terminalText(in: host))")
+            try draw(host, "task-returned", appearance)
+            let draftShellLives = !nextShell.hasEnded && nextShell.isRunning && Self.isAlive(nextPID)
+            XCTAssertTrue(draftShellLives, "the new-task screen's shell goes on too")
+
+            // Back on the new-task screen: its shell, as it was.
             model.splits.selectTab(.home)
             host.settle(passes: 20, interval: 0.03)
-            let waits = controls(in: host).contains { $0.label == L10n.string("Start terminal") }
-            XCTAssertTrue(waits, "back on the screen, the terminal waits for Start terminal")
-            describe("Left the new-task screen and came back", [], notes: [
-                "When a new tab takes the task off the screen, the task shell \(shellPID) \(taskShellEnded ? "ended" : "remains") (existing rule)",
-                "Next draft's shell pid \(nextPID) → on going to the task tab \(draftShellEnded ? "ended" : "remains")",
-                "Back on the screen, the terminal shows 'Start terminal' \(waits ? "shown" : "not shown")"
+            XCTAssertEqual(terminalView(in: host.hosting)?.process.shellPid, nextPID)
+            let draftOutput = terminalText(in: host).contains("NEXT-none")
+            XCTAssertTrue(draftOutput, "its output: \(terminalText(in: host))")
+
+            // Archiving the task ends its shell, as archiving a thread closes its terminals in the Codex app.
+            let record = try XCTUnwrap(model.store.sessions.first { $0.id == created.id })
+            try perform(in: host) { await model.archive(record) }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while Self.isAlive(shellPID), ContinuousClock.now < deadline { host.settle(passes: 1, interval: 0.05) }
+            let archivedShellEnded = !Self.isAlive(shellPID)
+            XCTAssertTrue(archivedShellEnded, "archiving the task ends its shell")
+            XCTAssertTrue(Self.isAlive(nextPID), "and only its own")
+            describe("Left the task and the new-task screen and came back", [], notes: [
+                "When a new tab takes the task off the screen, the task shell \(shellPID) \(taskShellLives ? "goes on" : "ended")",
+                "Back on the task: the same shell, its output and variables; the new-task screen's shell \(nextPID) \(draftShellLives ? "goes on" : "ended")",
+                "Back on the new-task screen: the same shell, its output \(draftOutput ? "kept" : "missing")",
+                "Archiving the task: its shell \(archivedShellEnded ? "ended" : "remains")"
             ])
             try draw(host, "home-returned", appearance)
             host.close()

@@ -1,3 +1,5 @@
+import AppKit
+import SwiftTerm
 import XCTest
 @testable import NativeHarnessClient
 
@@ -98,23 +100,64 @@ final class DraftToolsTests: XCTestCase {
         XCTAssertFalse(shell.hasEnded)
     }
 
-    func testAShellEndsOnceNoPanelShowsIt() async throws {
-        let workspace = TaskWorkspaceState()
+    /// A running shell goes on while no panel shows it, as a thread's terminal does in the Codex app,
+    /// and counts toward its task meanwhile. It ends with its task (archived or deleted) and when
+    /// Yardlet quits. One that never started, or exited, ends once no panel shows it, so the next
+    /// panel opens a new one.
+    func testAShellGoesOnWithoutAPanelAndEndsWithItsTask() async throws {
+        let home = FileManager.default.temporaryDirectory.appending(path: "nhc-terminal-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+        let launch = ShellLaunchEnvironment.isolatedZsh(in: home)
         let folder = FileManager.default.temporaryDirectory
-        let shell = workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil)
+        let store = TaskWorkspaceStore()
+        let taskID = UUID()
+        let shell = store.state(for: taskID).terminal(in: folder, launch: launch, taskID: taskID)
+        defer { shell.stop() }
+        let view = shell.view { Self.terminalView() }
+        let shellPID = view.process.shellPid
+        XCTAssertTrue(shell.isRunning)
         shell.panelAppeared()
-        // The task's panel goes and another shows the same shell in the same update.
         shell.panelDisappeared()
-        shell.panelAppeared()
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertFalse(shell.hasEnded, "a panel drawn again in the same update keeps the shell")
-        XCTAssertTrue(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell)
+        XCTAssertTrue(shell.isRunning, "no panel shows it, and it goes on")
+        XCTAssertFalse(shell.hasEnded)
+        XCTAssertEqual(TaskProcessRegistry.shared.registered[shellPID], .task(taskID), "still the task's")
+        XCTAssertTrue(store.state(for: taskID).terminal(in: folder, launch: launch, taskID: taskID) === shell,
+                      "the next panel shows the same shell")
 
-        shell.panelDisappeared()
-        XCTAssertFalse(shell.hasEnded, "checked after the window's update")
-        try await waitUntil { shell.hasEnded }
-        XCTAssertTrue(shell.hasEnded, "no panel shows it: it ends, as a task's terminal ends when the task leaves")
-        XCTAssertFalse(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === shell,
+        store.remove(for: taskID)
+        XCTAssertTrue(shell.hasEnded, "archiving or deleting the task ends its shell")
+        XCTAssertFalse(shell.isRunning)
+        XCTAssertNil(TaskProcessRegistry.shared.registered[shellPID])
+
+        // Quitting ends the shells no panel shows.
+        let other = TaskWorkspaceState().terminal(in: folder, launch: launch, taskID: nil)
+        defer { other.stop() }
+        _ = other.view { Self.terminalView() }
+        XCTAssertTrue(other.isRunning)
+        NativeSurfaceResourceRegistry.shared.stopAll()
+        XCTAssertFalse(other.isRunning)
+
+        // A shell that exited ends once no panel shows it; one shown again in the same update stays.
+        let workspace = TaskWorkspaceState()
+        let exited = workspace.terminal(in: folder, launch: launch, taskID: nil)
+        defer { exited.stop() }
+        _ = exited.view { Self.terminalView() }
+        exited.send("exit\n")
+        let deadline = ContinuousClock.now + .seconds(5)
+        while exited.isRunning, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertFalse(exited.isRunning)
+        exited.panelAppeared()
+        exited.panelDisappeared()
+        exited.panelAppeared()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(exited.hasEnded, "a panel drawn again in the same update keeps it")
+        exited.panelDisappeared()
+        XCTAssertFalse(exited.hasEnded, "checked after the window's update")
+        try await waitUntil { exited.hasEnded }
+        XCTAssertTrue(exited.hasEnded)
+        XCTAssertFalse(workspace.terminal(in: folder, launch: launch, taskID: nil) === exited,
                        "the next panel opens a new shell")
 
         // "Restart in …" ends the shell and asks for the next one.
@@ -126,6 +169,12 @@ final class DraftToolsTests: XCTestCase {
         XCTAssertTrue(workspace.terminalStartRequested)
         XCTAssertGreaterThan(workspace.terminalRevision, revision)
         XCTAssertFalse(workspace.terminal(in: folder, launch: .userLoginShell(), taskID: nil) === next)
+    }
+
+    private static func terminalView() -> LocalProcessTerminalView {
+        LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 300),
+                                 font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                                 options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 100))
     }
 
     func testTheNewTaskScreenOffersTheTerminalBrowserAndFiles() {

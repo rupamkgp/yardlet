@@ -222,8 +222,9 @@ final class TaskWorkspaceState {
     var browserClient: BrowserHostClient? { browserLink?.client }
     /// One explicit panel-open gesture may start a new shell. This is never persisted.
     var terminalStartRequested = false
-    /// The terminal's shell, kept here rather than by the terminal panel, so a shell the new-task
-    /// screen opened goes on in the task it starts. Never saved.
+    /// The terminal's shell, kept here rather than by the terminal panel, so it goes on while the task
+    /// is off screen or its panel hidden, and a shell the new-task screen opened goes on in the task it
+    /// starts. Never saved.
     @ObservationIgnored private var terminalSession: NativeTerminalSession?
     /// Changes when the shell the terminal panel shows is replaced rather than ended by the panel: a
     /// restart in the task's folder, or a task taking over the new-task screen's.
@@ -259,17 +260,13 @@ final class TaskWorkspaceState {
     }
 
     /// The shell the terminal panel shows: the one kept, else a new one in `folder` that starts when a
-    /// panel shows it. One no panel showed any more has ended (`NativeTerminalSession.panelDisappeared`).
+    /// panel shows it. One that exited and no panel showed any more has ended
+    /// (`NativeTerminalSession.panelDisappeared`).
     func terminal(in folder: URL, launch: ShellLaunchEnvironment, taskID: UUID?) -> NativeTerminalSession {
         if let terminalSession, !terminalSession.hasEnded { return terminalSession }
         let session = NativeTerminalSession(workspaceURL: folder, launch: launch, taskID: taskID)
         terminalSession = session
         return session
-    }
-
-    /// The terminal panel's shell runs (the memory saver keeps the task's runtime while it does).
-    var hasRunningTerminal: Bool {
-        terminalSession.map { !$0.hasEnded && $0.isRunning } ?? false
     }
 
     /// "Restart in …": the shell ends and the panel opens the next one in the task's folder.
@@ -278,6 +275,13 @@ final class TaskWorkspaceState {
         terminalSession = nil
         terminalStartRequested = true
         terminalRevision += 1
+    }
+
+    /// The task is archived or deleted: its shell ends with it, as the Codex app closes a thread's
+    /// terminals when the thread is archived or deleted.
+    func endTerminal() {
+        terminalSession?.end()
+        terminalSession = nil
     }
 
     /// A task started from the new-task screen takes over its panels: their tabs, the Files and
@@ -362,7 +366,8 @@ final class TaskWorkspaceState {
         if terminalHandoff?.id == id { terminalHandoff = nil }
     }
 
-    /// Leaving the task ends its terminal's shell; nothing waits to run in the next one.
+    /// Leaving the task leaves its terminal's shell running; nothing waits to be typed or started in it
+    /// on the next visit.
     func leaveTerminal() {
         terminalStartRequested = false
         terminalHandoff = nil
@@ -486,11 +491,6 @@ final class TaskWorkspaceStore {
         sizes.onChange = { [weak self] in self?.sizesChanged() }
     }
 
-    /// Whether the task's terminal shell runs, without loading a workspace not yet shown.
-    func hasRunningTerminal(_ id: UUID) -> Bool {
-        states[id]?.hasRunningTerminal ?? false
-    }
-
     /// The task's workspace if it is loaded, without loading it (which would set its panels before the window does).
     func loadedState(for id: UUID) -> TaskWorkspaceState? {
         states[id]
@@ -544,6 +544,7 @@ final class TaskWorkspaceStore {
     func remove(for id: UUID) {
         if let state = states.removeValue(forKey: id) {
             state.onChange = nil
+            state.endTerminal()
             state.detachBrowser()
             state.browserTabs.terminateForApplicationShutdown()
         }
