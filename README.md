@@ -46,7 +46,13 @@ proxy their accounts: it starts the CLI you already use, with the account you al
 ## Install
 
 Download the notarized `Yardlet-<version>.dmg` from [Releases](../../releases), open it and drag
-Yardlet to Applications.
+Yardlet to Applications. Or install it with [Homebrew](https://github.com/zzunkie/homebrew-tap):
+
+```sh
+brew install --cask zzunkie/tap/yardlet
+```
+
+Either way, Yardlet then updates itself (see [Updates](#updates)).
 
 To build from source, see [Development](#development).
 
