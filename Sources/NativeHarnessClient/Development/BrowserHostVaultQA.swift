@@ -487,6 +487,61 @@ final class BrowserHostVaultQA {
                 && imported.allSatisfy { !$0.hasPassword } && second?.algorithm == .sha256 && second?.digits == 8
                 && second?.key == Data("qa-export-key-two!!!".utf8),
               imported.map { "\($0.name): \($0.username)" }.joined(separator: ", "))
+
+        await exerciseUnlinkedCode(controller, page: page)
+    }
+
+    /// A code brought over with no site (design §14.3) on a page of the site its name names: the code bar
+    /// offers it with the site it will keep, and filling it saves that site. The QA server's code page is
+    /// served at an https address under the reserved `.test` name through CDP request interception, so
+    /// the page has a registrable domain and nothing leaves the Mac.
+    private func exerciseUnlinkedCode(_ controller: BrowserHostPaneController,
+                                      page: @escaping (BrowserTab, String) async -> JSONValue?) async {
+        guard let tab = controller.tab else { return check("panel: a tab for the code with no site", false, "no tab") }
+        let host = "https://accounts.qa-vendor.test/"
+        let vendor = VaultItem(name: "QA Vendor", sites: [], username: "vendor@example.test")
+        try? vault.save(vendor, secret: VaultSecret(oneTimeCode: OneTimeCodeSecret(key: Data("12345678901234567890".utf8))))
+        let base = base
+        let served = tab.devTools.observeEvents { method, params in
+            guard method == "Fetch.requestPaused", let id = params["requestId"]?.stringValue,
+                  let url = params["request"]?["url"]?.stringValue, url.hasPrefix(host),
+                  let source = URL(string: base + url.dropFirst(host.count)) else { return }
+            Task { @MainActor in
+                let (body, response) = (try? await URLSession.shared.data(from: source)) ?? (Data(), nil)
+                _ = try? await tab.devTools.send("Fetch.fulfillRequest", [
+                    "requestId": .string(id),
+                    "responseCode": .integer(Int64((response as? HTTPURLResponse)?.statusCode ?? 404)),
+                    "responseHeaders": .array([.object(["name": .string("Content-Type"),
+                                                        "value": .string("text/html; charset=utf-8")])]),
+                    "body": .string(body.base64EncodedString())
+                ])
+            }
+        }
+        defer {
+            tab.devTools.stopObservingEvents(served)
+            Task { _ = try? await tab.devTools.send("Fetch.disable") }
+        }
+        _ = try? await tab.devTools.send("Fetch.enable", ["patterns": .array([.object(["urlPattern": .string(host + "*")])])])
+
+        controller.addressInput = host + "vault/otp"
+        controller.submitAddress()
+        let loaded = await waitUntilAsync(.seconds(20)) {
+            controller.tab?.currentURL == host + "vault/otp" && controller.tab?.isLoading == false
+        }
+        let offered = await waitUntilAsync(.seconds(6)) { controller.vaultCodeOffer != nil }
+        capture(controller, named: "vault-panel-unlinked-code-bar.png")
+        let offer = controller.vaultCodeOffer
+        check("panel: a code with no site is offered on the site its name names, with the site it will keep",
+              loaded && offered && offer?.items.map(\.id) == [vendor.id] && offer?.newSite == "qa-vendor.test",
+              offer.map { "\($0.items.map(\.name)) → \($0.newSite ?? "no new site")" } ?? "loaded \(loaded), no offer")
+        if let item = offer?.items.first { controller.fillCodeForPerson(item) }
+        let filled = await waitUntilAsync(.seconds(5)) { await page(tab, "document.getElementById('code').value.length")?.integerValue == 6 }
+        _ = await page(tab, "document.querySelector('#one button').click()")
+        let taken = await waitUntilAsync(.seconds(3)) { await page(tab, "window.qa.one") == .bool(true) }
+        let kept = vault.items.first { $0.id == vendor.id }?.sites
+        check("panel: filling it keeps the site for that item and the page takes the code",
+              filled && taken && kept == ["qa-vendor.test"],
+              "filled \(filled), checked \(taken), sites \(kept ?? [])")
     }
 
     private func capture(_ controller: BrowserHostPaneController, named name: String) {

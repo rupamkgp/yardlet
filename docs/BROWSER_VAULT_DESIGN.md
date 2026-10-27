@@ -312,7 +312,7 @@ One tool is added: `browser_fill_credential`. Its description says only what it 
 | Argument | Meaning |
 |---|---|
 | `ref` | The input field reference from the last snapshot. For a sign-in, Yardlet finds the username field and the password field of the form that field belongs to |
-| `item` | Item name or username (optional; usernames since 2026-10-27). If empty, the item matching this tab's origin is used when there is exactly one; if there are several, an error with a list of "name (username)". Items with the same name, which import names after the site, are also picked by username |
+| `item` | Item name or username (optional; usernames since 2026-10-27). If empty, the item matching this tab's origin is used when there is exactly one; if there are several, an error with a list of "name (username)". Only the site's items that have what `kind` asks for (a password, a code, a passkey) are weighed, unless none has it, since a site's password and its two-factor code are often two items (section 14.3). Items with the same name, which import names after the site, are also picked by username |
 | `kind` | `login` (default, username and password), `one_time_code` (TOTP), `passkey` (briefly prepares the virtual authenticator on this tab) |
 | `submit` | Submit the form after filling (optional) |
 | `tabId` | Same as in the other page tools |
@@ -646,6 +646,12 @@ app (such as Google Authenticator).
 | Code at sign-in | Filling a sign-in fills the code too, inline menu ([help](https://support.1password.com/one-time-passwords/), [release notes](https://releases.1password.com/b5x/stable/)) | Inline menu and shortcut, the code copied automatically after sign-in autofill (on by default) ([help](https://bitwarden.com/help/auto-fill-browser/)) | One click on the autofill suggestion ([WWDC21](https://developer.apple.com/videos/play/wwdc2021/10105/)) | One click on the code bar when a code field shows; the key button gives the code when clicked from a code field |
 | Viewing and copying codes | Item details | Item details | Clicking the code in account details copies it ([help](https://support.apple.com/en-ca/guide/passwords/mchl873a6e72/2.0/mac/26)) | Settings → Vault "Two-factor codes" list and the item sheet: code, seconds left, copy |
 | Moving over from authenticator apps | — | Bitwarden Authenticator imports Google Authenticator QR codes ([help](https://bitwarden.com/help/authenticator-import-export/)) | — | Google Authenticator export QR (image files or a page), the `OTPAuth` and `login_totp` columns in CSV |
+| A code whose item has no website for the page | Not found in the official help | "all autofill methods with the browser extension require your login items to have an assigned website URI"; in the item, "Autofill and save" fills and adds the page's URI ([help](https://bitwarden.com/help/auto-fill-browser/)) | A code is set up inside an account, which has its website ([help](https://support.apple.com/en-ca/guide/passwords/mchl873a6e72/2.0/mac/26)) | The code bar offers a code with no site whose name names the page's site; filling it saves the site (section 14.3) |
+
+The 2FAS authenticator's browser extension, whose codes have no domain either, asks on the phone which code goes with a
+site the first time, because "it doesn't know which token should be assigned to the X.com domain", and answers that
+site's later requests with that code right away ([help](https://2fas.com/support/2fas-auth-browser-extension/why-does-sometimes-the-2fas-app-send-tokens-automatically-and-sometimes-ask-to-select-a-token/)).
+None of these guesses a website when codes are imported: the site is saved when the person picks the code on it.
 
 Google Authenticator makes the QR in "Transfer accounts → Export accounts", and with many accounts there can be several
 QR codes ([help](https://support.google.com/accounts/answer/1066447?hl=en&co=GENIE.Platform%3DAndroid)). That QR's
@@ -690,9 +696,17 @@ apps, and backup and restore work only between devices of the same kind
   row. Copying adds `org.nspasteboard.ConcealedType` so clipboard history apps do not keep it. Viewing a code does not
   ask for Touch ID (the same level as the person's key button fill, and phone authenticator apps do not ask by default
   either). The keychain is read only while this list is visible.
-- **Items without a site:** like an authenticator app's entries, they only show and copy the code. They fill no page
-  (without a site there is no match under section 6.2). Once a site is added in the item sheet, that site's code bar and
-  the agent's `one_time_code` use it.
+- **Items without a site:** like an authenticator app's entries, they show and copy the code, and an import saves them
+  without a site, since an issuer such as "Amazon Web Services" names no domain. When a code field shows and none of the
+  site's own items has a code, the code bar offers the codes with no site whose name names the page's site: the name,
+  or its first word, is the registrable domain's own label apart from case, spaces and punctuation (`Vercel` for
+  `vercel.com`, `Amazon Web Services` for `signin.aws.amazon.com`, not `Vercel` for `vercel-login.com`). The bar says
+  the site it keeps ("Fill the two-factor code from “Vercel” and link it to vercel.com?"), and filling it saves that site
+  in the item, as Bitwarden's "Autofill and save" and 2FAS do (section 14.2); from then on it is the site's code for the
+  code bar and the agent. Nothing is saved before the person picks a code, and a code whose name names no site (a
+  personal label) still gets its site in the item sheet. An agent never fills a code with no site: its refusal names
+  the code and says the person can fill it once from the code bar, and asking for one by name is no phishing sign
+  (section 6.3).
 
 ### 14.4 Rules kept
 
@@ -718,6 +732,12 @@ stores and encrypts one-time passwords together with passwords, and does not dis
 Privacy](https://images.apple.com/legal/privacy/data/en/passwords/)). The Yardlet vault has no sync, so there is no
 account to be breached remotely; instead, the user session on this Mac is both factors. For accounts where that
 trade-off is unwelcome, such as a bank, keep the key only in the phone authenticator app.
+
+Offering a code with no site by its name compares only the label, not the public suffix, so `vercel.co` would be
+offered the Vercel code too. That is no worse than before it was linked: a phone authenticator app shows its codes on
+any site. The bar names the site it would save, the person decides, and only the site they filled it on is saved, which
+then holds that item to the same site rule as any other (section 6.2). Agents keep to saved sites, so a look-alike page
+cannot get a code while the person is away.
 
 ### 14.6 What it cannot replace
 
@@ -765,4 +785,11 @@ trade-off is unwelcome, such as a bank, keep the key only in the phone authentic
   offered as the default target; and the page accepted the first code filled after saving. The export QR was read both
   through the automatic offer and through the right-click menu and became two items (including SHA-256 and 8 digits).
   The panel PNGs (`vault-panel-code-bar`, `-setup-bar`, `-import-bar`) were checked by eye.
+- Codes with no site (2026-10-28): `VaultTests.testACodeWithNoSiteIsOfferedWhereItsNameSaysAndKeepsTheSiteThePersonPicksItOn`
+  (the name rule, `vercel-login.com` not offered the Vercel code, an agent's refusal without a phishing notification,
+  the site kept after the person picks the code, and a site's password and code in two items each filled by kind).
+  The same QA run, 39 checks: the QA server's code page served at `https://accounts.qa-vendor.test/` through CDP
+  request interception (`Fetch.fulfillRequest`, nothing leaves the Mac) offers a "QA Vendor" code with no site in the
+  code bar with `qa-vendor.test`, and filling it passes the page's check and saves that site in the item. The panel PNG
+  `vault-panel-unlinked-code-bar` was checked by eye.
 

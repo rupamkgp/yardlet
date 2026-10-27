@@ -2684,6 +2684,8 @@
 "Add Two-Factor Code from QR Code" = "Add Two-Factor Code from QR Code";
 "Fill the two-factor code from “%@”?" = "Fill the two-factor code from “%@”?";
 "Fill a two-factor code for %@?" = "Fill a two-factor code for %@?";
+"Fill the two-factor code from “%@” and link it to %@?" = "Fill the two-factor code from “%@” and link it to %@?";
+"Fill a two-factor code and link it to %@?" = "Fill a two-factor code and link it to %@?";
 "Not Now" = "Not Now";
 "Fill Code" = "Fill Code";
 "New Item" = "New Item";

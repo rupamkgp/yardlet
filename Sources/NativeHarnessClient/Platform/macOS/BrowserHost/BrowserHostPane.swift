@@ -1427,12 +1427,19 @@ struct BrowserHostPane: View {
     }
 
     /// The suggestion at a code field that password managers show, as a bar over the page: the site's
-    /// item has a two-factor code and the page asks for one.
+    /// item has a two-factor code and the page asks for one. A code with no site yet, offered by its name,
+    /// says the site it keeps.
     private func vaultCodeBar(_ offer: BrowserVaultCodeOffer) -> some View {
         vaultBar(systemName: "number") {
-            Text(offer.items.count == 1
-                 ? L10n.format("Fill the two-factor code from “%@”?", offer.items[0].name)
-                 : L10n.format("Fill a two-factor code for %@?", VaultSite.host(of: offer.origin)))
+            if let site = offer.newSite {
+                Text(offer.items.count == 1
+                     ? L10n.format("Fill the two-factor code from “%@” and link it to %@?", offer.items[0].name, site)
+                     : L10n.format("Fill a two-factor code and link it to %@?", site))
+            } else {
+                Text(offer.items.count == 1
+                     ? L10n.format("Fill the two-factor code from “%@”?", offer.items[0].name)
+                     : L10n.format("Fill a two-factor code for %@?", VaultSite.host(of: offer.origin)))
+            }
         } actions: {
             Button(L10n.string("Not Now")) { controller.vaultCodeOffer = nil }
                 .controlSize(.small)

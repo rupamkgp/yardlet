@@ -6,7 +6,8 @@ import XCTest
 
 /// The vault's contracts that would break without a visible sign (docs/BROWSER_VAULT_DESIGN.md):
 /// which pages an item's sites cover, the RFC 6238 codes, the refusal of an item asked for on
-/// another site, and the codes an authenticator app's export brings over.
+/// another site, the codes an authenticator app's export brings over, and how such a code with no
+/// site comes to fill on its site.
 @MainActor
 final class VaultTests: XCTestCase {
     func testSitesCoverTheirSubdomainsOverHTTPSAndNothingThatOnlyLooksAlike() {
@@ -88,6 +89,63 @@ final class VaultTests: XCTestCase {
         XCTAssertEqual(center.importOneTimeCodes(found.setups), 0)
         XCTAssertEqual(center.items.map(\.name), ["Example", "Second"])
         XCTAssertTrue(center.items.allSatisfy { $0.sites.isEmpty && $0.hasOneTimeCode && !$0.hasPassword })
+    }
+
+    /// A code imported with no site (design §14.3) is offered on the pages its name names, and not on a
+    /// look-alike; an agent cannot fill it, and asking for it is no phishing sign; once the person picks it
+    /// there it keeps the site, and on a site whose password is another item each fill takes the item that
+    /// has what it asks for.
+    func testACodeWithNoSiteIsOfferedWhereItsNameSaysAndKeepsTheSiteThePersonPicksItOn() async throws {
+        XCTAssertTrue(VaultSite.isNamed("amazon.com", by: "Amazon Web Services (ada@123456789012)"))
+        XCTAssertTrue(VaultSite.isNamed("linkedin.com", by: "Linked In"))
+        XCTAssertFalse(VaultSite.isNamed("vercel-login.com", by: "Vercel"))
+        XCTAssertFalse(VaultSite.isNamed("http://localhost:3000", by: "localhost"))
+
+        let key = OneTimeCodeSecret(key: Data("12345678901234567890".utf8))
+        let vercel = VaultItem(name: "Vercel", sites: [], username: "ada@example.test")
+        let aws = VaultItem(name: "Amazon Web Services", sites: [], username: "ada@123456789012")
+        let gitHubCode = VaultItem(name: "GitHub", sites: [], username: "ada")
+        let gitHub = VaultItem(name: "GitHub", sites: ["github.com"], username: "ada")
+        let center = VaultCenter(environment: VaultCenter.Environment(
+            secrets: InMemoryVaultSecretStore(), repository: InMemoryVaultRepository(), hmac: MacVault.hmac,
+            isAllowedBuild: true, defaults: .vaultTests()))
+        for item in [vercel, aws, gitHubCode] { try center.save(item, secret: VaultSecret(oneTimeCode: key)) }
+        try center.save(gitHub, secret: VaultSecret(password: "correct horse"))
+        var notices: [String] = []
+        center.notify = { title, _, _ in notices.append(title) }
+        let task = UUID()
+
+        XCTAssertEqual(center.unlinkedCodeItems(for: "https://vercel.com").map(\.id), [vercel.id])
+        XCTAssertEqual(center.unlinkedCodeItems(for: "https://signin.aws.amazon.com").map(\.id), [aws.id])
+        XCTAssertEqual(center.unlinkedCodeItems(for: "https://vercel-login.com"), [])
+        XCTAssertNil(center.valuesForPerson(vercel, origin: "https://vercel.com"))
+        let asked: [(String?, String)] = [(nil, "https://vercel.com"), ("Vercel", "https://vercel.com"), (nil, "https://github.com")]
+        for (name, origin) in asked {
+            let refused = await center.authorize(VaultFillRequest(sessionID: task, itemName: name, kind: .oneTimeCode,
+                                                                  origin: origin))
+            guard case let .failure(refusal) = refused else { return XCTFail("an agent filled a code with no site") }
+            XCTAssertTrue(refusal.message.contains("code bar"), refusal.message)
+        }
+        XCTAssertEqual(notices, [])
+
+        center.link(vercel.id, to: "vercel.com")
+        let linked = try XCTUnwrap(center.items.first { $0.id == vercel.id })
+        XCTAssertEqual(linked.sites, ["vercel.com"])
+        XCTAssertEqual(center.unlinkedCodeItems(for: "https://vercel.com"), [])
+        XCTAssertEqual(center.valuesForPerson(linked, origin: "https://vercel.com")?.code?.count, 6)
+        let agent = await center.authorize(VaultFillRequest(sessionID: task, itemName: nil, kind: .oneTimeCode,
+                                                            origin: "https://vercel.com"))
+        guard case .success = agent else { return XCTFail("the linked code did not fill on its site") }
+
+        center.link(gitHubCode.id, to: "github.com")
+        for (kind, item) in [(VaultFillKind.login, gitHub), (.oneTimeCode, gitHubCode)] {
+            for name in [nil, "GitHub", "ada"] {
+                let filled = await center.authorize(VaultFillRequest(sessionID: task, itemName: name, kind: kind,
+                                                                     origin: "https://github.com"))
+                guard case let .success(grant) = filled else { return XCTFail("\(kind) named \(name ?? "nothing") was refused") }
+                XCTAssertEqual(grant.item.id, item.id)
+            }
+        }
     }
 
     func testAnItemAskedForOnAnotherSiteIsRefusedAndThePersonIsTold() async throws {

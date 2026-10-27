@@ -25,6 +25,8 @@ struct BrowserVaultCodeOffer: Equatable {
     /// The document the field is in; moving to another one ends the offer.
     var page: String
     var items: [VaultItem]
+    /// The site the chosen item keeps, when the items have no site yet and only their name points here.
+    var newSite: String? = nil
 }
 
 /// A two-factor setup QR code or link the page showed (design §14), offered for the vault.
@@ -172,17 +174,22 @@ extension BrowserHostPaneController {
         fill(item, codeOnly: false)
     }
 
-    /// The person chose the code bar's item: its current code goes into the page's code field.
+    /// The person chose the code bar's item: its current code goes into the page's code field. An item the
+    /// bar offered by its name alone keeps the page's site from now on.
     func fillCodeForPerson(_ item: VaultItem) {
+        let offer = vaultCodeOffer
         vaultCodeOffer = nil
-        fill(item, codeOnly: true)
+        fill(item, codeOnly: true, linking: offer?.items.contains { $0.id == item.id } == true ? offer?.newSite : nil)
     }
 
-    private func fill(_ item: VaultItem, codeOnly: Bool) {
+    private func fill(_ item: VaultItem, codeOnly: Bool, linking site: String? = nil) {
         guard let tab else { return }
         Task { @MainActor [weak self] in
-            guard let self, let frame = try? await VaultPageScripts.mainFrame(tab.devTools, timeout: .seconds(10)),
-                  let grant = self.vault.valuesForPerson(item, origin: frame.origin) else { return }
+            guard let self, let frame = try? await VaultPageScripts.mainFrame(tab.devTools, timeout: .seconds(10)) else { return }
+            var item = item
+            // Saved only while the page is still on that site.
+            if let site, VaultSite.matches(site, origin: frame.origin) { item = self.vault.link(item.id, to: site) ?? item }
+            guard let grant = self.vault.valuesForPerson(item, origin: frame.origin) else { return }
             MacAgentToolService.shared.broker.noteVaultValues([grant.password, grant.code])
             MacBrowserHost.shared.loginFollow.personFilling(on: tab)
             let filled = await VaultPageScripts.fillForPerson(tab.devTools, username: grant.username, password: grant.password,
@@ -200,10 +207,14 @@ extension BrowserHostPaneController {
         guard vault.isAllowedBuild, vault.isEnabled else { return }
         Task { @MainActor [weak self] in
             guard let self, let frame = try? await VaultPageScripts.mainFrame(tab.devTools, timeout: .seconds(10)) else { return }
-            let items = self.vault.items(for: frame.origin).filter(\.hasOneTimeCode)
+            let own = self.vault.items(for: frame.origin).filter(\.hasOneTimeCode)
+            // Codes brought over from an authenticator app have no site until the person picks one here.
+            let items = own.isEmpty ? self.vault.unlinkedCodeItems(for: frame.origin) : own
             // On a setup page the field is for the new code, which saving the setup fills.
             guard !items.isEmpty, self.tab === tab, self.vaultSetupOffer == nil else { return }
-            self.vaultCodeOffer = BrowserVaultCodeOffer(origin: frame.origin, page: page, items: items)
+            self.vaultCodeOffer = BrowserVaultCodeOffer(
+                origin: frame.origin, page: page, items: items,
+                newSite: own.isEmpty ? VaultSite.suggestion(for: frame.origin, suffixes: self.vault.suffixes) : nil)
         }
     }
 

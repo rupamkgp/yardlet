@@ -2684,6 +2684,8 @@
 "Add Two-Factor Code from QR Code" = "QR 코드에서 2단계 인증 추가";
 "Fill the two-factor code from “%@”?" = "“%@”의 인증 코드를 채울까요?";
 "Fill a two-factor code for %@?" = "%@ 인증 코드를 채울까요?";
+"Fill the two-factor code from “%@” and link it to %@?" = "“%1$@”의 인증 코드를 채우고 %2$@ 사이트에 연결할까요?";
+"Fill a two-factor code and link it to %@?" = "인증 코드를 채우고 %@ 사이트에 연결할까요?";
 "Not Now" = "나중에";
 "Fill Code" = "코드 채우기";
 "New Item" = "새 항목";

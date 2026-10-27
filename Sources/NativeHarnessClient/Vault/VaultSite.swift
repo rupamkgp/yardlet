@@ -125,6 +125,17 @@ enum VaultSite {
         return host == site || host.hasSuffix("." + site)
     }
 
+    /// Whether a name, such as an authenticator app's issuer, names the site: the name or its first word
+    /// is the site's own label (`Vercel` for `vercel.com`, `Amazon Web Services` for `amazon.com`), apart
+    /// from case, spaces and punctuation. The public suffix is not compared (`vercel.co` is named too), so
+    /// this only suggests an item; the person choosing it there is what saves the site.
+    static func isNamed(_ site: String, by name: String) -> Bool {
+        guard !site.contains("://"), let label = site.split(separator: ".").first else { return false }
+        let own = label.lowercased().filter { $0.isLetter || $0.isNumber }
+        let words = name.lowercased().split { !$0.isLetter && !$0.isNumber }
+        return !own.isEmpty && (words.first.map(String.init) == own || words.joined() == own)
+    }
+
     /// The display host of a page origin (`https://www.github.com` → `www.github.com`).
     static func host(of address: String) -> String {
         URL(string: address)?.host(percentEncoded: false) ?? address
