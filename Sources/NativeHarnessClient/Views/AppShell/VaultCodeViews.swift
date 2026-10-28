@@ -39,12 +39,64 @@ struct VaultLiveCode: View {
         return String(code[..<middle]) + " " + String(code[middle...])
     }
 
-    /// Copies the code marked as concealed, so clipboard history apps leave it out (nspasteboard.org).
     static func copy(_ code: String) {
-        let pasteboard = NSPasteboard.general
+        VaultClipboard.copy(code)
+    }
+}
+
+/// What the password manager puts on the clipboard (a code, a password the person copies from an item sheet), as
+/// password managers do: marked concealed (nspasteboard.org), so clipboard history apps leave it out and the agent's
+/// paste does not take it, and cleared after 90 seconds unless something else was copied since, as 1Password clears
+/// what it copied. Universal Clipboard still carries it to the person's own devices.
+@MainActor
+enum VaultClipboard {
+    static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    static let clearAfter: Duration = .seconds(90)
+    /// What is to be cleared: the pasteboard and its change count once the value went on it.
+    private static var pending: (pasteboard: NSPasteboard, count: Int)?
+    private static var quitObserver: NSObjectProtocol?
+
+    static func copy(_ value: String, to pasteboard: NSPasteboard = .general) {
         pasteboard.clearContents()
-        pasteboard.setString(code, forType: .string)
-        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        pasteboard.setString(value, forType: .string)
+        pasteboard.setData(Data(), forType: concealedType)
+        clearLater(pasteboard)
+    }
+
+    /// After the person's Copy or Cut in a field that shows a secret: what they copied, when it is part of one of
+    /// `secrets`, is marked and cleared as `copy` does.
+    static func conceal(ifPartOf secrets: [String], on pasteboard: NSPasteboard = .general) {
+        guard !holdsConcealed(pasteboard), let copied = pasteboard.string(forType: .string),
+              copied.count >= VaultScrubList.shortest,
+              secrets.contains(where: { $0.contains(copied) }) else { return }
+        pasteboard.addTypes([concealedType], owner: nil)
+        pasteboard.setData(Data(), forType: concealedType)
+        clearLater(pasteboard)
+    }
+
+    static func holdsConcealed(_ pasteboard: NSPasteboard = .general) -> Bool {
+        pasteboard.types?.contains(concealedType) == true
+    }
+
+    private static func clearLater(_ pasteboard: NSPasteboard) {
+        let count = pasteboard.changeCount
+        pending = (pasteboard, count)
+        if quitObserver == nil {
+            quitObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                                                  object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { clearPending() }
+            }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: clearAfter)
+            if pending?.pasteboard === pasteboard, pending?.count == count { clearPending() }
+        }
+    }
+
+    private static func clearPending() {
+        guard let pending else { return }
+        self.pending = nil
+        if pending.pasteboard.changeCount == pending.count { pending.pasteboard.clearContents() }
     }
 }
 

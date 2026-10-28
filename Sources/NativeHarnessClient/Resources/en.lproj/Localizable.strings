@@ -2637,7 +2637,10 @@
 "Waiting for you to sign in" = "Waiting for you to sign in";
 "“%@” is waiting to sign in to %@ with “%@”." = "“%@” is waiting to sign in to %@ with “%@”.";
 "fill “%@” on %@ for “%@”" = "fill “%@” on %@ for “%@”";
+"fill “%@” on %@ for “%@”, on a page where it ran its own scripts" = "fill “%@” on %@ for “%@”, on a page where it ran its own scripts";
 "The keychain refused the password item: %@" = "The keychain refused the password item: %@";
+"A password item changed outside Yardlet" = "A password item changed outside Yardlet";
+"“%@” has sites or an agent use Yardlet did not save, so it fills nothing. Open it in Settings → Passwords to check it and save it." = "“%@” has sites or an agent use Yardlet did not save, so it fills nothing. Open it in Settings → Passwords to check it and save it.";
 
 /* Vault settings */
 "Passwords" = "Passwords";

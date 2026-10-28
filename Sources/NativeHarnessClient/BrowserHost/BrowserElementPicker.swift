@@ -161,11 +161,12 @@ final class BrowserElementPicker {
         let ratio = try await devTools.send("Runtime.evaluate", ["expression": .string("devicePixelRatio"),
                                                                  "returnByValue": .bool(true)])["result"]?["value"]?.doubleValue ?? 1
         let scale = min(1, longestSide / (max(right - left, bottom - top) * max(ratio, 0.1)))
-        let hidden = try? await devTools.send("Runtime.evaluate", [
+        // A picture whose typed values could not be hidden is not taken.
+        guard let hidden = try? await devTools.send("Runtime.evaluate", [
             "expression": .string("(\(hideTypedValues))(\(left), \(top), \(right - left), \(bottom - top))"),
             "returnByValue": .bool(true)
-        ])
-        let covered = (hidden?["result"]?["value"]?.integerValue ?? 0) > 0
+        ]), hidden["exceptionDetails"] == nil, let count = hidden["result"]?["value"]?.integerValue else { return nil }
+        let covered = count > 0
         let shot: JSONValue
         do {
             shot = try await devTools.send("Page.captureScreenshot", [

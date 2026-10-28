@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One sign-in in the vault for agents (docs/BROWSER_VAULT_DESIGN.md §8.2): its name, sites,
@@ -64,6 +65,12 @@ struct VaultItemSheet: View {
         .background(ParityTheme.canvas)
         .task {
             if let original, original.hasOneTimeCode { savedCode = vault.secret(of: original.id)?.oneTimeCode }
+        }
+        // A password or setup key the person copies out of its field goes on the clipboard as the vault's own copies do.
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didSendActionNotification)) { note in
+            let action = (note.userInfo?["MenuItem"] as? NSMenuItem)?.action
+            guard action == #selector(NSText.copy(_:)) || action == #selector(NSText.cut(_:)) else { return }
+            VaultClipboard.conceal(ifPartOf: [password, setupKey])
         }
         .alert(L10n.format("Delete “%@”?", original?.name ?? ""), isPresented: $confirmsDeleting) {
             Button(L10n.string("Delete"), role: .destructive, action: delete)

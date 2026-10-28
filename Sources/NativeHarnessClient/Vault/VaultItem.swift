@@ -48,6 +48,11 @@ struct VaultSecret: Codable, Equatable, Sendable {
     var password: String?
     var oneTimeCode: OneTimeCodeSecret?
     var passkey: VaultPasskey?
+    /// The item's sites and agent policy as Yardlet last saved them (`VaultCenter.save`). `items.json` is a plain file
+    /// any process of the person's can write, the keychain item only Yardlet can read, so the secret goes only where
+    /// and as these say.
+    var savedSites: [String]?
+    var savedPolicy: VaultItem.Policy?
 
     init(password: String? = nil, oneTimeCode: OneTimeCodeSecret? = nil, passkey: VaultPasskey? = nil) {
         self.password = password
@@ -131,6 +136,23 @@ enum OneTimeCode {
 /// RFC 4648 base32, as TOTP setup keys are written.
 enum Base32 {
     private static let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
+
+    /// Unpadded, in capitals, as sites show a setup key.
+    static func encode(_ data: Data) -> String {
+        var bits: UInt32 = 0
+        var count = 0
+        var text = ""
+        for byte in data {
+            bits = (bits << 8) | UInt32(byte)
+            count += 8
+            while count >= 5 {
+                count -= 5
+                text.append(alphabet[Int((bits >> UInt32(count)) & 31)])
+            }
+        }
+        if count > 0 { text.append(alphabet[Int((bits << UInt32(5 - count)) & 31)]) }
+        return text
+    }
 
     static func decode(_ text: String) -> Data? {
         var bits: UInt32 = 0

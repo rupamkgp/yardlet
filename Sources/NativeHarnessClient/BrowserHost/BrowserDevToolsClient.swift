@@ -36,7 +36,8 @@ final class BrowserDevToolsClient {
     private var nextID: Int64 = 1
     private var pending: [Int64: (method: String, session: String?, continuation: CheckedContinuation<JSONValue, Error>)] = [:]
     private var eventWaiters: [(token: Int64, method: String, continuation: CheckedContinuation<JSONValue?, Never>)] = []
-    /// Every event of the tab's own session received, in order. A frame session's events stay out of it.
+    /// Every event of the tab's own session received, in order, but a binding's call. A frame session's events stay
+    /// out of it.
     private(set) var events: [(method: String, params: JSONValue)] = []
     /// The frames from other sites attached now, in the order they attached (`attachFrames()`).
     private(set) var frameSessions: [BrowserFrameSession] = []
@@ -130,7 +131,8 @@ final class BrowserDevToolsClient {
             let session = value["sessionId"]?.stringValue
             followFrameSessions(method, params, from: session)
             guard session == nil else { return }
-            events.append((method, params))
+            // A binding's payload is for its observer alone: the vault's carries what the person typed into a sign-in.
+            if method != "Runtime.bindingCalled" { events.append((method, params)) }
             eventObservers.values.forEach { $0(method, params) }
             let matching = eventWaiters.filter { $0.method == method }
             eventWaiters.removeAll { $0.method == method }

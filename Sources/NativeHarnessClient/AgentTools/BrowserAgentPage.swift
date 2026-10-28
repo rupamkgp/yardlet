@@ -71,11 +71,15 @@ final class BrowserAgentPage {
     var emulateColorScheme: (String?) async throws -> Void = { _ in
         throw BrowserAgentToolError("This browser cannot emulate a color scheme.")
     }
-    /// What the vault last filled into this page, until the field is gone or the page navigates.
-    var vaultFill: BrowserAgentVaultFill?
-    /// The documents (main frame `loaderId`) the vault filled a secret into, which stay closed to the agent's
-    /// scripts when going back shows one again.
-    var vaultFilledDocuments: Set<String> = []
+    /// What the vault filled into the tab's documents; the tab's own (`BrowserTab.vaultFills`), which the
+    /// person's fills from the panel record in too.
+    var vaultFills = BrowserVaultFills()
+    /// A tab of the task linked to this one by `window.opener` (this tab's page opened it, or it opened this one, or so
+    /// on through other tabs) that shows a document the vault filled: its id. Page scripts here can reach that document.
+    var linkedVaultFill: () -> BrowserTabID? = { nil }
+    /// The agent is about to run its own script here: the documents the task's tabs linked to this one by
+    /// `window.opener` show now are noted as scripted (`BrowserVaultFills.noteScript`), as this tab's own is.
+    var noteScriptInLinkedTabs: () async -> Void = {}
     /// The vault's passkey waiting in this tab's authenticator for the page's next request.
     var armedPasskey: BrowserAgentArmedPasskey? {
         didSet { onArmedPasskeyChange?(self) }

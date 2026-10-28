@@ -107,6 +107,7 @@ extension BrowserHostPaneController {
         case "codeField":
             MacBrowserHost.shared.loginFollow.codeFieldShown(on: tab)
             codeFieldShown(on: tab, page: fields["page"] ?? "")
+        case "typedSecret": personTypedSecret(on: tab)
         case "qr": scanForCodes(on: tab, page: fields["page"] ?? "", asked: false)
         case "setup": setupsFound(OneTimeCodeSetup.setups(in: fields["text"] ?? ""), on: tab, page: fields["page"] ?? "",
                                   asked: false)
@@ -135,6 +136,13 @@ extension BrowserHostPaneController {
             self.vaultOffer = BrowserVaultSaveOffer(origin: frame.origin, site: site, username: username,
                                                     password: password, updates: sameUser)
         }
+    }
+
+    /// The person typed a password into the page (the agent's typing is no use of the panel): the agent's tools treat
+    /// the page as one the vault filled, as after the key button, though the value is not known until it is sent.
+    private func personTypedSecret(on tab: BrowserTab) {
+        guard vault.isAllowedBuild, vault.isEnabled, let used = tab.lastPersonUse, ContinuousClock.now - used < .seconds(5) else { return }
+        Task { await VaultPageScripts.noteSecretsShown([], on: tab.devTools, fills: tab.vaultFills) }
     }
 
     func acceptVaultOffer() {
@@ -197,7 +205,8 @@ extension BrowserHostPaneController {
                 tab.send(.guardFilledValues(tab: tab.id, values: VaultScrubList.spellings(of: password)))
             }
             MacBrowserHost.shared.loginFollow.personFilling(on: tab)
-            let filled = await VaultPageScripts.fillForPerson(tab.devTools, username: grant.username, password: grant.password,
+            let filled = await VaultPageScripts.fillForPerson(tab.devTools, frame: frame, fills: tab.vaultFills,
+                                                              username: grant.username, password: grant.password,
                                                               code: grant.code, codeOnly: codeOnly)
             if !filled {
                 self.showVaultNotice(codeOnly ? L10n.string("This page has no code field to fill.")
@@ -243,6 +252,7 @@ extension BrowserHostPaneController {
     private func setupsFound(_ found: (setups: [OneTimeCodeSetup], unsupported: Int), on tab: BrowserTab, page: String,
                              asked: Bool) {
         guard vault.isAllowedBuild, vault.isEnabled else { return }
+        keepSetupKeysFromAgents(found.setups, on: tab)
         let new = found.setups.filter { !vault.holds($0.secret) && (asked || !dismissedSetups.contains($0.secret.key)) }
         guard !new.isEmpty else {
             if asked {
@@ -263,6 +273,15 @@ extension BrowserHostPaneController {
                 target: site == nil ? nil : self.vault.oneTimeCodeTarget(for: new[0], origin: frame.origin),
                 choices: site == nil ? [] : self.vault.items(for: frame.origin))
         }
+    }
+
+    /// A setup's key makes the account's codes for good: no tool result carries it, and the agent's tools treat the
+    /// page that shows it as one the vault filled, whether or not the person saves it.
+    private func keepSetupKeysFromAgents(_ setups: [OneTimeCodeSetup], on tab: BrowserTab) {
+        let spellings = setups.flatMap { VaultPageScripts.spellings(ofSetupKey: $0.secret.key) }
+        guard !spellings.isEmpty else { return }
+        MacAgentToolService.shared.broker.noteVaultValues(spellings)
+        Task { await VaultPageScripts.noteSecretsShown(spellings, on: tab.devTools, fills: tab.vaultFills) }
     }
 
     /// Saves the setup bar's code: a site's into its item (the default target unless the person chose

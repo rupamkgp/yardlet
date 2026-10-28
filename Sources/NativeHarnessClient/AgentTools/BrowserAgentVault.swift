@@ -107,12 +107,60 @@ struct VaultScrubList {
     }
 }
 
-/// What the vault filled into a page: the isolated world that keeps the filled fields, the document it
-/// is in, and where the event log stood (a main-frame navigation after it ends the fill).
-struct BrowserAgentVaultFill {
-    var contextID: Int64
+/// A password or a code the vault filled into a page: the document (the main frame's `loaderId`) and where the
+/// tab's event log stood (a main-frame navigation after it ends the fill).
+struct BrowserAgentVaultFill: Equatable {
     var loaderID: String
     var eventMark: Int
+}
+
+/// The vault's fills in one tab, the agent's and the person's (the key button, the code bar) alike, so that what an
+/// agent may observe there does not depend on who filled it (design §5.3). Each document a secret went into stays
+/// closed to the agent's scripts while it is shown, also when going back shows it again.
+@MainActor
+final class BrowserVaultFills {
+    private(set) var fills: [BrowserAgentVaultFill] = []
+    /// The documents (main frame `loaderId`) the agent ran its own scripts in, there or in a tab linked by
+    /// `window.opener` while they were shown: a fill there asks the person first (`VaultFillRequest.afterAgentScript`).
+    private(set) var scriptedDocuments: Set<String> = []
+
+    func noteScript(in loaderID: String) {
+        guard !loaderID.isEmpty else { return }
+        scriptedDocuments.insert(loaderID)
+        if scriptedDocuments.count > 200 { scriptedDocuments.removeFirst() }
+    }
+
+    var documents: Set<String> { Set(fills.map(\.loaderID)) }
+
+    /// Records a fill before its values go in: the page can act on them (a dialog, a navigation, a submission)
+    /// before the call that fills it answers.
+    func record(_ fill: BrowserAgentVaultFill) {
+        fills.append(fill)
+        if fills.count > 50 { fills.removeFirst() }
+    }
+
+    /// Takes back a recorded fill that put nothing in.
+    func withdraw(_ fill: BrowserAgentVaultFill) {
+        if let index = fills.lastIndex(of: fill) { fills.remove(at: index) }
+    }
+
+    /// Whether the tab shows a filled document now: the one filled last, until the main frame opens another by a
+    /// navigation or a reload, or one filled earlier that going back brought again.
+    func holdShownDocument(in log: [(method: String, params: JSONValue)]) -> Bool {
+        guard let last = fills.last else { return false }
+        guard log.count > last.eventMark, let shown = log[last.eventMark...].last(where: Self.isMainNavigation) else { return true }
+        return shown.params["frame"]?["loaderId"]?.stringValue.map(documents.contains) ?? false
+    }
+
+    /// Whether the document the log starts in, which no navigation in it names, was filled.
+    func holdsFirstDocument(of log: [(method: String, params: JSONValue)]) -> Bool {
+        let first = log.firstIndex(where: Self.isMainNavigation) ?? log.count
+        return fills.contains { $0.eventMark <= first }
+    }
+
+    static func isMainNavigation(_ event: (method: String, params: JSONValue)) -> Bool {
+        event.method == "Page.frameNavigated" && event.params["frame"]?["parentId"] == nil
+    }
 }
 
 extension Notification.Name {
@@ -131,6 +179,7 @@ enum VaultFillNotice {
 enum VaultPageScripts {
     /// The binding the watch calls with a JSON object whose `kind` says what it saw:
     /// - `signIn`, with `username` and `password`: the person submitted a sign-in.
+    /// - `typedSecret`: someone typed into a password field (trusted input), told once a document.
     /// - `codeField`, with `page`: a one-time code field showed.
     /// - `qr`, with `page`: a graphic the size and shape of a QR code showed; Yardlet reads the screen.
     /// - `setup`, with `page` and `text`: a link to set up a code (`otpauth://`).
@@ -164,7 +213,12 @@ enum VaultPageScripts {
           const send = message => { if (typeof window.__yardletVaultOffer === 'function') window.__yardletVaultOffer(JSON.stringify(message)); };
           const typed = new WeakSet();
           const textTypes = ['text', 'email', 'tel', ''];
-          addEventListener('input', e => { if (e.isTrusted && e.target instanceof HTMLInputElement && e.target.type === 'password') typed.add(e.target); }, true);
+          let toldTyped = false;
+          addEventListener('input', e => {
+            if (!e.isTrusted || !(e.target instanceof HTMLInputElement) || e.target.type !== 'password') return;
+            typed.add(e.target);
+            if (!toldTyped) { toldTyped = true; send({ kind: 'typedSecret' }); }
+          }, true);
           let last = '';
           const offer = scope => {
             const fields = Array.from((scope || document).querySelectorAll('input'));
@@ -246,11 +300,11 @@ enum VaultPageScripts {
     /// The person's fill with the target field as `this`: the code into a code field when the item has
     /// one, else the sign-in into the field's form.
     static let personFillFunction = """
-        function(username, password, code) {
+        function(username, password, code, origin) {
           \(codeFieldTests)
           const kind = typeof code === 'string' && (looksLikeCodeField(this) || (isCodeField(this) && typeof password !== 'string'))
             ? 'one_time_code' : 'login';
-          return (\(BrowserAgentTools.fillFunction)).call(this, kind, username, password, code);
+          return (\(BrowserAgentTools.fillFunction)).call(this, kind, username, password, code, origin);
         }
         """
 
@@ -266,13 +320,14 @@ enum VaultPageScripts {
         })()
         """
 
-    /// The tab's main frame: its ID and origin as the browser reports them.
-    static func mainFrame(_ cdp: any BrowserAgentCDP, timeout: Duration) async throws -> (id: String, origin: String) {
+    /// The tab's main frame: its ID, the document it shows and its origin, as the browser reports them.
+    static func mainFrame(_ cdp: any BrowserAgentCDP, timeout: Duration) async throws
+        -> (id: String, loaderID: String, origin: String) {
         let tree = try await cdp.send("Page.getFrameTree", [:], timeout: timeout)
         let frame = tree["frameTree"]?["frame"]
         let origin = frame?["securityOrigin"]?.stringValue.flatMap { $0.isEmpty || $0 == "null" ? nil : $0 }
             ?? frame?["url"]?.stringValue.flatMap(VaultSite.origin(of:)) ?? ""
-        return (frame?["id"]?.stringValue ?? "", origin)
+        return (frame?["id"]?.stringValue ?? "", frame?["loaderId"]?.stringValue ?? "", origin)
     }
 
     /// A context in the vault's isolated world of the tab's main frame.
@@ -302,23 +357,62 @@ enum VaultPageScripts {
     }
 
     /// The person's fill from the key button (the focused field's form, the page's sign-in form, or its
-    /// code field) or from the code bar (`codeOnly`: the code alone, into the page's code field).
+    /// code field) or from the code bar (`codeOnly`: the code alone, into the page's code field), into the document
+    /// the values were given for (`frame`): a page that moved on since takes nothing. It is recorded in the tab's
+    /// `fills` before the values go in, as an agent's fill is, so the agent's tools treat the page alike.
     @discardableResult
-    static func fillForPerson(_ cdp: any BrowserAgentCDP, username: String?, password: String?, code: String?,
+    static func fillForPerson(_ cdp: any BrowserAgentCDP, frame: (id: String, loaderID: String, origin: String),
+                              fills: BrowserVaultFills, username: String?, password: String?, code: String?,
                               codeOnly: Bool = false, timeout: Duration = .seconds(10)) async -> Bool {
-        guard let frame = try? await mainFrame(cdp, timeout: timeout),
-              let context = try? await vaultWorld(cdp, frame: frame.id, timeout: timeout),
+        guard let context = try? await vaultWorld(cdp, frame: frame.id, timeout: timeout),
               let target = try? await cdp.send("Runtime.evaluate", [
                   "expression": .string(personTarget(codeOnly: codeOnly)), "contextId": .integer(context)
               ], timeout: timeout),
-              let objectID = target["result"]?["objectId"]?.stringValue else { return false }
+              let objectID = target["result"]?["objectId"]?.stringValue,
+              (try? await mainFrame(cdp, timeout: timeout))?.loaderID == frame.loaderID else { return false }
         let values: [String?] = codeOnly ? [nil, nil, code] : [username, password, code]
+        let secret = values[1] != nil || values[2] != nil
+        let record = BrowserAgentVaultFill(loaderID: frame.loaderID, eventMark: cdp.eventLog.count)
+        if secret { fills.record(record) }
         let filled = try? await cdp.send("Runtime.callFunctionOn", [
             "functionDeclaration": .string(personFillFunction), "objectId": .string(objectID),
-            "arguments": .array(values.map { .object(["value": $0.map(JSONValue.string) ?? .null]) }),
+            "arguments": .array((values + [frame.origin]).map { .object(["value": $0.map(JSONValue.string) ?? .null]) }),
             "returnByValue": .bool(true)
         ], timeout: timeout)
-        return filled?["result"]?["value"]?["kinds"] != nil
+        let kinds = filled?["result"]?["value"]?["kinds"]?.arrayValue?.compactMap(\.stringValue)
+        guard secret else { return kinds != nil }
+        if let kinds, !kinds.contains("password"), !kinds.contains("one_time_code") {
+            fills.withdraw(record)
+        } else if let now = try? await mainFrame(cdp, timeout: timeout), now.loaderID != frame.loaderID {
+            // The page went on to another document of its own as the fill went in; it may hold the values too.
+            fills.record(BrowserAgentVaultFill(loaderID: now.loaderID, eventMark: record.eventMark))
+        }
+        return kinds != nil
+    }
+
+    /// How a two-factor setup key reads on a page: base32 in capitals or small letters, whole or in groups of four.
+    static func spellings(ofSetupKey key: Data) -> [String] {
+        let whole = Base32.encode(key)
+        guard whole.count >= VaultScrubList.shortest else { return [] }
+        let grouped = stride(from: 0, to: whole.count, by: 4).map { start in
+            String(whole.dropFirst(start).prefix(4))
+        }.joined(separator: " ")
+        return [whole, whole.lowercased(), grouped, grouped.lowercased()]
+    }
+
+    /// The page shows secrets the vault keeps (a two-factor setup's key, which makes the codes for good): the agent's
+    /// tools treat its document as one the vault filled, and a snapshot leaves out what shows them. The caller keeps
+    /// them out of results (`VaultScrubList`).
+    static func noteSecretsShown(_ secrets: [String], on cdp: any BrowserAgentCDP, fills: BrowserVaultFills,
+                                 timeout: Duration = .seconds(10)) async {
+        guard let frame = try? await mainFrame(cdp, timeout: timeout) else { return }
+        fills.record(BrowserAgentVaultFill(loaderID: frame.loaderID, eventMark: cdp.eventLog.count))
+        guard !secrets.isEmpty, let context = try? await vaultWorld(cdp, frame: frame.id, timeout: timeout) else { return }
+        _ = try? await cdp.send("Runtime.callFunctionOn", [
+            "functionDeclaration": .string("function(values) { window.__yardletVaultSecrets = (window.__yardletVaultSecrets || []).concat(values); }"),
+            "executionContextId": .integer(context),
+            "arguments": .array([.object(["value": .array(secrets.map(JSONValue.string))])])
+        ], timeout: timeout)
     }
 
     /// Whether the page shows a field for a one-time code, read in the vault's world.
@@ -341,6 +435,30 @@ enum VaultPageScripts {
                   "expression": .string(typedUsername), "contextId": .integer(context), "returnByValue": .bool(true)
               ], timeout: timeout) else { return "" }
         return value["result"]?["value"]?.stringValue ?? ""
+    }
+}
+
+/// The secret of a two-factor setup address in text (`otpauth://totp/…?secret=…`, an export's
+/// `otpauth-migration://offline?data=…`, also percent-encoded inside another address, as QR code images are
+/// often made), which makes the account's codes for good. No result carries it, whoever's it is.
+enum VaultSetupText {
+    private static let address = try! NSRegularExpression(pattern:
+        "(otpauth(?:-migration)?(?::|%3A)(?://|%2F%2F)[^\\s\"'<>]*?(?:[?&]|%3F|%26)(?:secret|data)(?:=|%3D))"
+        + "((?:[^&\\s\"'<>%]|%(?!26)[0-9A-Fa-f]{2})+)", options: [.caseInsensitive])
+
+    static func scrub(_ text: String) -> String {
+        guard text.range(of: "otpauth", options: .caseInsensitive) != nil else { return text }
+        return address.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                withTemplate: "$1[saved value]")
+    }
+
+    static func scrub(_ result: AgentToolResult) -> AgentToolResult {
+        var result = result
+        result.content = result.content.map { content in
+            if case .text(let text) = content { return .text(scrub(text)) }
+            return content
+        }
+        return result
     }
 }
 
@@ -389,7 +507,8 @@ extension BrowserAgentTools {
             throw BrowserAgentToolError("\(ref) is inside a frame in the page; Yardlet fills only the page's own fields.")
         }
 
-        let request = VaultFillRequest(sessionID: sessionID, itemName: itemName, kind: kind, origin: frame.origin)
+        var request = VaultFillRequest(sessionID: sessionID, itemName: itemName, kind: kind, origin: frame.origin)
+        request.afterAgentScript = page.vaultFills.scriptedDocuments.contains(frame.loaderID)
         let grant: VaultFillGrant
         switch await vault.authorize(request) {
         case .success(let allowed): grant = allowed
@@ -413,9 +532,14 @@ extension BrowserAgentTools {
             vault.record(grant, for: request, filled: [], failure: message)
             throw BrowserAgentToolError(message)
         }
-        // Before the value goes in: a page may submit as soon as it does, and its address must not carry it.
+        // Before the values go in: the page can open a dialog, navigate or submit as they do, and the call that fills
+        // may then fail without saying what went in; its address must not carry them either. A fill that put nothing in
+        // takes its record back.
         vaultScrub.add(grant.password)
         vaultScrub.add(grant.code)
+        let record = grant.password != nil || grant.code != nil
+            ? BrowserAgentVaultFill(loaderID: frame.loaderID, eventMark: page.cdp.eventLog.count) : nil
+        if let record { page.vaultFills.record(record) }
         if let password = grant.password, password.count >= VaultScrubList.shortest {
             page.guardFilledValues(VaultScrubList.spellings(of: password))
         }
@@ -423,17 +547,17 @@ extension BrowserAgentTools {
             .string(kind.rawValue),
             grant.username.map(JSONValue.string) ?? .null,
             grant.password.map(JSONValue.string) ?? .null,
-            grant.code.map(JSONValue.string) ?? .null
+            grant.code.map(JSONValue.string) ?? .null,
+            .string(frame.origin)
         ])
+        let kinds = filled["kinds"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        if let record, filled["error"] != nil || !(kinds.contains("password") || kinds.contains("one_time_code")) {
+            page.vaultFills.withdraw(record)
+        }
         if let failure = filled["error"]?.stringValue {
             let message = Self.fillFailure(failure, ref: ref)
             vault.record(grant, for: request, filled: [], failure: message)
             throw BrowserAgentToolError(message)
-        }
-        let kinds = filled["kinds"]?.arrayValue?.compactMap(\.stringValue) ?? []
-        if kinds.contains("password") || kinds.contains("one_time_code") {
-            page.vaultFill = BrowserAgentVaultFill(contextID: contextID, loaderID: frame.loaderID, eventMark: page.cdp.eventLog.count)
-            page.vaultFilledDocuments.insert(frame.loaderID)
         }
         vault.record(grant, for: request, filled: kinds)
         NotificationCenter.default.post(name: .vaultFilled, object: nil, userInfo: [VaultFillNotice.tabKey: page.tabID])
@@ -481,54 +605,74 @@ extension BrowserAgentTools {
     /// filled earlier that going back brought again. A page can copy what it was given, so an emptied field
     /// does not end it. While it holds, the page's scripts are not run for the agent.
     func vaultFilledDocument(_ page: BrowserAgentPage) -> Bool {
-        guard let fill = page.vaultFill else { return false }
-        let log = page.cdp.eventLog
-        guard log.count > fill.eventMark, let shown = log[fill.eventMark...].last(where: {
-            $0.method == "Page.frameNavigated" && $0.params["frame"]?["parentId"] == nil
-        }) else { return true }
-        return shown.params["frame"]?["loaderId"]?.stringValue.map(page.vaultFilledDocuments.contains) ?? false
+        page.vaultFills.holdShownDocument(in: page.cdp.eventLog)
     }
 
-    /// Whether a value the vault filled is still in its field on the page, for screenshots to cover.
-    func vaultValueIsLive(on page: BrowserAgentPage) async -> Bool {
-        guard vaultFilledDocument(page), let fill = page.vaultFill else { return false }
-        let live = try? await send(page, "Runtime.evaluate", [
-            "expression": .string("(window.__yardletVault || []).some(e => e.isConnected && e.value !== '')"),
-            "contextId": .integer(fill.contextID), "returnByValue": .bool(true)
-        ])
-        return live?["result"]?["value"]?.boolValue == true
+    /// Why the agent may not run `what` on the page now, or nil: the page is a document the vault filled, or a tab
+    /// linked to it by `window.opener` shows one, whose document scripts here could read.
+    func vaultObservationRefusal(_ page: BrowserAgentPage, _ what: String, linked: Bool = true) -> String? {
+        if vaultFilledDocument(page) {
+            return "This page holds a password or code (one Yardlet's password manager filled, one the person typed, or a "
+                + "two-factor setup key), so \(what) does not run on it. Reload it (browser_navigate to its address) or go to "
+                + "another page to use \(what) again; browser_snapshot, clicks and typing work as before."
+        }
+        if linked, let linked = page.linkedVaultFill() {
+            return "Tab \(linked) shows a page that holds a password or code, and this tab is linked to it (one of them "
+                + "opened the other), so \(what) does not run here until that tab goes to another page or closes. "
+                + "browser_snapshot, clicks and typing work as before."
+        }
+        return nil
     }
 
-    /// Hides the filled values that the page would draw as text (a shown password, a code), for one
-    /// screenshot; `restoreVaultFields` puts them back.
-    func coverVaultFields(on page: BrowserAgentPage) async -> Bool {
-        guard await vaultValueIsLive(on: page), let fill = page.vaultFill else { return false }
-        let covered = try? await send(page, "Runtime.evaluate", [
-            "expression": .string("""
-                (() => {
-                  const shown = (window.__yardletVault || []).filter(e => e.isConnected && e.value !== '' && e.type !== 'password');
-                  window.__yardletVaultCovered = shown.map(e => [e, ['color', '-webkit-text-fill-color']
-                    .map(p => [p, e.style.getPropertyValue(p), e.style.getPropertyPriority(p)])]);
-                  shown.forEach(e => { e.style.setProperty('color', 'transparent', 'important');
-                    e.style.setProperty('-webkit-text-fill-color', 'transparent', 'important'); });
-                  return shown.length;
-                })()
-                """),
-            "contextId": .integer(fill.contextID), "returnByValue": .bool(true)
-        ])
-        return (covered?["result"]?["value"]?.integerValue ?? 0) > 0
+    /// The elements on a filled page that hold or show a filled value, for a snapshot to leave out: the filled
+    /// fields, and the innermost elements whose text has a filled value (a code drawn in boxes of the page's own, a
+    /// password the page shows elsewhere). Empty when the page is no filled document; nil when they cannot be found,
+    /// so that nothing is shown of the page.
+    func vaultSecretNodes(on page: BrowserAgentPage) async -> Set<BrowserAgentSnapshot.Ref>? {
+        guard vaultFilledDocument(page) else { return [] }
+        let group = "yardlet-vault-secrets"
+        defer { Task { _ = try? await self.send(page, "Runtime.releaseObjectGroup", ["objectGroup": .string(group)]) } }
+        guard let frame = try? await mainFrame(of: page),
+              let context = try? await send(page, "Page.createIsolatedWorld", [
+                  "frameId": .string(frame.id), "worldName": .string(Self.vaultWorldName)
+              ])["executionContextId"]?.integerValue,
+              let list = try? await send(page, "Runtime.evaluate", [
+                  "expression": .string(Self.secretElements), "contextId": .integer(context), "objectGroup": .string(group)
+              ])["result"]?["objectId"]?.stringValue,
+              let items = try? await send(page, "Runtime.getProperties", [
+                  "objectId": .string(list), "ownProperties": .bool(true)
+              ])["result"]?.arrayValue else { return nil }
+        var nodes: Set<BrowserAgentSnapshot.Ref> = []
+        for item in items where Int(item["name"]?.stringValue ?? "") != nil {
+            guard let object = item["value"]?["objectId"]?.stringValue,
+                  let node = try? await send(page, "DOM.describeNode", ["objectId": .string(object)])["node"]?["backendNodeId"]?
+                    .integerValue else { return nil }
+            nodes.insert(BrowserAgentSnapshot.Ref(node: Int(node), session: nil))
+        }
+        return nodes
     }
 
-    func restoreVaultFields(on page: BrowserAgentPage) async {
-        guard let fill = page.vaultFill else { return }
-        _ = try? await send(page, "Runtime.evaluate", [
-            "expression": .string("""
-                (window.__yardletVaultCovered || []).forEach(([e, props]) => props.forEach(([p, v, prio]) =>
-                  v ? e.style.setProperty(p, v, prio) : e.style.removeProperty(p))); window.__yardletVaultCovered = [];
-                """),
-            "contextId": .integer(fill.contextID)
-        ])
-    }
+    /// In the vault's world of a filled document: the filled fields still on it and the innermost elements whose
+    /// text holds a filled secret, spaces and dashes aside (`window.__yardletVaultSecrets`, which the fill keeps there).
+    static let secretElements = """
+        (() => {
+          const plain = s => (s || '').replace(/[\\s\\-\\u2013\\u00b7\\u2022]/g, '');
+          const found = new Set((window.__yardletVault || []).filter(e => e.isConnected));
+          for (const value of new Set((window.__yardletVaultSecrets || []).map(plain).filter(v => v.length >= 4))) {
+            if (!document.body || !plain(document.body.textContent).includes(value)) continue;
+            let level = [document.body];
+            while (level.length) {
+              const next = [];
+              for (const e of level) {
+                const inner = Array.from(e.children).filter(c => plain(c.textContent).includes(value));
+                if (inner.length) next.push(...inner); else found.add(e);
+              }
+              level = next;
+            }
+          }
+          return Array.from(found).slice(0, 64);
+        })()
+        """
 
     // MARK: Pieces
 
@@ -560,17 +704,21 @@ extension BrowserAgentTools {
         case "nothing to fill": "The item has no value for the fields of this form."
         case "not a code field": "\(ref) is not a one-time code field."
         case "not enough code boxes": "The code boxes after \(ref) are fewer than the code's digits."
+        case "moved": "The page went to another site before Yardlet could fill it; nothing was filled."
         default: "The fill did not run on this page."
         }
     }
 
     /// Runs in the vault's isolated world with the field as `this`. A password goes only into a
     /// password field, a username into a text field of the same form, a code into a code field
-    /// (design §5.2 step 3). The fields that took a secret (a password, a code; not the username) are
-    /// kept in this world for `vaultValueIsLive` and the screenshot cover.
+    /// (design §5.2 step 3), and nothing goes into a document of another origin than the one the values were
+    /// given for (the page may have moved on since). The fields that took a secret (a password, a code; not the
+    /// username) and the secrets themselves are kept in this world, which the page's scripts cannot reach, for
+    /// `secretElements`.
     static let fillFunction = """
-        function(kind, username, password, code) {
+        function(kind, username, password, code, origin) {
           const target = this;
+          if (typeof origin === 'string' && location.origin !== origin) return { error: 'moved' };
           const visible = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
             return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
           const textTypes = ['text', 'email', 'tel', 'url', ''];
@@ -582,7 +730,7 @@ extension BrowserAgentTools {
             e.dispatchEvent(new Event('change', { bubbles: true }));
           };
           const isInput = e => e instanceof HTMLInputElement;
-          const secret = [], kinds = [];
+          const secret = [], values = [], kinds = [];
           if (kind === 'login') {
             const scope = (isInput(target) && target.form) || target.closest('form') || document;
             const inputs = Array.from(scope.querySelectorAll('input')).filter(e => !e.disabled && !e.readOnly && visible(e));
@@ -595,7 +743,7 @@ extension BrowserAgentTools {
                 || (passwordField ? inputs.slice(0, inputs.indexOf(passwordField)).reverse().find(e => textTypes.includes(e.type)) : null);
             }
             if (!passwordField && !userField) return { error: 'no sign-in field' };
-            if (typeof password === 'string' && passwordField) { put(passwordField, password); secret.push(passwordField); kinds.push('password'); }
+            if (typeof password === 'string' && passwordField) { put(passwordField, password); secret.push(passwordField); values.push(password); kinds.push('password'); }
             if (typeof username === 'string' && userField) { put(userField, username); kinds.push('username'); }
             if (!kinds.length) return { error: 'nothing to fill' };
           } else if (kind === 'one_time_code') {
@@ -610,9 +758,11 @@ extension BrowserAgentTools {
             } else {
               put(target, code); secret.push(target);
             }
+            values.push(code);
             kinds.push('one_time_code');
           }
           window.__yardletVault = (window.__yardletVault || []).concat(secret);
+          window.__yardletVaultSecrets = (window.__yardletVaultSecrets || []).concat(values);
           return { kinds };
         }
         """

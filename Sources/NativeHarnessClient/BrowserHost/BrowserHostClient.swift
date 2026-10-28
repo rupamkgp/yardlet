@@ -1209,6 +1209,8 @@ final class BrowserTab {
     private(set) var openFailure: BrowserTabOpenFailure?
     /// The tabs this tab's page opened (new-window requests, `openedTab`).
     private(set) var openedTabs: Set<BrowserTabID> = []
+    /// The passwords and codes the vault filled into the tab's documents, for the agent and for the person.
+    let vaultFills = BrowserVaultFills()
     /// What the page asks permission for and waits on, until the person answers or the page moves on.
     private(set) var permissionPrompt: BrowserPermissionPrompt?
     /// Another app's address the page asked to open, waiting for the person (the panel's bar), until the page

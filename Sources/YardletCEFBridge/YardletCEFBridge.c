@@ -211,6 +211,10 @@ static int g_next_popup_tab = 1 << 30;
 // takes neither from a submitted form and offers nothing. Addresses off also stops form history
 // (autocomplete), whose suggestions need the tab's view in a window (CanShowRootPopup) and so never
 // showed here.
+//
+// Passwords: Chrome's own password saving stays off, as a person turns off "Offer to save passwords":
+// Yardlet's password manager keeps sign-ins in the keychain, and a profile's Login Data is a file any
+// process of the person's can read.
 static void turn_off_preference(cef_request_context_t *context, const char *name) {
     cef_value_t *value = p_cef_value_create();
     if (value == NULL) return;
@@ -233,6 +237,8 @@ static void set_windowless_preferences(cef_request_context_t *context) {
     turn_off_preference(context, "webauthn.create_in_icloud_keychain");
     turn_off_preference(context, "autofill.credit_card_enabled");
     turn_off_preference(context, "autofill.profile_enabled");
+    turn_off_preference(context, "credentials_enable_service");
+    turn_off_preference(context, "credentials_enable_autosignin");
 }
 
 // MARK: - Request contexts

@@ -725,19 +725,23 @@ final class BrowserAgentToolsTests: XCTestCase {
     }
 
     /// The vault's values reach the page and nothing the model reads: not the fill's result, not a later
-    /// snapshot that echoes one, and browser_evaluate waits while a filled field still holds one
-    /// (docs/BROWSER_VAULT_DESIGN.md §5.3).
+    /// snapshot that echoes one or shows a filled field, not a screenshot or the console of the filled document, and
+    /// browser_evaluate waits while the filled document is shown, whoever filled it (docs/BROWSER_VAULT_DESIGN.md §5.3).
     func testAVaultFillKeepsItsValuesOutOfResultsAndPausesEvaluateWhileTheyAreOnThePage() async {
         let item = VaultItem(name: "Example", sites: ["example.com"], username: "ada", policy: .always)
+        var confirms = true
+        var asked: [String] = []
         tools.vault = VaultCenter(environment: VaultCenter.Environment(
             secrets: InMemoryVaultSecretStore([item.id: VaultSecret(password: "correct-horse-battery")]),
             repository: InMemoryVaultRepository(items: [item]), hmac: MacVault.hmac, isAllowedBuild: true,
-            defaults: .vaultTests()))
+            confirm: { asked.append($0); return confirms }, defaults: .vaultTests()))
         _ = await loadSnapshot()
-        var stillFilled = true
+        var loader = "doc-1"
+        var secretNodes: [Int64] = [3]
+        var failFill = false
         cdp.responders["Page.getFrameTree"] = { _ in
             .object(["frameTree": .object(["frame": .object([
-                "id": .string("main"), "loaderId": .string("doc-1"), "url": .string("https://www.example.com/login"),
+                "id": .string("main"), "loaderId": .string(loader), "url": .string("https://www.example.com/login"),
                 "securityOrigin": .string("https://www.example.com")
             ])])])
         }
@@ -746,12 +750,33 @@ final class BrowserAgentToolsTests: XCTestCase {
         cdp.responders["Runtime.callFunctionOn"] = { params in
             let function = params["functionDeclaration"]?.stringValue ?? ""
             if function.contains("ownerDocument === document") { return ScriptedCDP.value(.bool(true)) }
+            if failFill { throw BrowserDevToolsError.timedOut("Runtime.callFunctionOn") }
             return ScriptedCDP.value(.object(["kinds": .array([.string("password"), .string("username")])]))
         }
         cdp.responders["Runtime.evaluate"] = { params in
-            if params["contextId"] != nil { return ScriptedCDP.value(.bool(stillFilled)) }
+            if params["objectGroup"] != nil { return .object(["result": .object(["type": .string("object"), "objectId": .string("found")])]) }
+            if params["contextId"] != nil { return .object(["result": .object(["type": .string("object"), "objectId": .string("person-field")])]) }
             return ScriptedCDP.value(.array([.string("https://www.example.com/login"), .string("Sign in")]))
         }
+        cdp.responders["Runtime.getProperties"] = { _ in
+            .object(["result": .array(secretNodes.indices.map { .object(["name": .string(String($0)),
+                                                                          "value": .object(["objectId": .string("node-\($0)")])]) }
+                + [.object(["name": .string("length"), "value": .object(["value": .integer(Int64(secretNodes.count))])])])])
+        }
+        cdp.responders["DOM.describeNode"] = { params in
+            let index = Int(params["objectId"]?.stringValue?.dropFirst("node-".count) ?? "") ?? 0
+            return .object(["node": .object(["backendNodeId": .integer(secretNodes[index])])])
+        }
+        func console(_ text: String) {
+            cdp.eventLog.append(("Runtime.consoleAPICalled", .object(["type": .string("log"),
+                                                                     "args": .array([.object(["type": .string("string"), "value": .string(text)])])])))
+        }
+        func navigate(to document: String) {
+            loader = document
+            cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object([
+                "id": .string("main"), "loaderId": .string(document), "url": .string("https://www.example.com/")])])))
+        }
+        console("before the fill")
 
         let filled = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2")])
         XCTAssertFalse(filled.isError, filled.text)
@@ -760,6 +785,8 @@ final class BrowserAgentToolsTests: XCTestCase {
         let fill = cdp.params(of: "Runtime.callFunctionOn").last { $0["functionDeclaration"]?.stringValue == BrowserAgentTools.fillFunction }
         XCTAssertEqual(fill?["objectId"], .string("field"))
         XCTAssertTrue(fill?["arguments"]?.arrayValue?.contains(.object(["value": .string("correct-horse-battery")])) == true)
+        XCTAssertTrue(fill?["arguments"]?.arrayValue?.contains(.object(["value": .string("https://www.example.com")])) == true,
+                      "The fill checks the document's origin as it fills")
 
         func axNode(_ id: String, _ role: String, _ name: String, parent: String?, children: [String] = [],
                     value: String? = nil) -> JSONValue {
@@ -774,11 +801,12 @@ final class BrowserAgentToolsTests: XCTestCase {
         }
         cdp.responders["Accessibility.getFullAXTree"] = { _ in
             .object(["nodes": .array([
-                axNode("1", "RootWebArea", "Sign in", parent: nil, children: ["2", "3"]),
+                axNode("1", "RootWebArea", "Sign in", parent: nil, children: ["2", "3", "10"]),
                 axNode("2", "paragraph", "", parent: "1", children: ["4"]),
                 axNode("4", "StaticText", "Signed in with correct-horse-battery as Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5, 636f72726563742d686f7273652d62617474657279", parent: "2"),
-                axNode("3", "textbox", "Password", parent: "1", value: "•••••••••••••••••••••")
-            ])])
+                axNode("3", "textbox", "Password", parent: "1", value: "•••••••••••••••••••••"),
+                axNode("10", "group", "Code", parent: "1", children: (11...16).map(String.init))
+            ] + (11...16).map { axNode(String($0), "textbox", "", parent: "10", value: String($0 - 10)) })])
         }
         let echoed = await run(AgentToolCatalog.snapshot)
         XCTAssertFalse(echoed.text.contains("correct-horse-battery"), echoed.text)
@@ -786,23 +814,71 @@ final class BrowserAgentToolsTests: XCTestCase {
                        "The value as written, in base64 and in hex: \(echoed.text)")
         XCTAssertFalse(BrowserAgentTools.fillFunction.contains("data: v"), "The input event does not carry the value")
         XCTAssertTrue(echoed.text.contains("textbox \"Password\" [ref=@e1]: \"<redacted>\""), echoed.text)
+        // A code over one-digit boxes matches no scrubbed string: the boxes the fill went into are left out by node.
+        secretNodes = Array(11...16)
+        let boxes = await run(AgentToolCatalog.snapshot)
+        XCTAssertEqual(boxes.text.components(separatedBy: "\"<redacted>\"").count, 8, "Six boxes and the password: \(boxes.text)")
+        XCTAssertFalse((1...6).contains { boxes.text.contains("\"\($0)\"") }, boxes.text)
 
         let paused = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertTrue(paused.isError)
-        XCTAssertTrue(paused.text.contains("password manager"), paused.text)
-        // An emptied field does not end the fill: the page may have kept what it was given. A new document does.
-        stillFilled = false
-        let emptied = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
-        XCTAssertTrue(emptied.isError && emptied.text.contains("Reload it"), emptied.text)
-        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object([
-            "id": .string("main"), "loaderId": .string("doc-2"), "url": .string("https://www.example.com/")])])))
+        XCTAssertTrue(paused.text.contains("password or code"), paused.text)
+        let picture = await run(AgentToolCatalog.screenshot)
+        XCTAssertTrue(picture.isError && picture.text.contains("browser_screenshot does not run"), picture.text)
+        console("c o r r e c t - h o r s e")
+        let logged = await run(AgentToolCatalog.consoleMessages)
+        XCTAssertFalse(logged.text.contains("c o r r e c t") || logged.text.contains("before the fill"), logged.text)
+        XCTAssertTrue(logged.text.contains("2 messages from pages that held a password or code are left out"), logged.text)
+        // A new document opens the page again; going back to the filled one closes it again.
+        navigate(to: "doc-2")
+        console("on the next page")
         let resumed = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertFalse(resumed.isError, resumed.text)
-        // Going back to the filled document closes it again.
-        cdp.eventLog.append(("Page.frameNavigated", .object(["frame": .object([
-            "id": .string("main"), "loaderId": .string("doc-1"), "url": .string("https://www.example.com/login")])])))
+        let nextPage = await run(AgentToolCatalog.consoleMessages)
+        XCTAssertTrue(nextPage.text.contains("on the next page"), nextPage.text)
+        navigate(to: "doc-1")
         let back = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertTrue(back.isError, back.text)
+
+        // The person's fill from the panel (the key button) closes the document for the agent alike.
+        navigate(to: "doc-3")
+        let open = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertFalse(open.isError, open.text)
+        let byPerson = await VaultPageScripts.fillForPerson(
+            cdp, frame: (id: "main", loaderID: "doc-3", origin: "https://www.example.com"), fills: page.vaultFills,
+            username: "ada", password: "correct-horse-battery", code: nil)
+        XCTAssertTrue(byPerson)
+        let afterPerson = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertTrue(afterPerson.isError, afterPerson.text)
+        // A page that moved on before the person's fill takes nothing.
+        navigate(to: "doc-4")
+        let moved = await VaultPageScripts.fillForPerson(
+            cdp, frame: (id: "main", loaderID: "doc-3", origin: "https://www.example.com"), fills: page.vaultFills,
+            username: "ada", password: "correct-horse-battery", code: nil)
+        XCTAssertFalse(moved)
+        let afterMove = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertFalse(afterMove.isError, afterMove.text)
+        // A fill whose call fails after the values were sent keeps the document closed.
+        _ = await run(AgentToolCatalog.snapshot)
+        failFill = true
+        let failed = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2")])
+        XCTAssertTrue(failed.isError, failed.text)
+        let afterFailure = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        XCTAssertTrue(afterFailure.isError, afterFailure.text)
+        failFill = false
+
+        // The agent ran its own script on the document (the "always" item filled above without asking): the fill
+        // asks the person first, and fills nothing without them.
+        XCTAssertEqual(asked.count, 1, "Only the fill after browser_evaluate on doc-4 asked: \(asked)")
+        navigate(to: "doc-5")
+        _ = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
+        _ = await run(AgentToolCatalog.snapshot)
+        confirms = false
+        let scripted = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2")])
+        XCTAssertTrue(scripted.isError && scripted.text.contains("ran your own scripts"), scripted.text)
+        XCTAssertEqual(asked.last, L10n.format("fill “%@” on %@ for “%@”, on a page where it ran its own scripts",
+                                               "Example", "www.example.com", L10n.string("A task")))
+        confirms = true
 
         let elsewhere = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2"), "item": .string("Other")])
         XCTAssertTrue(elsewhere.isError)

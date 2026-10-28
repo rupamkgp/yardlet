@@ -53,6 +53,12 @@ final class BrowserAgentTools {
     var loadTimeout: Duration = .seconds(30)
     /// The vault `browser_fill_credential` asks (design docs/BROWSER_VAULT_DESIGN.md); nil leaves the tool refusing.
     var vault: VaultCenter?
+    /// The keys of the two-factor setup QR codes in a picture (Vision on macOS), which a screenshot does not hand
+    /// over while the vault is on; nil reads no picture (tests).
+    var setupKeysPictured: (@Sendable (Data) async -> [Data])?
+    /// Whether the clipboard holds what a password manager copied (`org.nspasteboard.ConcealedType`), which the
+    /// agent's paste does not put into a page.
+    var clipboardIsConcealed: () -> Bool = { false }
     /// Values the vault filled lately, which no result may carry back.
     var vaultScrub = VaultScrubList()
     /// Counts armed passkeys, so a passkey's timer leaves alone one armed after it.
@@ -130,7 +136,7 @@ final class BrowserAgentTools {
         } else {
             result = await runOnPage(tool, arguments, sessionID: sessionID).result
         }
-        return vaultScrub.scrub(result)
+        return VaultSetupText.scrub(vaultScrub.scrub(result))
     }
 
     /// A page tool on the tab it names. browser_navigate on a tab whose page does not respond, or that the
@@ -626,8 +632,14 @@ final class BrowserAgentTools {
 
     private func snapshot(on page: BrowserAgentPage) async throws -> AgentToolResult {
         let mark = page.cdp.eventLog.count
+        // On a filled page, the fields that took a value and the text that shows one are left out by node: a code split
+        // over one-digit boxes, or a part of a value, matches no scrubbed string.
+        guard let hidden = await vaultSecretNodes(on: page) else {
+            throw BrowserAgentToolError("This page holds a password or code, and Yardlet could not tell which parts of it "
+                + "show one, so it does not read the page. Reload it (browser_navigate to its address) or go to another page.")
+        }
         let read = try await readFrames(page)
-        let rendered = BrowserAgentSnapshot.render(frames: read.frames)
+        let rendered = BrowserAgentSnapshot.render(frames: read.frames, hidden: hidden, scrub: { [vaultScrub] in vaultScrub.scrub($0) })
         page.replaceRefs(rendered.refs, frameOwners: read.owners, eventMark: mark)
         let location = try await pageLocation(page)
         return .text("Page URL: \(location.url)\nPage title: \(location.title)\n\n\(rendered.text)")
@@ -789,6 +801,10 @@ final class BrowserAgentTools {
             throw BrowserAgentToolError("Unknown key \(name). Use names like Enter, Tab, Escape, ArrowDown, "
                 + "Backspace, or one character, with modifiers joined by + (Shift+Tab, Meta+a).")
         }
+        if press.macEditingCommands.contains(where: { $0.hasPrefix("paste") }), clipboardIsConcealed() {
+            throw BrowserAgentToolError("The clipboard holds what a password manager copied for the person, so Yardlet does not "
+                + "paste it for you. Fill a saved sign-in with browser_fill_credential, or type the text.")
+        }
         try await dispatch(press, on: page)
         return .text("Pressed \(name).")
     }
@@ -892,6 +908,9 @@ final class BrowserAgentTools {
     private func screenshot(_ arguments: JSONValue, on page: BrowserAgentPage) async throws -> AgentToolResult {
         let format = arguments["format"]?.stringValue ?? "png"
         guard ["png", "jpeg"].contains(format) else { throw BrowserAgentToolError("format must be png or jpeg.") }
+        if let refusal = vaultObservationRefusal(page, AgentToolCatalog.screenshot, linked: false) {
+            throw BrowserAgentToolError(refusal)
+        }
         let metrics = try await send(page, "Page.getLayoutMetrics")
         let visual = metrics["cssVisualViewport"]
         let pageX = visual?["pageX"]?.doubleValue ?? 0
@@ -928,21 +947,29 @@ final class BrowserAgentTools {
             "x": .number(clip.x), "y": .number(clip.y), "width": .number(clip.width),
             "height": .number(clip.height), "scale": .number(scale)
         ])
-        let covered = await coverVaultFields(on: page)
-        let shot: JSONValue
-        do {
-            let capture = { try await self.send(page, "Page.captureScreenshot", params, timeout: self.loadTimeout) }
-            shot = fullPage ? try await drawn(atLeast: (clip.width, clip.height), pixelRatio: pixelRatio, on: page, capture)
-                : try await capture()
-        } catch {
-            if covered { await restoreVaultFields(on: page) }
-            throw error
+        // A picture of a filled page can show a value however the page draws it again (a field of its own, a canvas,
+        // a code in boxes), which no cover of the filled fields reaches; asked again in case it was filled meanwhile.
+        if let refusal = vaultObservationRefusal(page, AgentToolCatalog.screenshot, linked: false) {
+            throw BrowserAgentToolError(refusal)
         }
-        if covered { await restoreVaultFields(on: page) }
+        let capture = { try await self.send(page, "Page.captureScreenshot", params, timeout: self.loadTimeout) }
+        let shot = fullPage ? try await drawn(atLeast: (clip.width, clip.height), pixelRatio: pixelRatio, on: page, capture)
+            : try await capture()
         // Capturing beyond the viewport lays the page out for the moment as Chromium likes, which drops an emulated
         // phone's touch points; the emulation goes back as it was.
         if fullPage, let emulation = page.emulation() { try? await page.emulate(emulation) }
         guard let data = shot["data"]?.stringValue else { throw BrowserAgentToolError("The browser returned no image.") }
+        if let read = setupKeysPictured, let vault, vault.isAllowedBuild, vault.isEnabled, let image = Data(base64Encoded: data) {
+            let keys = await read(image)
+            if !keys.isEmpty {
+                let spellings = keys.flatMap(VaultPageScripts.spellings(ofSetupKey:))
+                spellings.forEach { vaultScrub.add($0) }
+                await VaultPageScripts.noteSecretsShown(spellings, on: page.cdp, fills: page.vaultFills)
+                throw BrowserAgentToolError("The page shows a two-factor setup QR code, whose secret makes the account's codes "
+                    + "for good, so Yardlet does not hand over this picture. The person saves it in Yardlet's password manager "
+                    + "(right-click the page → Add Two-Factor Code from QR Code); then browser_fill_credential fills its codes.")
+            }
+        }
         let location = try? await pageLocation(page)
         var text = "Screenshot of \(location?.url ?? "the page"), \(Self.format(clip.width))×\(Self.format(clip.height)) CSS pixels."
         if pageHeight > clip.height { text += " The page is \(Self.format(pageHeight)) CSS pixels tall; this is its top." }
@@ -1096,7 +1123,21 @@ final class BrowserAgentTools {
     private func consoleMessages(_ arguments: JSONValue, on page: BrowserAgentPage) -> AgentToolResult {
         let onlyErrors = arguments["onlyErrors"]?.boolValue == true
         var lines: [String] = []
-        for event in page.cdp.eventLog {
+        // What a document the vault filled logged stays out: its scripts had the values, in whatever form they log
+        // them, and a later document's messages are no safer for them once the values' scrub has lapsed.
+        let log = page.cdp.eventLog
+        let documents = page.vaultFills.documents
+        var inFilled = page.vaultFills.holdsFirstDocument(of: log)
+        var withheld = 0
+        for event in log {
+            if BrowserVaultFills.isMainNavigation(event) {
+                inFilled = event.params["frame"]?["loaderId"]?.stringValue.map(documents.contains) ?? false
+            }
+            guard ["Runtime.consoleAPICalled", "Runtime.exceptionThrown", "Log.entryAdded"].contains(event.method) else { continue }
+            if inFilled {
+                withheld += 1
+                continue
+            }
             switch event.method {
             case "Runtime.consoleAPICalled":
                 let level = event.params["type"]?.stringValue ?? "log"
@@ -1118,21 +1159,26 @@ final class BrowserAgentTools {
                 continue
             }
         }
-        guard !lines.isEmpty else { return .text(onlyErrors ? "No errors." : "No console messages.") }
-        let recent = lines.suffix(200).map { $0.count > 2_000 ? String($0.prefix(2_000)) + "…" : $0 }
+        let note = withheld == 0 ? "" : "\n(\(withheld) messages from pages that held a password or code are left out.)"
+        guard !lines.isEmpty else { return .text((onlyErrors ? "No errors." : "No console messages.") + note) }
+        // Values the vault filled come out before the cut, which could leave part of one.
+        let recent = lines.suffix(200).map { vaultScrub.scrub($0) }.map { $0.count > 2_000 ? String($0.prefix(2_000)) + "…" : $0 }
         let header = lines.count > recent.count ? "Last \(recent.count) of \(lines.count) messages:\n" : ""
-        return .text(header + recent.joined(separator: "\n"))
+        return .text(header + recent.joined(separator: "\n") + note)
     }
 
     private func evaluate(_ arguments: JSONValue, on page: BrowserAgentPage) async throws -> AgentToolResult {
         guard let function = arguments["function"]?.stringValue, !function.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw BrowserAgentToolError("browser_evaluate needs a function.")
         }
-        if vaultFilledDocument(page) {
-            throw BrowserAgentToolError("Yardlet's password manager filled a password or code on this page, so browser_evaluate "
-                + "does not run on it. Reload it (browser_navigate to its address) or go to another page to use browser_evaluate "
-                + "again; browser_snapshot, clicks and typing work as before.")
+        if let refusal = vaultObservationRefusal(page, AgentToolCatalog.evaluate) {
+            throw BrowserAgentToolError(refusal)
         }
+        // A later fill of this document, or of one a linked tab shows, asks the person first.
+        if let frame = try? await send(page, "Page.getFrameTree")["frameTree"]?["frame"]?["loaderId"]?.stringValue {
+            page.vaultFills.noteScript(in: frame)
+        }
+        await page.noteScriptInLinkedTabs()
         let result: JSONValue
         if let ref = arguments["ref"]?.stringValue {
             let element = try self.element(ref, on: page)
@@ -1155,7 +1201,8 @@ final class BrowserAgentTools {
             let message = details["exception"]?["description"]?.stringValue ?? details["text"]?.stringValue ?? "The function threw."
             throw BrowserAgentToolError("The function threw: \(message)")
         }
-        let text = Self.valueText(result["result"])
+        // Values the vault filled come out before the cut, which could leave part of one.
+        let text = vaultScrub.scrub(Self.valueText(result["result"]))
         return .text(text.count > 50_000 ? String(text.prefix(50_000)) + "\n… (cut at 50,000 characters)" : text)
     }
 

@@ -2637,7 +2637,10 @@
 "Waiting for you to sign in" = "로그인을 기다립니다";
 "“%@” is waiting to sign in to %@ with “%@”." = "“%1$@”이(가) “%3$@”(으)로 %2$@에 로그인하려고 기다립니다.";
 "fill “%@” on %@ for “%@”" = "%2$@에 “%1$@” 채우기(“%3$@” 작업)";
+"fill “%@” on %@ for “%@”, on a page where it ran its own scripts" = "%2$@에 “%1$@” 채우기(“%3$@” 작업이 자기 스크립트를 실행한 페이지)";
 "The keychain refused the password item: %@" = "키체인이 비밀번호 항목을 거절했습니다: %@";
+"A password item changed outside Yardlet" = "Yardlet 밖에서 바뀐 비밀번호 항목이 있습니다";
+"“%@” has sites or an agent use Yardlet did not save, so it fills nothing. Open it in Settings → Passwords to check it and save it." = "“%@”의 사이트나 에이전트 사용 설정이 Yardlet이 저장한 것과 달라 채우지 않습니다. 설정 → 비밀번호에서 항목을 열어 확인한 뒤 저장하세요.";
 
 /* Vault settings */
 "Passwords" = "비밀번호";

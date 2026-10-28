@@ -54,10 +54,12 @@ struct PublicSuffixList: Sendable {
         return longest
     }
 
-    /// `www.github.com` → `github.com`; nil for a public suffix itself (`com`, `github.io`).
+    /// `www.github.com` → `github.com`; nil for a public suffix itself (`com`, `github.io`). Without the list every
+    /// host is its own site: guessing a suffix of one label would make `co.uk` a site.
     func registrableDomain(of host: String) -> String? {
         let labels = host.lowercased().split(separator: ".").map(String.init)
         guard !labels.isEmpty, !labels.contains(where: \.isEmpty) else { return nil }
+        guard !rules.isEmpty || !wildcards.isEmpty else { return labels.count > 1 ? labels.joined(separator: ".") : nil }
         let length = suffixLength(of: labels)
         guard labels.count > length else { return nil }
         return labels.suffix(length + 1).joined(separator: ".")

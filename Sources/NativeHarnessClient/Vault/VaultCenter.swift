@@ -168,6 +168,9 @@ struct VaultFillRequest: Sendable {
     var itemName: String?
     var kind: VaultFillKind
     var origin: String
+    /// The agent ran its own scripts in the document to fill, or in a tab linked to it by `window.opener`: a script
+    /// set there before the fill could take the value, so the person confirms whatever the item's policy.
+    var afterAgentScript = false
 }
 
 /// The values for one allowed fill. They go into the page and nowhere else.
@@ -184,6 +187,9 @@ struct VaultFillGrant {
 struct VaultRefusal: Error, Equatable {
     var message: String
 }
+
+/// An item whose sites or agent policy in `items.json` are not the ones saved with its secret.
+struct VaultChangedOutside: Error {}
 
 /// The vault for agents (docs/BROWSER_VAULT_DESIGN.md): the person's items, whether the vault is on,
 /// the decision for each fill, and the usage log. The page work is `BrowserAgentTools`'s.
@@ -315,26 +321,36 @@ final class VaultCenter: ObservableObject {
         }
         let confirmation: VaultUse.Confirmation
         switch item.policy {
-        case .always:
+        case .always where !request.afterAgentScript:
             confirmation = .always
-        case .whileUnlocked where isUnlocked:
+        case .whileUnlocked where isUnlocked && !request.afterAgentScript:
             confirmation = .unlocked
-        case .whileUnlocked, .everyTime:
+        default:
             let title = describeTask(request.sessionID)?.title ?? L10n.string("A task")
             notify(L10n.string("Waiting for you to sign in"),
                                L10n.format("“%@” is waiting to sign in to %@ with “%@”.", title, host, item.name),
                                request.sessionID)
-            let reason = L10n.format("fill “%@” on %@ for “%@”", item.name, host, title)
+            let reason = request.afterAgentScript
+                ? L10n.format("fill “%@” on %@ for “%@”, on a page where it ran its own scripts", item.name, host, title)
+                : L10n.format("fill “%@” on %@ for “%@”", item.name, host, title)
             guard await environment.confirm(reason) else {
-                return refuse(request, item: item, "The person at this Mac did not confirm filling “\(item.name)”, "
-                    + "so Yardlet did not fill it.")
+                guard request.afterAgentScript else {
+                    return refuse(request, item: item, "The person at this Mac did not confirm filling “\(item.name)”, "
+                        + "so Yardlet did not fill it.")
+                }
+                return refuse(request, item: item, "You ran your own scripts on this page (browser_evaluate here or in a tab "
+                    + "linked to it), so Yardlet asked the person before filling “\(item.name)”, and they did not confirm. "
+                    + "Reload the page (browser_navigate to its address) and fill it without running scripts on it first.")
             }
             if item.policy == .whileUnlocked { isUnlocked = true }
             confirmation = .touchID
         }
         let secret: VaultSecret?
         do {
-            secret = try environment.secrets.load(item.id)
+            secret = try trustedSecret(of: item)
+        } catch is VaultChangedOutside {
+            return refuse(request, item: item, "“\(item.name)”'s sites or agent use were changed outside Yardlet, so it fills "
+                + "nothing until the person opens it in Yardlet's settings and saves it again.")
         } catch {
             return refuse(request, item: item, "Yardlet could not read “\(item.name)” from the keychain.")
         }
@@ -427,7 +443,11 @@ final class VaultCenter: ObservableObject {
     func link(_ itemID: UUID, to site: String) -> VaultItem? {
         guard let index = items.firstIndex(where: { $0.id == itemID }) else { return nil }
         if !items[index].sites.contains(site) {
+            // The secret keeps the sites it may go to; one whose item changed outside Yardlet takes none.
+            guard var secret = try? trustedSecret(of: items[index]) else { return nil }
             items[index].sites.append(site)
+            secret.savedSites = items[index].sites
+            try? environment.secrets.save(secret, for: itemID)
             environment.repository.saveItems(items)
         }
         return items[index]
@@ -437,7 +457,7 @@ final class VaultCenter: ObservableObject {
     /// applies. The code is the one current now.
     func valuesForPerson(_ item: VaultItem, origin: String) -> VaultFillGrant? {
         guard item.sites.contains(where: { VaultSite.matches($0, origin: origin) }),
-              let secret = try? environment.secrets.load(item.id) else { return nil }
+              let secret = try? trustedSecret(of: item) else { return nil }
         var grant = VaultFillGrant(item: item, confirmedBy: .person)
         grant.username = item.username.isEmpty ? nil : item.username
         grant.password = secret.password
@@ -473,9 +493,32 @@ final class VaultCenter: ObservableObject {
         }
     }
 
-    /// Adds or replaces an item and its secret.
+    /// The item's secret, if the sites and agent policy `items.json` gives the item are the ones Yardlet saved with the
+    /// secret; a secret saved before they were kept with it takes the item's now. Otherwise the person hears of it
+    /// and it throws `VaultChangedOutside`.
+    private func trustedSecret(of item: VaultItem) throws -> VaultSecret? {
+        guard var secret = try environment.secrets.load(item.id) else { return nil }
+        guard let sites = secret.savedSites, let policy = secret.savedPolicy else {
+            secret.savedSites = item.sites
+            secret.savedPolicy = item.policy
+            try? environment.secrets.save(secret, for: item.id)
+            return secret
+        }
+        guard sites == item.sites, policy == item.policy else {
+            notify(L10n.string("A password item changed outside Yardlet"),
+                   L10n.format("“%@” has sites or an agent use Yardlet did not save, so it fills nothing. Open it in Settings → Passwords to check it and save it.", item.name),
+                   nil)
+            throw VaultChangedOutside()
+        }
+        return secret
+    }
+
+    /// Adds or replaces an item and its secret, which keeps the item's sites and agent policy with it.
     func save(_ item: VaultItem, secret: VaultSecret) throws {
         var item = item
+        var secret = secret
+        secret.savedSites = item.sites
+        secret.savedPolicy = item.policy
         item.hasPassword = !(secret.password ?? "").isEmpty
         item.hasOneTimeCode = secret.oneTimeCode != nil
         item.hasPasskey = secret.passkey != nil

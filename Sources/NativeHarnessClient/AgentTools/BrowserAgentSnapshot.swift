@@ -62,13 +62,16 @@ enum BrowserAgentSnapshot {
         render(frames: [Frame(nodes: nodes)], maximumLength: maximumLength)
     }
 
-    /// The first frame is the page's main frame; the others hang under the iframes that hold them.
-    static func render(frames: [Frame], maximumLength: Int = 60_000) -> Result {
+    /// The first frame is the page's main frame; the others hang under the iframes that hold them. The elements in
+    /// `hidden` (a field the password manager filled, an element showing such a value) read as `<redacted>`, with
+    /// nothing of what is in them; `scrub` takes values out of each name and value before a long one is cut.
+    static func render(frames: [Frame], maximumLength: Int = 60_000, hidden: Set<Ref> = [],
+                       scrub: @escaping (String) -> String = { $0 }) -> Result {
         guard let main = frames.first else {
             return Result(text: "(The page has no readable content.)", refs: [:], isTruncated: false)
         }
         var renderer = Renderer(frames: frames, maximumLength: maximumLength,
-                                pageOrigin: rootURL(of: main.nodes).flatMap(origin(of:)))
+                                pageOrigin: rootURL(of: main.nodes).flatMap(origin(of:)), hidden: hidden, scrub: scrub)
         renderer.lines = renderer.visitFrame(0, depth: 0)
         var text = renderer.lines.joined(separator: "\n")
         if renderer.isTruncated {
@@ -85,6 +88,8 @@ enum BrowserAgentSnapshot {
         let maximumLength: Int
         /// The main frame's origin: a link there reads as its path.
         let pageOrigin: String?
+        let hidden: Set<Ref>
+        let scrub: (String) -> String
         var lines: [String] = []
         var refs: [String: Ref] = [:]
         var length = 0
@@ -96,8 +101,10 @@ enum BrowserAgentSnapshot {
         var nesting = 0
         static let maximumNesting = 256
 
-        init(frames: [Frame], maximumLength: Int, pageOrigin: String?) {
+        init(frames: [Frame], maximumLength: Int, pageOrigin: String?, hidden: Set<Ref>, scrub: @escaping (String) -> String) {
             self.frames = frames
+            self.hidden = hidden
+            self.scrub = scrub
             byID = frames.map { frame in
                 var map: [String: JSONValue] = [:]
                 for node in frame.nodes {
@@ -125,9 +132,20 @@ enum BrowserAgentSnapshot {
             nesting += 1
             defer { nesting -= 1 }
             let role = node["role"]?["value"]?.stringValue ?? ""
-            var name = BrowserAgentSnapshot.clean(node["name"]?["value"]?.stringValue ?? "")
+            var name = BrowserAgentSnapshot.clean(scrub(node["name"]?["value"]?.stringValue ?? ""))
             let children = node["childIds"]?.arrayValue?.compactMap(\.stringValue) ?? []
             let properties = BrowserAgentSnapshot.properties(of: node)
+            if let backend = node["backendDOMNodeId"]?.integerValue.map(Int.init),
+               hidden.contains(Ref(node: backend, session: frames[frame].session)) {
+                let actionable = actionableRoles.contains(role) || properties["focusable"] == "true"
+                    || properties["editable"] != nil
+                guard actionable else { return emit(["\(indent(depth))- text: <redacted>"]) }
+                let ref = "@e\(refs.count + 1)"
+                refs[ref] = Ref(node: backend, session: frames[frame].session)
+                // A field's label is no secret; a name made of its contents could be.
+                let label = name.isEmpty || BrowserAgentSnapshot.isNamedByContents(node) ? "" : " " + BrowserAgentSnapshot.quoted(name)
+                return emit(["\(indent(depth))- \(role)\(label) [ref=\(ref)]: \"<redacted>\""])
+            }
 
             if role == "InlineTextBox" || role == "ListMarker" { return [] }
             if role == "StaticText" {
@@ -170,8 +188,8 @@ enum BrowserAgentSnapshot {
                 refs[ref] = Ref(node: backend, session: frames[frame].session)
                 line += " [ref=\(ref)]"
             }
-            let value = BrowserAgentSnapshot.redactingMasked(BrowserAgentSnapshot.clean(node["value"]?["value"]?.stringValue
-                ?? node["value"]?["value"]?.integerValue.map(String.init) ?? ""))
+            let value = BrowserAgentSnapshot.redactingMasked(BrowserAgentSnapshot.clean(scrub(node["value"]?["value"]?.stringValue
+                ?? node["value"]?["value"]?.integerValue.map(String.init) ?? "")))
             if valueRoles.contains(role), !value.isEmpty {
                 return emit([line + ": " + BrowserAgentSnapshot.quoted(value)])
                     + children.flatMap { visit($0, in: frame, depth: depth + 1, parentName: value) }

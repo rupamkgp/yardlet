@@ -95,11 +95,47 @@ final class BrowserHostVaultQA {
               after.text.contains("<redacted>") && !after.text.contains(Self.password), String(after.text.prefix(600)))
 
         let paused = await call(AgentToolCatalog.evaluate, ["function": .string("() => document.title")])
-        check("browser_evaluate waits while a filled value is on the page", paused.isError && paused.text.contains("password manager"), paused.text)
+        check("browser_evaluate waits while a filled value is on the page", paused.isError && paused.text.contains("password or code"), paused.text)
+        await exerciseLinkedPopup()
         _ = await pageValue("(() => { document.getElementById('pass').value = ''; document.getElementById('user').value = ''; return true })()")
         let emptied = await call(AgentToolCatalog.evaluate, ["function": .string("() => document.title")])
-        check("browser_evaluate stays refused once the filled fields are empty, until the page loads again",
-              emptied.isError && emptied.text.contains("Reload it"), emptied.text)
+        await navigate("vault/login")
+        let reloaded = await call(AgentToolCatalog.evaluate, ["function": .string("() => document.title")])
+        check("browser_evaluate stays refused once the filled fields are empty, and runs again after a reload",
+              emptied.isError && !reloaded.isError, emptied.text + " / " + reloaded.text)
+        // The agent's own script ran on the page: an "always" item's fill asks the person first (the QA answers no).
+        let again = await call(AgentToolCatalog.snapshot)
+        let field = Self.ref(in: again.text, role: "textbox", name: "Password") ?? "@e1"
+        let asked = await call(VaultToolCatalog.fillCredential, ["ref": .string(field)])
+        let left = await pageValue("document.getElementById('pass').value")
+        check("a fill on a page where the agent ran its own script asks the person first and fills nothing without them",
+              asked.isError && asked.text.contains("ran your own scripts") && left == .string(""), asked.text)
+    }
+
+    /// A same-site window the filled page opens keeps `window.opener`, through which a script could read the filled
+    /// field: the agent's scripts do not run there either while the filled page is shown.
+    private func exerciseLinkedPopup() async {
+        guard let opener = client.tab(forSession: session) else { return check("linked popup: the task's tab", false, "no tab") }
+        _ = try? await opener.devTools.send("Runtime.evaluate", [
+            "expression": .string("window.open('/vault/step', 'qa-popup'); true"), "userGesture": .bool(true),
+            "returnByValue": .bool(true)
+        ], timeout: .seconds(10))
+        let opened = await waitUntilAsync(.seconds(10)) {
+            self.client.tabs(forSession: self.session).contains { $0 !== opener && $0.currentURL?.contains("vault/step") == true }
+        }
+        guard opened, let popup = client.tabs(forSession: session).first(where: { $0 !== opener }) else {
+            return check("linked popup: the page's window opens as a tab of the task", false,
+                         "\(client.tabs(forSession: session).map { $0.currentURL ?? "-" })")
+        }
+        _ = await waitUntilAsync(.seconds(10)) { !popup.isLoading }
+        let reached = await call(AgentToolCatalog.evaluate, [
+            "tabId": .string(String(popup.id)),
+            "function": .string("() => document.title")
+        ])
+        check("a window the filled page opened runs no agent script while the filled page is shown",
+              reached.isError && reached.text.contains("linked"), reached.text)
+        _ = await call(AgentToolCatalog.tabClose, ["tabId": .string(String(popup.id))])
+        _ = await call(AgentToolCatalog.tabSelect, ["tabId": .string(String(opener.id))])
     }
 
     /// How many requests reached the QA server's landing page (`/vault/landed`) so far, as the server says over
@@ -214,6 +250,11 @@ final class BrowserHostVaultQA {
         _ = await waitUntilAsync(.seconds(3)) { await self.pageValue("window.qa.boxes") != .null }
         let boxesOK = await pageValue("window.qa.boxes")
         check("six one-digit boxes get the code a digit each", !boxes.isError && boxesOK == .bool(true), boxes.text)
+        let read = await call(AgentToolCatalog.snapshot)
+        let shown = read.text.split(separator: "\n").filter { $0.contains("textbox") && $0.range(of: #": "\d""#, options: .regularExpression) != nil }
+        check("a snapshot of the filled code page leaves out the code field and each box",
+              !read.isError && shown.isEmpty && read.text.components(separatedBy: "\"<redacted>\"").count - 1 >= 7,
+              shown.joined(separator: " | ") + " / " + String(read.text.prefix(600)))
     }
 
     private func exerciseReveal() async {
@@ -225,14 +266,19 @@ final class BrowserHostVaultQA {
         _ = await call(VaultToolCatalog.fillCredential, ["ref": .string(ref)])
         _ = await pageValue("(() => { document.getElementById('show').click(); return document.getElementById('pass').type })()")
         let shot = await call(AgentToolCatalog.screenshot)
-        if case .image(let data, _)? = shot.content.first, let png = Data(base64Encoded: data) {
+        await navigate("vault/reveal")
+        let reloaded = await call(AgentToolCatalog.screenshot)
+        if case .image(let data, _)? = reloaded.content.first, let png = Data(base64Encoded: data) {
             try? png.write(to: output.appending(path: "vault-reveal-screenshot.png"))
         }
-        let color = await pageValue("getComputedStyle(document.getElementById('pass')).webkitTextFillColor")
-        let coveredDuring = await pageValue("document.getElementById('user').style.color === ''")
-        check("a screenshot of a shown password covers it (not the username) and puts the field back after",
-              !shot.isError && color?.stringValue != "rgba(0, 0, 0, 0)" && coveredDuring == .bool(true),
-              "fill color after: \(color?.stringValue ?? "nil")")
+        check("a screenshot of a filled page is refused, however it shows the value, and works again after a reload",
+              shot.isError && shot.content.allSatisfy { if case .image = $0 { false } else { true } } && !reloaded.isError,
+              shot.text + " / " + reloaded.text)
+        await navigate("vault/reveal")
+        if let again = Self.ref(in: await call(AgentToolCatalog.snapshot).text, role: "textbox", name: nil) {
+            _ = await call(VaultToolCatalog.fillCredential, ["ref": .string(again)])
+            _ = await pageValue("(() => { document.getElementById('show').click(); return true })()")
+        }
         // The person's own capture of the panel for comparison: the page shows the password in the panel.
         let plain = try? await client.tab(forSession: session)?.devTools.send("Page.captureScreenshot",
                                                                                ["format": .string("png")], timeout: .seconds(10))
@@ -443,6 +489,15 @@ final class BrowserHostVaultQA {
         }
         check("panel: the key button's fill puts the saved sign-in into the form", refilled,
               "\(String(describing: await page("document.getElementById('user').value")))")
+        // The person's fill closes the page to the agent's scripts, as an agent's fill does.
+        if let launch = broker.agentToolServer(for: panelSession, workspaceRoots: []),
+           let panelToken = launch.environment[AgentToolEnvironment.token] {
+            let evaluated = await broker.handle(AgentToolCall(
+                token: panelToken, session: panelSession.uuidString, tool: AgentToolCatalog.evaluate,
+                arguments: .object(["function": .string("() => document.title")])))
+            check("panel: after the key button's fill the agent's scripts do not run on the page",
+                  evaluated.isError && evaluated.text.contains("password or code"), evaluated.text)
+        }
 
         let menuItems = controller.view?.extraContextMenuItems?() ?? []
         // The vault's three, then the browser's own import of another browser's sign-ins.
