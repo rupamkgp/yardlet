@@ -283,7 +283,7 @@ import XCTest
         try model.connections.save(fixture.account)
         model.connections.selection[.codex] = fixture.account.id
         let now = Date()
-        for _ in 0..<2 {
+        for _ in 0..<3 {
             await fixture.transport.enqueue(method: "thread/search", result: .object([
                 "data": .array([
                     .object(["thread": thread("t-1", "Fix the importer", in: fixture.workspace, updatedAt: now.addingTimeInterval(-3_600)),
@@ -344,6 +344,23 @@ import XCTest
         XCTAssertEqual(searches.map { $0.params["searchTerm"]?.stringValue }, ["needle", "needle"],
                        "The sheet opened on Codex's search runs it at once")
         XCTAssertEqual(model.store.sessions.count, 1, "Drawing the sheet imported nothing")
+
+        // Choosing a conversation opens its task in the window, whichever sidebar section it showed.
+        let imported = try XCTUnwrap(model.store.sessions.first)
+        model.splits.showNewTask()
+        let reveals = model.taskSurfaceRevealRequest
+        var dismissed = false
+        let host = WindowlessRender.Host(ImportConversationSheet(model: model, projects: [project],
+            initialWorkspace: fixture.workspace, initialHarness: .codex, initialSearchTerm: "needle",
+            onDismiss: { dismissed = true }), size: NSSize(width: 660, height: 540))
+        defer { host.close() }
+        try await waitUntil {
+            host.settle(passes: 2)
+            return host.hosting.pressAccessibilityElement { $0.contains("Fix the importer") }
+        }
+        try await waitUntil { dismissed }
+        XCTAssertEqual(model.splits.selection, .session(imported.id))
+        XCTAssertEqual(model.taskSurfaceRevealRequest, reveals + 1)
         await model.shutdown()
     }
 
@@ -445,5 +462,30 @@ import XCTest
         }
         try data.write(to: file)
         try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+    }
+}
+
+private extension NSView {
+    /// Presses the first accessibility element under the view whose label matches, as an assistive
+    /// app would (`CodexPromptRenderingTests` does the same).
+    func pressAccessibilityElement(where matches: (String) -> Bool) -> Bool {
+        let attribute = "AXEnhancedUserInterface" as NSString
+        let app = NSApplication.shared
+        let previous = (app.perform(NSSelectorFromString("accessibilityAttributeValue:"), with: attribute)?
+            .takeUnretainedValue() as? NSNumber)?.boolValue ?? false
+        _ = app.perform(NSSelectorFromString("accessibilitySetValue:forAttribute:"), with: NSNumber(value: true),
+                        with: attribute)
+        defer {
+            _ = app.perform(NSSelectorFromString("accessibilitySetValue:forAttribute:"),
+                            with: NSNumber(value: previous), with: attribute)
+        }
+        func visit(_ node: AnyObject) -> AnyObject? {
+            for case let child as AnyObject in (node.accessibilityChildren?() ?? nil) ?? [] {
+                if let label = child.accessibilityLabel?() ?? nil, matches(label) { return child }
+                if let found = visit(child) { return found }
+            }
+            return nil
+        }
+        return visit(self)?.accessibilityPerformPress?() ?? false
     }
 }

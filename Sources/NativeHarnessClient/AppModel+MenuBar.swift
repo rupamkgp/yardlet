@@ -36,7 +36,7 @@ extension AppModel {
     /// "New task": Yardlet comes forward on the new task screen.
     func showNewTaskFromMenuBar() {
         applicationAttention?.bringForward()
-        splits.showNewTask()
+        revealNewTask()
     }
 
     /// "Open Yardlet".

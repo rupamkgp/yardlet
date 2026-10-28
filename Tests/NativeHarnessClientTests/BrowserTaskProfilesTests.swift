@@ -9,18 +9,20 @@ import XCTest
 final class BrowserTaskProfilesTests: XCTestCase {
     private var folder: URL!
     private var defaults: UserDefaults!
+    private var defaultsName = ""
 
     override func setUp() async throws {
         folder = FileManager.default.temporaryDirectory.appending(path: "BrowserTaskProfilesTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let name = "yardlet.browser-profiles.tests"
+        let name = "yardlet.browser-profiles.tests." + UUID().uuidString
+        defaultsName = name
         defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
     }
 
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: folder)
-        defaults.removePersistentDomain(forName: "yardlet.browser-profiles.tests")
+        defaults.removePersistentDomain(forName: defaultsName)
     }
 
     private func makeFolder(_ url: URL) throws {

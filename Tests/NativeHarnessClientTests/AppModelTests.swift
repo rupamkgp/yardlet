@@ -117,6 +117,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(prompts, ["Only the side conversation"])
         let workspace = model.taskWorkspaces.state(for: parent.id)
         workspace.setPanels(.init(trailingSurfaceID: "sideChat"))
+        model.setShowsTasks(true, inWindow: UUID())
         XCTAssertTrue(model.isSessionVisible(child.id))
         await adapter.emit(.turnCompleted, for: child.id, sequence: 10)
         try await waitUntil {

@@ -37,6 +37,9 @@ several agents and accounts every day, and it is shared for anyone who doesn't h
   with one sign-in. A connector set up once is offered to the agents you run, and can be turned off
   per task.
 - **Built-in browser.** A Chromium panel the agents can drive through browser tools while you watch.
+- **Personal agents.** Chat with your existing ChatGPT dots alongside coding tasks, with saved drafts
+  and native file previews. The account stays with its Codex runtime; no browser needs to stay open
+  (see [Personal agents](docs/PERSONAL_AGENTS.md) for current limits).
 - **Scheduled tasks** that run while Yardlet is open, and session tools that let one task read,
   message or start another.
 

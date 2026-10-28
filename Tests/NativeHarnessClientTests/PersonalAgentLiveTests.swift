@@ -1,0 +1,98 @@
+import XCTest
+@testable import NativeHarnessClient
+
+/// Live acceptance is opt-in. Reading and a separately approved real message
+/// use different switches. Credentials and message text are never logged.
+final class PersonalAgentLiveTests: XCTestCase {
+    /// This opt-in is separate from read-only acceptance. Enable only after the
+    /// person approves the exact text and a real turn on the existing dot.
+    func testSendingAndReceivingOnlyWhenExplicitlyApproved() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["YARDLET_DOTS_LIVE_SEND"] == "1", let runtime = env["YARDLET_DOTS_RUNTIME"],
+              let text = env["YARDLET_DOTS_APPROVED_TEXT"], !text.isEmpty,
+              let expected = env["YARDLET_DOTS_EXPECTED_REPLY"], !expected.isEmpty else {
+            throw XCTSkip("A real message requires a separately approved text and explicit opt-in.")
+        }
+        let reader = DotsService(executable: URL(filePath: runtime),
+                                 environmentManager: CodexEnvironmentManager(paths: .live()), connection: nil)
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(90))
+            if !Task.isCancelled { await reader.stop() }
+        }
+        defer { timeout.cancel() }
+        do {
+            let agents = try await reader.agents()
+            let agent = try XCTUnwrap(agents.first(where: \.isPrimary) ?? agents.first)
+            if let expectedName = env["YARDLET_DOTS_EXPECTED_AGENT"], agent.name != expectedName {
+                throw PersonalAgentFailure.accountChanged
+            }
+            let baseline = Set(try await reader.messages(for: agent, before: nil).messages.map(\.id))
+            let stream = await reader.updates(for: agent)
+            var iterator = stream.makeAsyncIterator()
+            var subscribed = false
+            while let event = await iterator.next() {
+                if case .connected = event { subscribed = true }
+                if subscribed, case .changed = event { break }
+                if case .failed = event { break }
+            }
+            guard subscribed else { throw PersonalAgentFailure.network }
+            let submission = PersonalAgentSubmission(text: text, requestID: env["YARDLET_DOTS_REQUEST_ID"] ?? UUID().uuidString)
+            let sent = try await reader.send(submission, to: agent)
+            XCTAssertEqual(sent.requestID, submission.requestID)
+            var received = false
+            while let event = await iterator.next() {
+                if case .failed = event { break }
+                guard case .changed = event else { continue }
+                let page = try await reader.messages(for: agent, before: nil)
+                if page.messages.contains(where: { !baseline.contains($0.id) && $0.author == .agent && $0.text.contains(expected) }) {
+                    received = true
+                    break
+                }
+            }
+            await reader.stop()
+            XCTAssertTrue(received, "No matching new reply was observed through the native event subscription.")
+        } catch {
+            await reader.stop()
+            throw error
+        }
+    }
+
+    func testExistingDotsNativeReadsAndSubscription() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["YARDLET_DOTS_LIVE"] == "1", let runtime = env["YARDLET_DOTS_RUNTIME"] else {
+            throw XCTSkip("Set YARDLET_DOTS_LIVE and YARDLET_DOTS_RUNTIME for a read-only real-account check.")
+        }
+        let reader = DotsService(executable: URL(filePath: runtime),
+                                 environmentManager: CodexEnvironmentManager(paths: .live()), connection: nil)
+        do {
+            let agents = try await reader.agents()
+            guard let agent = agents.first(where: \.isPrimary) ?? agents.first else {
+                await reader.stop()
+                throw XCTSkip("This account has no existing dot.")
+            }
+            let latest = try await reader.messages(for: agent, before: nil)
+            XCTAssertFalse(latest.messages.isEmpty)
+            if let before = latest.before {
+                let previous = try await reader.messages(for: agent, before: before)
+                XCTAssertFalse(previous.messages.contains { $0.id == before })
+                XCTAssertEqual(Set(previous.messages.map(\.id)).count, previous.messages.count)
+            }
+            let stream = await reader.updates(for: agent)
+            let timeout = Task {
+                try? await Task.sleep(for: .seconds(15))
+                if !Task.isCancelled { await reader.stop() }
+            }
+            var connected = false
+            for await event in stream {
+                if case .connected = event { connected = true; break }
+                if case .failed = event { break }
+            }
+            timeout.cancel()
+            await reader.stop()
+            XCTAssertTrue(connected)
+        } catch {
+            await reader.stop()
+            throw error
+        }
+    }
+}

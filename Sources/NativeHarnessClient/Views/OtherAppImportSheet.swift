@@ -186,7 +186,7 @@ struct OtherAppImportSheet: View {
             Spacer(minLength: 8)
             if let existing {
                 Button(L10n.string("Open in Yardlet")) {
-                    model.store.selectedSessionID = existing.id
+                    model.revealTask(existing.id)
                     onDismiss()
                 }
                 .buttonStyle(.borderless)

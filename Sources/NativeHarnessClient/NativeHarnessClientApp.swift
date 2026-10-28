@@ -610,7 +610,7 @@ struct NativeHarnessClientApp: App {
         Window(L10n.string("Task Resource Usage"), id: TaskResourceUsageWindow.sceneID) {
             YardletWindowPreferences(usesVisualFixture: model.usesVisualFixture, appliesInterfaceSize: false) {
                 TaskResourceUsageWindow(monitor: model.resourceMonitor) { taskID in
-                    model.splits.activate(.session(taskID))
+                    model.revealTask(taskID)
                     TaskResourceUsageWindow.bringMainWindowForward()
                 }
             }

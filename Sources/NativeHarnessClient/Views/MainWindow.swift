@@ -19,6 +19,12 @@ private struct ProjectEditPresentation: Identifiable {
 struct MainWindow: View {
     @Bindable var model: AppModel
     @State private var isSidebarVisible = true
+    @State private var sidebarSection: ShellSection = .tasks
+    /// This window's place in `AppModel.taskWindowIDs`: windows share one model, each says for itself
+    /// whether it shows Tasks.
+    @State private var windowID = UUID()
+    @State private var personalAgents = PersonalAgentCenter(drafts: .live)
+    @State private var personalAccountID = AccountChoice.nativeID(for: .codex)
     /// The width the person set by dragging the sidebar's line (`SidebarWidth`), kept across launches.
     /// Only the sidebar's column and the title bar read it, so a drag does not rebuild the window.
     @State private var sidebarWidth = SidebarWidthState()
@@ -204,6 +210,7 @@ struct MainWindow: View {
     /// Turns the activity view on, keeping the places its tasks are listed at, or off. Over the
     /// archived tasks it comes back on.
     private func toggleActivity() {
+        sidebarSection = .tasks
         withAnimation(ParityMotion.easeInOut(reduceMotion: reduceMotion)) {
             if isShowingActivity, !isShowingArchivedTasks {
                 isShowingActivity = false
@@ -346,6 +353,7 @@ struct MainWindow: View {
     }
 
     private func showNewTask() {
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.showNewTask()
@@ -356,6 +364,7 @@ struct MainWindow: View {
 
     /// The sidebar's "Scheduled tasks": the list in the task list's place, the chosen one beside it.
     private func showSchedules() {
+        sidebarSection = .tasks
         withAnimation(ParityMotion.easeInOut(reduceMotion: reduceMotion)) {
             closeArchivedTasks()
             isShowingActivity = false
@@ -704,6 +713,7 @@ struct MainWindow: View {
     }
 
     private func show(_ item: WindowItem) {
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.activate(item)
@@ -711,9 +721,9 @@ struct MainWindow: View {
     }
 
     /// View › Back, ⌘[ and the mouse's back button outside a browser page. The scheduled tasks list,
-    /// which stands in for what the window shows, closes first.
+    /// which stands in for what the window shows, closes first. Personal agents keep no task history.
     private var goBack: (() -> Void)? {
-        guard schedulesWindow.isShowing || model.splits.canGoBack else { return nil }
+        guard sidebarSection == .tasks, schedulesWindow.isShowing || model.splits.canGoBack else { return nil }
         return {
             shellFocusBookmark = nil
             if schedulesWindow.isShowing { closeSchedules() } else { model.splits.goBack() }
@@ -722,7 +732,7 @@ struct MainWindow: View {
     }
 
     private var goForward: (() -> Void)? {
-        guard model.splits.canGoForward else { return nil }
+        guard sidebarSection == .tasks, model.splits.canGoForward else { return nil }
         return {
             shellFocusBookmark = nil
             closeSchedules()
@@ -759,6 +769,7 @@ struct MainWindow: View {
     // MARK: - Tabs
 
     private func openInNewTab(_ item: WindowItem) {
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.openInNewTab(item)
@@ -766,6 +777,7 @@ struct MainWindow: View {
     }
 
     private func selectTab(_ item: WindowItem) {
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.selectTab(item)
@@ -773,6 +785,7 @@ struct MainWindow: View {
     }
 
     private func selectTab(offset: Int) {
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.selectTab(offset: offset)
@@ -786,6 +799,7 @@ struct MainWindow: View {
     }
 
     private func newTab() {
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.newTab()
@@ -898,11 +912,11 @@ struct MainWindow: View {
 
     private var splitCommands: YardletSplitCommandSet {
         YardletSplitCommandSet(
-            canSplitRight: canSplit(.right),
-            canSplitDown: canSplit(.down),
-            canClosePane: model.splits.canClosePane,
+            canSplitRight: sidebarSection == .tasks && canSplit(.right),
+            canSplitDown: sidebarSection == .tasks && canSplit(.down),
+            canClosePane: sidebarSection == .tasks && model.splits.canClosePane,
             pinnedRows: pinnedRows.map { PinnedRowMenuItem(id: $0.id, title: $0.title) },
-            selection: model.splits.selection,
+            selection: sidebarSection == .tasks ? model.splits.selection : .home,
             splitRight: { splitFocusedPane(.right) },
             splitDown: { splitFocusedPane(.down) },
             closePane: { model.splits.closePane() },
@@ -912,13 +926,14 @@ struct MainWindow: View {
             focusPane: { model.splits.moveFocus($0) },
             activate: activateRow,
             tabs: YardletTabCommandSet(
-                canCloseTab: model.splits.canCloseTab,
+                canCloseTab: sidebarSection == .tasks && model.splits.canCloseTab,
                 canReopenClosedTab: model.splits.canReopenClosedTab,
                 newTab: newTab,
                 closeTab: { closeTab() },
                 selectNextTab: { selectTab(offset: 1) },
                 selectPreviousTab: { selectTab(offset: -1) },
                 reopenClosedTab: {
+                    sidebarSection = .tasks
                     shellFocusBookmark = nil
                     model.splits.reopenClosedTab()
                     focusCurrentContent()
@@ -978,6 +993,7 @@ struct MainWindow: View {
     }
 
     private func showArchivedTasks() {
+        sidebarSection = .tasks
         withAnimation(ParityMotion.easeInOut(reduceMotion: reduceMotion)) {
             closeSchedules()
             isSidebarVisible = true
@@ -994,7 +1010,7 @@ struct MainWindow: View {
     /// While a sheet, alert, or the environment panel is up, the task commands wait for it.
     private var taskCommands: YardletTaskCommandSet {
         var commands = YardletTaskCommandSet(
-            targets: hasPresentedModal ? TaskCommandTargets() : TaskCommandTargets.make(
+            targets: hasPresentedModal || sidebarSection != .tasks ? TaskCommandTargets() : TaskCommandTargets.make(
                 layout: sidebarActivity.map(\.layout) ?? sidebarLayout,
                 selection: schedulesWindow.isShowing ? .home : model.splits.selection,
                 shownSession: schedulesWindow.isShowing ? nil : model.store.selectedSession,
@@ -1033,12 +1049,12 @@ struct MainWindow: View {
             commands.newTask = { showNewTask() }
             commands.goBack = goBack
             commands.goForward = goForward
-            commands.openModelMenu = {
+            commands.openModelMenu = sidebarSection == .tasks ? {
                 let focus = model.store.selectedSessionID.map {
                     model.taskWorkspaces.state(for: $0, initialSurface: model.initialTaskSurface).keyboardFocus
                 } ?? homeKeyboardFocus
                 focus.move(to: .modelMenu)
-            }
+            } : nil
         }
         return commands
     }
@@ -1619,22 +1635,35 @@ struct MainWindow: View {
     /// The task the View menu's rail key, Find and the palette's task commands act on: the shown task
     /// (the focused pane's in a split view), none while scheduled tasks are shown in its place.
     private var commandTaskID: UUID? {
-        schedulesWindow.isShowing ? nil : model.store.selectedSessionID
+        schedulesWindow.isShowing || sidebarSection != .tasks ? nil : model.store.selectedSessionID
     }
 
     /// The panels the View menu's ⌘J and ⌘⌥B, the palette and "Open in Side Panel" act on: the shown
     /// task's, or the new-task screen's while the tab shows it.
     private var panelOwnerID: UUID? {
+        guard sidebarSection == .tasks else { return nil }
         if let commandTaskID { return commandTaskID }
         return !schedulesWindow.isShowing && model.splits.selection == .home ? TaskWorkspaceStore.draftID : nil
     }
 
     private var windowContent: some View {
         HStack(spacing: 0) {
-                if isSidebarVisible, schedulesWindow.isShowing {
+                if isSidebarVisible, sidebarSection == .personalAgents {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                         VStack(spacing: 0) {
                             sidebarTitleBar
+                            ShellSectionPicker(selection: $sidebarSection)
+                            PersonalAgentsSidebar(center: personalAgents, accounts: personalAccounts,
+                                accountID: $personalAccountID, accountMenu: accountMenu,
+                                onAccounts: { presentSettings(.harnesses) },
+                                onRefresh: reconnectPersonalAgents)
+                        }
+                    }
+                } else if isSidebarVisible, schedulesWindow.isShowing {
+                    SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
+                        VStack(spacing: 0) {
+                            sidebarTitleBar
+                            ShellSectionPicker(selection: $sidebarSection)
                             ScheduledTasksSidebar(model: model, state: schedulesWindow, onBack: closeSchedules,
                                                   actions: scheduleActions)
                         }
@@ -1643,6 +1672,7 @@ struct MainWindow: View {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                     VStack(spacing: 0) {
                     sidebarTitleBar
+                    ShellSectionPicker(selection: $sidebarSection)
                     ArchivedTaskList(
                         archived: model.store.archivedSessions,
                         errorMessage: model.archivedTaskError,
@@ -1659,6 +1689,7 @@ struct MainWindow: View {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                     VStack(spacing: 0) {
                     sidebarTitleBar
+                    ShellSectionPicker(selection: $sidebarSection)
                     TaskSidebar(
                         layout: sidebarLayout,
                         allGroups: allVisibleGroups,
@@ -1731,7 +1762,13 @@ struct MainWindow: View {
                 }
 
                 Group {
-                    if model.isRestoringIndex {
+                    if sidebarSection == .personalAgents {
+                        VStack(spacing: 0) {
+                            titleBar(for: nil)
+                            PersonalAgentsContent(center: personalAgents, onRetry: reconnectPersonalAgents,
+                                                  onAccounts: { presentSettings(.harnesses) })
+                        }
+                    } else if model.isRestoringIndex {
                         VStack(spacing: 0) {
                             titleBar(for: nil)
                             VStack(spacing: 10) {
@@ -1777,7 +1814,7 @@ struct MainWindow: View {
         .focusSection()
         .coordinateSpace(.named(SidebarHoverCardMetrics.space))
         .overlay(alignment: .topLeading) {
-            if isSidebarVisible, !schedulesWindow.isShowing, !isShowingArchivedTasks {
+            if isSidebarVisible, sidebarSection == .tasks, !schedulesWindow.isShowing, !isShowingArchivedTasks {
                 SidebarHoverCardLayer(state: sidebarHoverCard)
             }
         }
@@ -1788,6 +1825,11 @@ struct MainWindow: View {
         // The window's buttons stay centred on the title bar's row.
         .background(WindowChromeAlignmentAnchor())
         .background { SessionRailStorage(state: sessionRail) }
+        .task(id: personalLoadKey) {
+            if sidebarSection == .personalAgents { await connectPersonalAgents() }
+            else { await personalAgents.disconnect() }
+        }
+        .onDisappear { Task { await personalAgents.disconnect() } }
         // Only the task on screen is looked up, when it comes into view and while it stays.
         .onChange(of: model.pullRequestTargets(), initial: true) { _, targets in
             model.pullRequests.show(targets)
@@ -1807,6 +1849,51 @@ struct MainWindow: View {
                 toggle: toggleActivity
             )
         )
+    }
+
+    private func reportTaskSurface() {
+        model.setShowsTasks(sidebarSection == .tasks, inWindow: windowID)
+        if sidebarSection == .tasks, let current = model.store.selectedSessionID {
+            Task { await model.store.markRead(id: current) }
+        }
+    }
+
+    private var personalAccounts: [AccountChoice] { model.connections.choices(for: [.codex]) }
+
+    private var personalLoadKey: String {
+        guard sidebarSection == .personalAgents else { return "tasks" }
+        return personalDraftKey + "|" + (model.runtimeSelections.selectedURL(for: .codex)?.path() ?? "")
+    }
+
+    private var personalDraftKey: String {
+        let home = personalAccounts.first { $0.id == personalAccountID }?.connection?.homePath
+            ?? model.codexEnvironmentManager?.paths.nativeHomeURL.path()
+            ?? CodexEnvironmentPaths.live().nativeHomeURL.path()
+        return personalAccountID + "|" + home
+    }
+
+    private func connectPersonalAgents() async {
+        guard sidebarSection == .personalAgents, !Task.isCancelled else { return }
+        guard let runtime = model.runtimeSelections.selectedURL(for: .codex) else {
+            await personalAgents.disconnect()
+            guard !Task.isCancelled else { return }
+            personalAgents.showUnavailable(.runtimeUnavailable)
+            return
+        }
+        guard let account = personalAccounts.first(where: { $0.id == personalAccountID }) else {
+            if let first = personalAccounts.first { personalAccountID = first.id }
+            return
+        }
+        let key = personalLoadKey
+        await personalAgents.connect(sourceKey: key, draftSourceKey: personalDraftKey) {
+            DotsService(executable: runtime, environmentManager: model.codexEnvironmentManager,
+                        connection: account.connection)
+        }
+    }
+
+    private func reconnectPersonalAgents() {
+        if personalAgents.failure == .accountChanged { personalAgents.forgetReadings() }
+        Task { await connectPersonalAgents() }
     }
 
     /// The title bar beside the sidebar for what the tab shows: `item` is the window's item the title bar
@@ -1860,6 +1947,7 @@ struct MainWindow: View {
     /// A task dragged onto the tab bar gets a tab of its own there, which shows.
     private func openInOwnTab(_ id: UUID, before: WindowItem?) {
         guard sessionRecord(id) != nil else { return }
+        sidebarSection = .tasks
         shellFocusBookmark = nil
         closeSchedules()
         model.splits.openInOwnTab(id, before: before)
@@ -2143,14 +2231,24 @@ struct MainWindow: View {
             focusedTaskSurface = nil
             if let current {
                 keepActivityPlace(of: current)
-                Task { await model.store.markRead(id: current) }
+                if sidebarSection == .tasks { Task { await model.store.markRead(id: current) } }
             }
         }
+        // Only a window showing Tasks shows the selected task; coming back to them reads it.
+        .onAppear(perform: reportTaskSurface)
+        .onChange(of: sidebarSection) { _, _ in reportTaskSurface() }
+        .onDisappear { model.setShowsTasks(false, inWindow: windowID) }
         .onChange(of: model.store.workspaceGroups.map(\.workspaceURL), initial: true) { _, _ in
             projects.ensureProjects(forTasks: model.store.sessions)
         }
         // A notification led to a task archived since: the archived list is where it is restored.
         .onChange(of: model.archivedTasksRevealRequest) { _, _ in showArchivedTasks() }
+        .onChange(of: model.taskSurfaceRevealRequest) { _, _ in
+            sidebarSection = .tasks
+            shellFocusBookmark = nil
+            closeSchedules()
+            focusCurrentContent()
+        }
         // A notification or the menu bar menu opens the window again once it was closed.
         .onAppear { TaskResourceUsageWindow.reopenMainWindow = { openWindow(id: "main") } }
     }

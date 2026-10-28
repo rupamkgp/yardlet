@@ -316,6 +316,12 @@ final class AppModel {
 #endif
     /// Asks the window to show archived tasks: a notification led to a task that was archived.
     var archivedTasksRevealRequest = 0
+    /// An explicit navigation outside the main window asks it to reveal Tasks.
+    /// Background index selection changes do not send this request.
+    var taskSurfaceRevealRequest = 0
+    /// The main windows that show Tasks rather than another sidebar section. With none, no task
+    /// counts as seen, so its updates stay unread and are announced.
+    private(set) var taskWindowIDs = Set<UUID>()
     private let restoresIndexOnLaunch: Bool
     @ObservationIgnored private let legacyFolderPreferences: LegacyProjectFolderPreferences
     private var notifiedBackgroundStates = Set<String>()
@@ -1053,8 +1059,14 @@ final class AppModel {
         }
     }
 
+    /// A main window reports whether it shows Tasks, and stops showing them when it closes.
+    func setShowsTasks(_ shows: Bool, inWindow windowID: UUID) {
+        guard taskWindowIDs.contains(windowID) != shows else { return }
+        if shows { taskWindowIDs.insert(windowID) } else { taskWindowIDs.remove(windowID) }
+    }
+
     func isSessionVisible(_ id: UUID) -> Bool {
-        guard let selected = store.selectedSessionID else { return false }
+        guard !taskWindowIDs.isEmpty, let selected = store.selectedSessionID else { return false }
         if selected == id { return true }
         let workspace = taskWorkspaces.state(for: selected)
         return workspace.panels.trailingSurfaceID == "sideChat" && workspace.sideChatSessionID == id

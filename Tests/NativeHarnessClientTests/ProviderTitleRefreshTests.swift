@@ -70,6 +70,7 @@ final class ProviderTitleRefreshTests: XCTestCase {
         let repository = TitleRefreshRepository([visible, background])
         let model = try makeModel(repository: repository, resolver: { _ in "Updated provider title" }, restores: false)
         model.store.selectedSessionID = visible.id
+        model.setShowsTasks(true, inWindow: UUID())
         let draft = model.composerDrafts.tasks.draft(for: visible.id)
         draft.text = "  Keep this unsent draft 👩🏽‍💻\n"
         draft.rememberSelection(NSRange(location: 2, length: 4), in: draft.text)

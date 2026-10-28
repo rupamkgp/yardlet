@@ -201,10 +201,20 @@ final class NotificationRoutingTests: XCTestCase {
         let claude = try await makeClaudeModel()
         defer { claude.cleanUp() }
         let (model, center, session, transport) = (claude.model, claude.center, claude.session, claude.transport)
-        model.store.selectedSessionID = nil
+        // The task stays selected, but neither window shows Tasks any more: one turned to personal
+        // agents, the other closed.
+        XCTAssertEqual(model.store.selectedSessionID, session.id)
+        let (first, second) = (UUID(), UUID())
+        model.setShowsTasks(true, inWindow: first)
+        model.setShowsTasks(true, inWindow: second)
+        model.setShowsTasks(false, inWindow: first)
+        XCTAssertTrue(model.isSessionVisible(session.id), "The other window still shows the task")
+        model.setShowsTasks(false, inWindow: second)
+        XCTAssertFalse(model.isSessionVisible(session.id))
 
         await transport.emit(canUseTool("bash-1", tool: "Bash", input: .object(["command": .string("swift test")])))
         let approval = try await waitForPost(in: center)
+        XCTAssertEqual(model.store.sessions.first { $0.id == session.id }?.hasUnreadUpdate, true)
         XCTAssertEqual(approval.target, SystemNotificationTarget(sessionID: session.id, requestID: "bash-1"))
         XCTAssertTrue(approval.offersAllowOnce)
         XCTAssertEqual(approval.identifier, "yardlet-session-\(session.id.uuidString)-waitingForApproval-bash-1")

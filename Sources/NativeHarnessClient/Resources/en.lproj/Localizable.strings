@@ -3077,3 +3077,59 @@
 "Remove suggestion" = "Remove suggestion";
 "Autocomplete searches and URLs" = "Autocomplete searches and URLs";
 "Sends what you type in the address field to Google to suggest searches. Pages from your browsing history are suggested either way." = "Sends what you type in the address field to Google to suggest searches. Pages from your browsing history are suggested either way.";
+
+/* Personal agents */
+"This message cannot be displayed yet." = "This message cannot be displayed yet.";
+"Personal agents" = "Personal agents";
+"Sidebar section" = "Sidebar section";
+"ChatGPT account" = "ChatGPT account";
+"Refresh personal agents" = "Refresh personal agents";
+"No dots in this account" = "No dots in this account";
+"Loading your dots…" = "Loading your dots…";
+"Create your dot in ChatGPT, then refresh here." = "Create your dot in ChatGPT, then refresh here.";
+"Open Accounts" = "Open Accounts";
+"Read-only conversation" = "Read-only conversation";
+"Refresh conversation" = "Refresh conversation";
+"Load earlier messages" = "Load earlier messages";
+"No messages yet" = "No messages yet";
+"Message deleted" = "Message deleted";
+"Unknown sender" = "Unknown sender";
+"Connect Codex in Accounts to use your dots." = "Connect Codex in Accounts to use your dots.";
+"Sign in with ChatGPT in Accounts to use your dots." = "Sign in with ChatGPT in Accounts to use your dots.";
+"The ChatGPT account changed. Reconnect to load its dots." = "The ChatGPT account changed. Reconnect to load its dots.";
+"Dots are not available for this ChatGPT account." = "Dots are not available for this ChatGPT account.";
+"Dots could not be reached. Try again." = "Dots could not be reached. Try again.";
+"This Dots response cannot be displayed yet." = "This Dots response cannot be displayed yet.";
+"Could not connect to Dots. Check your connection and try again." = "Could not connect to Dots. Check your connection and try again.";
+
+"Delivery could not be confirmed. Refresh the conversation or retry the same message." = "Delivery could not be confirmed. Refresh the conversation or retry the same message.";
+
+"The message was not accepted. Your draft is still here." = "The message was not accepted. Your draft is still here.";
+
+"ChatGPT requires verification before this message can be sent. Your draft is still here." = "ChatGPT requires verification before this message can be sent. Your draft is still here.";
+
+"The draft could not be saved. Nothing new will be sent until it is saved." = "The draft could not be saved. Nothing new will be sent until it is saved.";
+
+"This attachment cannot be opened here yet." = "This attachment cannot be opened here yet.";
+
+"Message your dot…" = "Message your dot…";
+
+"Retry message" = "Retry message";
+
+"Send message" = "Send message";
+
+"Save…" = "Save…";
+
+"The attachment could not be saved." = "The attachment could not be saved.";
+
+"Start a new draft" = "Start a new draft";
+
+"Return to editing?" = "Return to editing?";
+
+"The earlier message may already have arrived. Check the conversation before sending it again. Your text will stay here." = "The earlier message may already have arrived. Check the conversation before sending it again. Your text will stay here.";
+
+"Start a new draft?" = "Start a new draft?";
+
+"The unreadable draft will be kept as a backup. The text currently in this editor will become the new draft." = "The unreadable draft will be kept as a backup. The text currently in this editor will become the new draft.";
+
+"The saved draft could not be read. Keep it as a backup to start a new draft." = "The saved draft could not be read. Keep it as a backup to start a new draft.";

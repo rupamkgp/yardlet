@@ -286,8 +286,10 @@ struct ImportConversationSheet: View {
         let selection = search.isEmpty ? nil
             : CodexHistorySearchSelection(query: search, snippet: conversation.snippet,
                                           threadID: conversation.providerSessionID)
-        if await model.importConversation(conversation, connection: account?.connection,
-                                          historySelection: selection) != nil {
+        if let task = await model.importConversation(conversation, connection: account?.connection,
+                                                     historySelection: selection) {
+            // The imported task opens even when the window was showing another sidebar section.
+            model.revealTask(task.id)
             onDismiss()
         } else {
             error = model.bootstrapError ?? L10n.string("The conversation could not be imported.")
