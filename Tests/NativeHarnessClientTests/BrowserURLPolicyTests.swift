@@ -90,8 +90,8 @@ final class BrowserAddressSuggestionTests: XCTestCase {
         let history = BrowserAddressHistory(file: nil) { clock }
         for typed in [true, true, true, false, false, false] { history.noteVisit("https://github.com/", typed: typed) }
         history.noteTitle("GitHub", of: "https://github.com/")
-        for _ in 0..<5 { history.noteVisit("https://github.com/zzunkie/yardlet", typed: false) }
-        history.noteTitle("zzunkie/yardlet: Yardlet", of: "https://github.com/zzunkie/yardlet")
+        for _ in 0..<5 { history.noteVisit("https://github.com/octocat/hello-world", typed: false) }
+        history.noteTitle("octocat/hello-world: Hello World", of: "https://github.com/octocat/hello-world")
         history.noteVisit("https://www.google.com/search?q=github%20copilot", typed: false)
         clock = now.addingTimeInterval(-10 * 86_400)
         history.noteVisit("https://user:secret@gist.github.com/x", typed: false)
@@ -110,7 +110,7 @@ final class BrowserAddressSuggestionTests: XCTestCase {
             ["gi",["gi","github","gitlab","https://github.com/"],["","","","GitHub"],[],{"google:suggesttype":["QUERY","QUERY","QUERY","NAVIGATION"],"google:suggestrelevance":[1300,600,560,800]}]
             """.utf8)))
         let rows = rank("gi", remote: remote)
-        XCTAssertEqual(rows.map(\.fill), ["github.com", "gi", "github copilot", "github", "gitlab", "github.com/zzunkie/yardlet"])
+        XCTAssertEqual(rows.map(\.fill), ["github.com", "gi", "github copilot", "github", "gitlab", "github.com/octocat/hello-world"])
         XCTAssertEqual(rows[0].destination, "https://github.com/")
         XCTAssertEqual(rows[0].inlineCompletion, "thub.com", "a host typed before completes inline")
         XCTAssertEqual(rows[0].title, "GitHub")
@@ -121,11 +121,11 @@ final class BrowserAddressSuggestionTests: XCTestCase {
         XCTAssertFalse(rows.contains { $0.destination.contains("gist") }, "a page seen once 10 days ago is not suggested")
 
         let deleted = rank("gi", inline: false, remote: remote)
-        XCTAssertEqual(deleted.map(\.fill), ["gi", "github copilot", "github", "gitlab", "github.com", "github.com/zzunkie/yardlet"],
+        XCTAssertEqual(deleted.map(\.fill), ["gi", "github copilot", "github", "gitlab", "github.com", "github.com/octocat/hello-world"],
                        "right after deleting, what was typed comes first")
 
-        let path = rank("github.com/z")
-        XCTAssertEqual(path.map(\.destination), ["https://github.com/z", "https://github.com/zzunkie/yardlet"],
+        let path = rank("github.com/o")
+        XCTAssertEqual(path.map(\.destination), ["https://github.com/o", "https://github.com/octocat/hello-world"],
                        "a page never typed does not complete an address")
         XCTAssertTrue(path[0].isVerbatim)
     }
@@ -136,7 +136,7 @@ final class BrowserAddressSuggestionTests: XCTestCase {
         XCTAssertEqual([0, 1, 5, 9, 50, 90, 200].map(BrowserAddressRanking.relevance), [0, 625, 962, 1300, 1350, 1399, 1399])
         XCTAssertEqual(BrowserAddressRanking.urlTermScore("hub", url: "https://github.com/"), 2, "inside a word of the host")
         XCTAssertEqual(BrowserAddressRanking.urlTermScore("com", url: "https://github.com/"), 0, "the top-level domain")
-        XCTAssertEqual(BrowserAddressRanking.urlTermScore("yard", url: "https://github.com/zzunkie/yardlet?tab=yard"), 13)
+        XCTAssertEqual(BrowserAddressRanking.urlTermScore("hello", url: "https://github.com/octocat/hello-world?tab=hello"), 13)
         XCTAssertEqual(BrowserAddressRanking.titleTermScore("날씨", title: "서울 날씨 - Google 검색"), 8)
         XCTAssertEqual(BrowserAddressRanking.titleTermScore("씨", title: "서울 날씨"), 0, "inside a word of the title")
     }
