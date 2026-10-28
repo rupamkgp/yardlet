@@ -314,7 +314,7 @@ One tool is added: `browser_fill_credential`. Its description says only what it 
 | `ref` | The input field reference from the last snapshot. For a sign-in, Yardlet finds the username field and the password field of the form that field belongs to |
 | `item` | Item name or username (optional; usernames since 2026-10-27). If empty, the item matching this tab's origin is used when there is exactly one; if there are several, an error with a list of "name (username)". Only the site's items that have what `kind` asks for (a password, a code, a passkey) are weighed, unless none has it, since a site's password and its two-factor code are often two items (section 14.3). Items with the same name, which import names after the site, are also picked by username |
 | `kind` | `login` (default, username and password), `one_time_code` (TOTP), `passkey` (briefly prepares the virtual authenticator on this tab) |
-| `submit` | Submit the form after filling (optional) |
+| `submit` | Whether to submit the form after filling (optional): a safe form is submitted unless it is false (section 5.2) |
 | `tabId` | Same as in the other page tools |
 
 The result is one sentence without values. For example: "Filled the username and password of “GitHub (work)” into the
@@ -335,14 +335,25 @@ tool that lists items. With no matching item, it answers "No vault item for http
    `autocomplete=one-time-code`, a maximum length of 10 or less, numeric input, or a name that means a verification code
    (section 14.3). A code split into one-character fields is spread over the consecutive fields. This blocks injection
    that tries to put the password into a public text field on the same site (a comment, a bio).
-4. **Filling:** in an isolated world only Yardlet uses (`Page.createIsolatedWorld`), Yardlet takes the node, sets the
+4. **Destination check:** before a password or a code goes in, the field's form must send its fields only to the
+   item's own sites over https (the form's `action` and every submit button's `formaction`, by the rules of section
+   6.2; a `javascript:` action sends nothing). A form that sends them anywhere else is not filled, and the refusal
+   names where it sends them. See "Filled values and addresses" below.
+5. **Filling:** in an isolated world only Yardlet uses (`Page.createIsolatedWorld`), Yardlet takes the node, sets the
    value with the native `value` setter, then dispatches `input` and `change` events (the way password manager
    extensions do it). The node object is bound to that document, so if the page changes in between, the fill fails
    instead of landing somewhere else. For sites that ignore the events, the real-form check in step 1 of section 12
    decides on an `Input.insertText` (trusted input) fallback.
-5. **Record:** the filled node (backend node ID) is written into the tab state, and a usage log entry and notification
+6. **Record:** the filled node (backend node ID) is written into the tab state, and a usage log entry and notification
    (section 6.3) are made.
-6. **Submit:** with `submit`, `form.requestSubmit()` in the same isolated world, or Enter if there is no form.
+7. **Submit:** a safe form, one whose every way of sending (its action and each submit button's) goes to the page's
+   own origin over https (or to the local development server the page is on), and by POST when it holds a password, is
+   submitted right after the fill unless `submit` is false, so the values stay on the page as briefly as they can, as
+   1Password's agent autofill fills and submits. Submitting is a click on the form's submit button in the same isolated
+   world (`requestSubmit()` when it has none). A form that would send a password by GET (which is also what a form
+   without `method="post"` does) or a secret to another origin is filled and left unsent whatever `submit` says, and the
+   result says why: the agent clicks the page's own button, whose script usually sends it another way. A one-time code
+   may go by GET, since it is spent once sent. A field in no form gets Enter only with `submit: true`.
 
 **Passkeys (`kind: passkey`):** Yardlet attaches a CDP virtual authenticator to this tab (`WebAuthn.enable`,
 `WebAuthn.addVirtualAuthenticator`: ctap2, transport `internal`, with resident key and user verification, automatic
@@ -368,12 +379,38 @@ Agent tools do not expose raw CDP, so the private key from `WebAuthn.getCredenti
 | Reading the field value with `browser_evaluate`, or `fetch` to the outside | Refused on the document the value was filled into, whether or not the field still holds it. It lifts when the tab goes to another document (a main frame navigation or a reload); an SPA that keeps its document after signing in needs a reload first, which the refusal says. A listener planted before the fill that intercepts the value is not blocked (user correction on 2026-10-24, residual risk in section 7) |
 | `browser_snapshot` (accessibility tree) | Blink replaces a password field's accessibility value with • of the same length (`IsPasswordFieldAndShouldHideValue`, verified with CEF 154 in step 1 of section 12). Yardlet replaces that value with `<redacted>` too, so the length does not show (the same marker as Codex `browser-service.mjs`, section 10). This rule always applies, vault or not. As a backstop, "scrubbing matching strings" below covers TOTP fields and everything else |
 | `browser_screenshot` | If a filled node remains, its box (`DOM.getBoxModel`) is covered in black in the returned image. This also blocks injection that gets the agent to click "show password" |
-| Every text result (snapshot, `browser_wait_for`, console, JS dialog text, notes at the end of a result) | **Scrubbing matching strings:** any string equal to a value this task filled in the last 30 minutes is replaced with `[vault value]` (the same convention as GitHub Actions secret masking). This happens in the one place where `BrowserAgentTools.run(_:_:on:)` collects results. The values are only in memory and are discarded after 30 minutes |
+| Every text result (snapshot, page address and title, `browser_wait_for`, console, JS dialog text, tab list, errors, notes at the end of a result) | **Scrubbing matching strings:** a value filled in the last 30 minutes is replaced with `[saved value]` (the same convention as GitHub Actions secret masking): as written, escaped in JSON, in base64 or hex, and each of these percent-encoded once or twice in either case, with `+` or `%2B` for a space. A password the person typed into a sign-in form they submitted in a task's tab is scrubbed the same way. This happens in the one place where `BrowserAgentTools.run` collects results. The values are only in memory and are discarded after 30 minutes |
+| Addresses the page opens | See "Filled values and addresses" below: the browser host refuses the navigation before anything is sent |
+| What Yardlet keeps of pages | A tab does not remember an address or title that carries a filled value: the task's saved tabs, a closed tab to reopen and the tabs reopened after the browser host ended keep the page before it, and the address field's history does not count it as a visit |
 | Harness conversation history | If the above holds, values have no path into the history. Provider history is not edited |
 | Yardlet and host logs | CDP messages are not logged (even now the DEBUG host writes only a dialog's ID and whether it was accepted). Fill commands carry a "sensitive" mark so future logs leave them out too, and the usage log has no values. The DEBUG raw accessibility dump (`accessibilityRecordPath`, QA only) runs only in QA homes where the vault is off |
 | Clipboard | Not used |
 | Chromium autofill and session restore | Password fields are left out of Blink's form state saving. Whether CEF writes autofill values to `Login Data` or `Web Data` is checked with a QA home in step 1 of section 12, and turned off if it does |
 | The site's own scripts | Not blocked. The point is to give that site the password, so the exposure is the same as with every password manager. Instead, filling is bound to the registrable domain |
+
+### 5.4 Filled values and addresses
+
+When the vault fills a password into a page, for an agent or for the person, Yardlet first tells the browser host the
+password's spellings (section 5.3, `guardFilledValues`). Until the tab's main frame starts another document, the host
+refuses, before the request is sent (CEF `OnBeforeBrowse`, and a page's request for a new window), any navigation of the
+tab, in any frame and including a redirect, whose address carries the password, as written or percent-encoded once or
+twice, with or without `+` for a space. A form's body is not looked at there: CEF does not give `OnBeforeBrowse` a
+navigation's body. Where a form sends a password is checked before the fill instead (section 5.2, step 4).
+
+The host says only that it refused (`filledValueBlocked`), never the address. The panel shows a notice over the page, and
+the agent's next result on that tab says what happened and what to do. One-time codes are scrubbed from results but do
+not hold navigations: they expire in seconds, and a site that sends one in its address would otherwise not sign in.
+
+Yardlet also keeps such an address out of what it remembers (section 5.3). Addresses that a build without these rules
+kept are removed once as Yardlet starts (`BrowserFilledValueCleanup`), in a team-signed build that can read the vault's
+items: from Chromium's history and icons in each profile and its URL-keyed metrics, and from each task's saved browser
+tabs (such a page keeps its site and path and loses its title) and the address field's history. Only an entry whose address carries a vault password
+whole, as a query or fragment value, a path segment, or inside an address in a parameter, goes, and nothing is backed
+up. A store the browser host holds open is tried again at the next start.
+
+A page's own scripts can still send what they read from a field elsewhere: with `fetch` or another request that is not
+a navigation, or by pointing its form at another site after the fill. That is the site's own code (the last row of
+section 5.3).
 
 ## 6. Policy while the person is away
 

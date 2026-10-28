@@ -757,7 +757,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertFalse(filled.isError, filled.text)
         XCTAssertFalse(filled.text.contains("correct-horse-battery"), filled.text)
         XCTAssertTrue(filled.text.contains("the username and password of “Example”"), filled.text)
-        let fill = cdp.params(of: "Runtime.callFunctionOn").last
+        let fill = cdp.params(of: "Runtime.callFunctionOn").last { $0["functionDeclaration"]?.stringValue == BrowserAgentTools.fillFunction }
         XCTAssertEqual(fill?["objectId"], .string("field"))
         XCTAssertTrue(fill?["arguments"]?.arrayValue?.contains(.object(["value": .string("correct-horse-battery")])) == true)
 
@@ -811,6 +811,96 @@ final class BrowserAgentToolsTests: XCTestCase {
         page.replaceRefs(["@e9": .init(node: 3, session: "frame-session")], eventMark: cdp.eventLog.count)
         let framed = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e9")])
         XCTAssertTrue(framed.isError && framed.text.contains("inside a frame"), framed.text)
+    }
+
+    /// A filled password stays out of addresses and other sites (docs/BROWSER_VAULT_DESIGN.md, "Filled values and
+    /// addresses"): a form that sends it to a site the item does not name, or over plain http, is not filled. A safe
+    /// form (POST to the page's own origin) is submitted unless the agent says not to; one that would send the password
+    /// by GET or to another address of the site is filled but not submitted, whatever the agent asked. The host is told to refuse an address
+    /// that carries the password before the value goes in. What the host refused reaches the next result, and the value
+    /// stays out of results in the spellings a form and an address inside another's query give it.
+    func testAVaultFillKeepsThePasswordOutOfAddressesAndOtherSites() async {
+        let password = "p@ss word+1!"
+        let item = VaultItem(name: "Example", sites: ["example.com"], username: "ada", policy: .always)
+        tools.vault = VaultCenter(environment: VaultCenter.Environment(
+            secrets: InMemoryVaultSecretStore([item.id: VaultSecret(password: password)]),
+            repository: InMemoryVaultRepository(items: [item]), hmac: MacVault.hmac, isAllowedBuild: true,
+            defaults: .vaultTests()))
+        _ = await loadSnapshot()
+        cdp.responders["Page.getFrameTree"] = { _ in
+            .object(["frameTree": .object(["frame": .object([
+                "id": .string("main"), "loaderId": .string("doc-1"), "url": .string("https://www.example.com/login"),
+                "securityOrigin": .string("https://www.example.com")
+            ])])])
+        }
+        cdp.responders["Page.createIsolatedWorld"] = { _ in .object(["executionContextId": .integer(7)]) }
+        cdp.responders["DOM.resolveNode"] = { _ in .object(["object": .object(["objectId": .string("field")])]) }
+        func targets(_ pairs: [(String, String)]) -> JSONValue {
+            .object(["form": .bool(true), "targets": .array(pairs.map { .object(["action": .string($0.0), "method": .string($0.1)]) })])
+        }
+        var submission = targets([])
+        var guardsAtFill: [BrowserHostCommand]?
+        var submits = 0
+        cdp.responders["Runtime.callFunctionOn"] = { [unowned self] params in
+            let function = params["functionDeclaration"]?.stringValue ?? ""
+            if function.contains("ownerDocument === document") { return ScriptedCDP.value(.bool(true)) }
+            if function == BrowserAgentTools.submissionFunction { return ScriptedCDP.value(submission) }
+            if function == BrowserAgentTools.submitFunction {
+                submits += 1
+                return ScriptedCDP.value(.string("submitted"))
+            }
+            guardsAtFill = self.hostCommands
+            return ScriptedCDP.value(.object(["kinds": .array([.string("password"), .string("username")])]))
+        }
+        func fill(_ submit: Bool? = nil) async -> AgentToolResult {
+            await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2")].merging(submit.map { ["submit": .bool($0)] } ?? [:]) { $1 })
+        }
+
+        for elsewhere in ["https://collector.test/login", "http://www.example.com/login"] {
+            submission = targets([("https://www.example.com/login", "post"), (elsewhere, "post")])
+            let refused = await fill(true)
+            XCTAssertTrue(refused.isError && refused.text.contains("not one of the item's sites"), refused.text)
+            XCTAssertNil(guardsAtFill, "nothing went into the page")
+            XCTAssertTrue(hostCommands.isEmpty)
+        }
+
+        submission = targets([("https://www.example.com/session", "post"), ("javascript:void(0)", "post")])
+        let safe = await fill()
+        XCTAssertTrue(safe.text.contains("and submitted it."), safe.text)
+        let guarded = BrowserHostCommand.guardFilledValues(tab: 4, values: VaultScrubList.spellings(of: password))
+        XCTAssertEqual(guardsAtFill, [guarded], "the host holds the value's addresses before the page has it")
+        let firstStep = await fill(false)
+        XCTAssertFalse(firstStep.text.contains("submit"), firstStep.text)
+        XCTAssertEqual(submits, 1, "a safe form goes unless the agent says not to")
+
+        for (unsafe, reason) in [(("https://www.example.com/login", "get"), "in the page's address"),
+                                 (("https://login.example.com/session", "post"), "https://login.example.com, not to this page's")] {
+            submission = targets([unsafe])
+            let filled = await fill(true)
+            XCTAssertFalse(filled.isError, filled.text)
+            XCTAssertTrue(filled.text.contains("did not submit it") && filled.text.contains(reason), filled.text)
+        }
+        XCTAssertEqual(submits, 1, "an unsafe form is left unsent even when the agent asks")
+        XCTAssertFalse(cdp.methods.contains("Input.dispatchKeyEvent"), "no Enter in place of the submit")
+
+        page.receive(.filledValueBlocked(tab: 4))
+        cdp.pageURL = "https://www.example.com/login?email=ada&password=p%40ss+word%2b1%21"
+        cdp.responders["Accessibility.getFullAXTree"] = { _ in
+            .object(["nodes": .array([
+                .object(["nodeId": .string("1"), "ignored": .bool(false), "backendDOMNodeId": .integer(1),
+                         "childIds": .array([.string("2")]), "role": .object(["value": .string("RootWebArea")]),
+                         "name": .object(["value": .string("Sign in")])]),
+                .object(["nodeId": .string("2"), "parentId": .string("1"), "ignored": .bool(false),
+                         "backendDOMNodeId": .integer(2), "childIds": .array([]),
+                         "role": .object(["value": .string("StaticText")]),
+                         "name": .object(["value": .string("Back to /login?next=%2Fhome%3Fp%3Dp%2540ss%2520word%252B1%2521")])])
+            ])])
+        }
+        let after = await run(AgentToolCatalog.snapshot)
+        XCTAssertTrue(after.text.contains("tried to go to an address carrying the password"), after.text)
+        XCTAssertTrue(after.text.contains("password=[saved value]"), after.text)
+        XCTAssertTrue(after.text.contains("%3Fp%3D[saved value]"), "encoded twice: \(after.text)")
+        XCTAssertFalse(after.text.contains("%40ss") || after.text.contains("%2540ss"), after.text)
     }
 
     func testEvaluateWithAReferencePassesTheElement() async {

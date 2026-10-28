@@ -178,6 +178,11 @@ typedef struct {
     double audibleAt;
     /// The page uses the camera or the microphone (OnMediaAccessChange).
     int capturing;
+    /// Spellings of the passwords the vault filled into the page (yardlet_cef_guard_filled_values), each ended by
+    /// a NUL, until the main frame starts another document: no navigation of the tab goes to an address that
+    /// carries one. malloc'd, or NULL.
+    char *filledValues;
+    size_t filledValuesLength;
 } BrowserSlot;
 
 static BrowserSlot g_browsers[kMaximumBrowsers];
@@ -546,6 +551,98 @@ static int is_external_scheme(const cef_string_t *url) {
     return external;
 }
 
+// MARK: - Filled values kept out of addresses
+// A form sent by GET (as one without method="post" is) puts its fields in the address it goes to, and a page's
+// script can build such an address too. One that carries a password the vault filled would show it in the address
+// field, the tab's saved page, the history and every tool result that names the page, so it is refused here,
+// before the request is sent (docs/BROWSER_VAULT_DESIGN.md, "Filled values and addresses").
+
+enum { kMaximumFilledValues = 16 * 1024 };
+
+static void clear_filled_values(BrowserSlot *slot) {
+    free(slot->filledValues);
+    slot->filledValues = NULL;
+    slot->filledValuesLength = 0;
+}
+
+/// Adds NUL-ended copies of `strings` to a buffer; 0 when memory ran out.
+static int append_strings(char **buffer, size_t *length, const char *const *strings, int count) {
+    size_t added = 0;
+    for (int index = 0; index < count; index++) added += strings[index] ? strlen(strings[index]) + 1 : 0;
+    if (added == 0) return 1;
+    char *grown = realloc(*buffer, *length + added);
+    if (grown == NULL) return 0;
+    *buffer = grown;
+    for (int index = 0; index < count; index++) {
+        if (strings[index] == NULL) continue;
+        size_t size = strlen(strings[index]) + 1;
+        memcpy(*buffer + *length, strings[index], size);
+        *length += size;
+    }
+    return 1;
+}
+
+/// Undoes percent-encoding once, and with `plus` a form's `+` for a space, into `out` (as long as `in`).
+static size_t url_decoded(const char *in, size_t length, char *out, int plus) {
+    size_t written = 0;
+    for (size_t index = 0; index < length; index++) {
+        if (in[index] == '%' && index + 2 < length && isxdigit((unsigned char)in[index + 1])
+            && isxdigit((unsigned char)in[index + 2])) {
+            char hex[3] = {in[index + 1], in[index + 2], 0};
+            out[written++] = (char)strtol(hex, NULL, 16);
+            index += 2;
+        } else {
+            out[written++] = plus && in[index] == '+' ? ' ' : in[index];
+        }
+    }
+    return written;
+}
+
+static int text_carries_filled_value(const BrowserSlot *slot, const char *text, size_t length) {
+    for (size_t at = 0; at < slot->filledValuesLength; at += strlen(slot->filledValues + at) + 1) {
+        const char *value = slot->filledValues + at;
+        size_t size = strlen(value);
+        if (size > 0 && memmem(text, length, value, size) != NULL) return 1;
+    }
+    return 0;
+}
+
+/// Whether text carries a value the vault filled into the slot's page: as written, or with one or two rounds of
+/// percent-encoding undone (an address inside another's query), each with or without `+` for a space.
+static int bytes_carry_filled_value(const BrowserSlot *slot, const char *text, size_t length) {
+    int found = text_carries_filled_value(slot, text, length);
+    char *once = found ? NULL : malloc(length + 1);
+    char *twice = found ? NULL : malloc(length + 1);
+    for (int first = 0; !found && once && twice && first < 2; first++) {
+        size_t onceLength = url_decoded(text, length, once, first);
+        found = text_carries_filled_value(slot, once, onceLength);
+        for (int second = 0; !found && second < 2; second++) {
+            found = text_carries_filled_value(slot, twice, url_decoded(once, onceLength, twice, second));
+        }
+    }
+    free(twice);
+    free(once);
+    return found;
+}
+
+static int url_carries_filled_value(const BrowserSlot *slot, const cef_string_t *url) {
+    if (slot == NULL || slot->filledValues == NULL || url == NULL) return 0;
+    char *raw = copy_string(url);
+    int found = bytes_carry_filled_value(slot, raw, strlen(raw));
+    free(raw);
+    return found;
+}
+
+int yardlet_cef_guard_filled_values(int tab, const char *const *values, int count) {
+    BrowserSlot *slot = slot_for_tab(tab);
+    if (slot == NULL) return 0;
+    size_t added = 0;
+    for (int index = 0; index < count; index++) added += values[index] ? strlen(values[index]) + 1 : 0;
+    // A page filled again and again keeps its latest values.
+    if (slot->filledValuesLength + added > kMaximumFilledValues) clear_filled_values(slot);
+    return append_strings(&slot->filledValues, &slot->filledValuesLength, values, count);
+}
+
 /// Tells Yardlet that `frame`'s page asked to open another app's address (number: 1 with a user gesture).
 static void emit_external_protocol(int tab, cef_frame_t *frame, const cef_string_t *url, int user_gesture) {
     cef_string_userfree_t source = frame ? frame->get_url(frame) : NULL;
@@ -836,7 +933,9 @@ static int CEF_CALLBACK life_span_on_before_popup(
     int tab = opener ? opener->tab : -1;
     int behind = target_disposition == CEF_WOD_NEW_BACKGROUND_TAB;
     int made = 0;
-    if (target_url && !string_is_allowed(target_url)) {
+    if (url_carries_filled_value(opener, target_url)) {
+        emit(tab, YardletCEFEventFilledValueBlocked, NULL, NULL, 0);
+    } else if (target_url && !string_is_allowed(target_url)) {
         // A new window for another app's address (a target=_blank mail link) opens no tab: Chrome closes the
         // tab such a window made once the app opens.
         if (is_external_scheme(target_url)) emit_external_protocol(tab, frame, target_url, user_gesture);
@@ -949,6 +1048,7 @@ static void CEF_CALLBACK life_span_on_before_close(cef_life_span_handler_t *self
         YARDLET_RELEASE(slot->unresponsive);
         YARDLET_RELEASE(slot->browser);
         free(slot->passwordFrame);
+        clear_filled_values(slot);
         memset(slot, 0, sizeof(*slot));
         release_context(context);
     }
@@ -1107,7 +1207,13 @@ static int CEF_CALLBACK request_on_before_browse(cef_request_handler_t *self, ce
     (void)self; (void)is_redirect;
     int cancel = 0;
     cef_string_userfree_t url = request ? request->get_url(request) : NULL;
-    if (url && !string_is_allowed(url) && !is_pdf_viewer_frame(frame, url)) {
+    BrowserSlot *slot = slot_for_browser(browser);
+    int inMainFrame = frame && frame->is_main(frame) ? 1 : 0;
+    if (url_carries_filled_value(slot, url)) {
+        // Before the scheme policy, whose events name the address.
+        emit(tab_of(browser), YardletCEFEventFilledValueBlocked, NULL, NULL, inMainFrame);
+        cancel = 1;
+    } else if (url && !string_is_allowed(url) && !is_pdf_viewer_frame(frame, url)) {
         if (is_external_scheme(url)) emit_external_protocol(tab_of(browser), frame, url, user_gesture);
         else emit(tab_of(browser), YardletCEFEventNavigationBlocked, url, NULL, 0);
         cancel = 1;
@@ -1757,6 +1863,8 @@ static void CEF_CALLBACK load_on_load_start(cef_load_handler_t *self, cef_browse
         release_media_prompts(slot->tab);
         slot->audibleAt = 0;
         slot->discarding = 0;
+        // The filled document is gone; the next one was never given the value.
+        clear_filled_values(slot);
         cef_string_userfree_t url = frame->get_url(frame);
         emit(slot->tab, YardletCEFEventDocumentStart, url, NULL, 0);
         if (url) p_cef_string_userfree_utf16_free(url);
@@ -2335,6 +2443,7 @@ int yardlet_cef_cancel_waiting_browser(int tab) {
     if (slot == NULL || slot->identifier != kWaitingForProfile) return 0;
     int context = slot->contextHandle;
     free(slot->waitingURL);
+    clear_filled_values(slot);
     memset(slot, 0, sizeof(*slot));
     release_context(context);
     return 1;

@@ -204,6 +204,8 @@ final class BrowserAgentPage {
         case .navigationBlocked(_, let url):
             blockedNavigations.append(url)
             if blockedNavigations.count > 50 { blockedNavigations.removeFirst(25) }
+        case .filledValueBlocked:
+            filledValueBlocks += 1
         case .openedTab(_, let newTab, let url):
             openedTabs.append((newTab, url))
         case .newWindow(_, let url, _, false):
@@ -250,6 +252,22 @@ final class BrowserAgentPage {
     func takeBlockedNavigations() -> [String] {
         defer { blockedNavigations = [] }
         return blockedNavigations
+    }
+
+    /// Navigations the host refused since the last tool said so because their address carried a password the vault
+    /// filled into the page (`guardFilledValues`).
+    private(set) var filledValueBlocks = 0
+
+    func takeFilledValueBlocks() -> Int {
+        defer { filledValueBlocks = 0 }
+        return filledValueBlocks
+    }
+
+    /// Has the host refuse the page's navigations to an address that carries one of these spellings of a password
+    /// the vault is about to fill, until the page's main frame starts another document.
+    func guardFilledValues(_ values: [String]) {
+        guard !values.isEmpty else { return }
+        sendCommand(.guardFilledValues(tab: tabID, values: values))
     }
 
     /// Calls `watcher` once, when a JavaScript dialog opens.

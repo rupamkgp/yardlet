@@ -464,6 +464,11 @@ enum BrowserHostCommand: Codable, Equatable, Sendable {
     /// Keeps the person's "Always allow" for `origin` to open `scheme` addresses in their app (Chrome's profile
     /// setting), so the next such link from that site opens without asking.
     case allowExternalApp(tab: BrowserTabID, origin: String, scheme: String)
+    /// A password the vault fills into the tab's page, in `values`' spellings: until the main frame starts another
+    /// document, the host refuses every navigation of the tab (any frame, a redirect, a new window) whose address
+    /// carries one, also percent-encoded or with `+` for a space, and says so with `filledValueBlocked`. Sent before
+    /// the fill, so a page that submits on its own as the value goes in is held too.
+    case guardFilledValues(tab: BrowserTabID, values: [String])
     /// Shows Chromium's own windows (the passkey dialog) where the person sees their tab, without activating the
     /// host: each placed window over the panel that shows its tab, just above that panel's window, as Chrome draws a
     /// tab's dialog over the tab (a window whose tab is not known where it is). A window not placed waits past the
@@ -527,6 +532,9 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
     case newDocument(tab: BrowserTabID, url: String)
     /// A navigation the URL policy refused (`BrowserURLPolicy`).
     case navigationBlocked(tab: BrowserTabID, url: String)
+    /// A navigation whose address carried a password the vault filled into the page (`guardFilledValues`), which
+    /// the host refused before it was sent. The address is not given: it holds the password.
+    case filledValueBlocked(tab: BrowserTabID)
     case tooltip(tab: BrowserTabID, text: String?)
     case javaScriptDialog(tab: BrowserTabID, dialog: BrowserJavaScriptDialog)
     /// The page went away while a dialog was open; any sheet for it should close.
@@ -588,7 +596,7 @@ enum BrowserHostEvent: Codable, Equatable, Sendable {
              .title(let tab, _), .favicon(let tab, _, _), .loading(let tab, _, _, _), .loadEnd(let tab, _, _),
              .loadError(let tab, _, _, _), .console(let tab, _, _, _, _), .newWindow(let tab, _, _, _), .popupOpened(let tab, _, _, _),
              .openedTab(let tab, _, _), .externalApp(let tab, _), .externalAppHandled(let tab, _, _, _), .newDocument(let tab, _),
-             .navigationBlocked(let tab, _), .tooltip(let tab, _), .javaScriptDialog(let tab, _),
+             .navigationBlocked(let tab, _), .filledValueBlocked(let tab), .tooltip(let tab, _), .javaScriptDialog(let tab, _),
              .javaScriptDialogReset(let tab), .fileDialog(let tab, _), .dialogClosed(let tab, _), .permissionPrompt(let tab, _),
              .permissionPromptDismissed(let tab, _), .download(let tab, _),
              .findResult(let tab, _), .dragOperation(let tab, _), .passwordField(let tab, _), .pageCrashed(let tab, _, _, _), .responsiveness(let tab, _),

@@ -54,6 +54,7 @@ final class BrowserHostVaultQA {
               "\(listed.count) tools")
 
         await exerciseLogin()
+        await exerciseAddresses()
         await exerciseUsernameStep()
         await exerciseControlledFields()
         await exerciseCodes()
@@ -96,8 +97,72 @@ final class BrowserHostVaultQA {
         let paused = await call(AgentToolCatalog.evaluate, ["function": .string("() => document.title")])
         check("browser_evaluate waits while a filled value is on the page", paused.isError && paused.text.contains("password manager"), paused.text)
         _ = await pageValue("(() => { document.getElementById('pass').value = ''; document.getElementById('user').value = ''; return true })()")
-        let resumed = await call(AgentToolCatalog.evaluate, ["function": .string("() => document.title")])
-        check("browser_evaluate runs again once the filled fields are empty", !resumed.isError, resumed.text)
+        let emptied = await call(AgentToolCatalog.evaluate, ["function": .string("() => document.title")])
+        check("browser_evaluate stays refused once the filled fields are empty, until the page loads again",
+              emptied.isError && emptied.text.contains("Reload it"), emptied.text)
+    }
+
+    /// How many requests reached the QA server's landing page (`/vault/landed`) so far, as the server says over
+    /// loopback (`/qa/landed`): none may come from a refused sign-in. -1 when it does not answer.
+    private func landedRequests() async -> Int {
+        guard let url = URL(string: base + "qa/landed"),
+              let (data, _) = try? await URLSession.shared.data(from: url) else { return -1 }
+        return Int(String(decoding: data, as: UTF8.self)) ?? -1
+    }
+
+    /// A filled password stays out of addresses and other sites (docs/BROWSER_VAULT_DESIGN.md, "Filled values and
+    /// addresses"), on the real host: a form sent by GET is filled but not submitted; its button, a script that builds
+    /// such an address and one that puts it inside another's query are each refused before the request leaves, so the
+    /// server never hears of them, and the next result says so; no result and nothing the tab remembers carries the
+    /// password. A form that posts to the other site is not filled. A navigation without the password still goes.
+    private func exerciseAddresses() async {
+        await navigate("vault/get")
+        var texts: [String] = []
+        let snapshot = await call(AgentToolCatalog.snapshot)
+        guard let field = Self.ref(in: snapshot.text, role: "textbox", name: "Password") else {
+            return check("addresses: the GET sign-in's snapshot names its password field", false, snapshot.text)
+        }
+        let filled = await call(VaultToolCatalog.fillCredential, ["ref": .string(field), "submit": .bool(true)])
+        texts.append(filled.text)
+        let held = await pageValue("document.getElementById('pass').value")
+        check("addresses: a form sent by GET is filled but not submitted",
+              !filled.isError && filled.text.contains("did not submit it") && held == .string(Self.password), filled.text)
+        for (button, name) in [("Sign in", "its sign-in button"), ("Script sign-in", "a script that builds the address"),
+                               ("Nested sign-in", "an address inside another's query")] {
+            let current = await call(AgentToolCatalog.snapshot)
+            guard let ref = Self.ref(in: current.text, role: "button", name: button) else {
+                check("addresses: \(name) is on the page", false, current.text)
+                continue
+            }
+            let clicked = await call(AgentToolCatalog.click, ["ref": .string(ref)])
+            try? await Task.sleep(for: .seconds(1))
+            let after = await call(AgentToolCatalog.snapshot)
+            texts += [clicked.text, after.text]
+            let path = await pageValue("location.pathname")
+            let landed = await landedRequests()
+            check("addresses: \(name) is refused before it is sent, and the next result says so",
+                  landed == 0 && path == .string("/vault/get")
+                    && (clicked.text + after.text).contains("tried to go to an address carrying the password"),
+                  "landed \(landed), at \(path?.stringValue ?? "nil"): \(String((clicked.text + after.text).suffix(400)))")
+        }
+        let remembered = client.tab(forSession: session)?.lastPageURL ?? ""
+        check("addresses: no result and nothing the tab remembers carries the password",
+              !texts.joined().contains(Self.password) && !remembered.contains(Self.password), remembered)
+
+        await navigate("vault/elsewhere")
+        let elsewhere = await call(AgentToolCatalog.snapshot)
+        if let ref = Self.ref(in: elsewhere.text, role: "textbox", name: "Password") {
+            let refused = await call(VaultToolCatalog.fillCredential, ["ref": .string(ref)])
+            let empty = await pageValue("document.getElementById('pass').value")
+            check("addresses: a form that posts to another site is not filled",
+                  refused.isError && refused.text.contains("not one of the item's sites") && empty == .string(""), refused.text)
+        } else {
+            check("addresses: the other-site sign-in's snapshot names its password field", false, elsewhere.text)
+        }
+
+        await navigate("vault/landed?after=refusals")
+        let arrived = await landedRequests()
+        check("addresses: a navigation without the password still goes", arrived == 1, "landed \(arrived)")
     }
 
     /// A sign-in's first step asks for the email alone: the username is no secret, so the agent's
@@ -122,7 +187,12 @@ final class BrowserHostVaultQA {
         guard let ref = Self.ref(in: snapshot.text, role: "textbox", name: nil) else {
             return check("the controlled page's snapshot has a field", false, snapshot.text)
         }
+        // Its form has no method: the fill leaves it unsent and the agent clicks the page's button, as the result says.
         let filled = await call(VaultToolCatalog.fillCredential, ["ref": .string(ref), "submit": .bool(true)])
+        if let button = Self.ref(in: (await call(AgentToolCatalog.snapshot)).text, role: "button", name: "Sign in") {
+            _ = await call(AgentToolCatalog.click, ["ref": .string(button)])
+        }
+        _ = await waitUntilAsync(.seconds(3)) { await self.pageValue("window.qa.submitted") != .null }
         let submitted = await pageValue("window.qa.submitted")
         check("fields kept the way React keeps them take the fill into their state",
               !filled.isError && submitted?["user"]?.stringValue == Self.username && submitted?["pass"]?.stringValue == Self.password,
@@ -400,7 +470,37 @@ final class BrowserHostVaultQA {
         capture(controller, named: "vault-panel-header.png")
         check("panel: an agent's fill shows Passwords in the header", controller.isVaultFilling, "\(controller.isVaultFilling)")
 
+        await exercisePanelAddress(controller, item: saved)
         await exercisePanelCodes(controller)
+    }
+
+    /// The person's key-button fill holds the page's addresses too: a GET form's submission is refused before it is
+    /// sent, the panel says so over the page, and the tab remembers the page before it.
+    private func exercisePanelAddress(_ controller: BrowserHostPaneController, item: VaultItem?) async {
+        guard let item else { return check("panel: an item to fill the GET sign-in with", false, "none") }
+        controller.addressInput = base + "vault/get"
+        controller.submitAddress()
+        guard await waitUntilAsync(.seconds(20), {
+            controller.tab?.currentURL?.contains("vault/get") == true && controller.tab?.isLoading == false
+        }), let tab = controller.tab else { return check("panel: the GET sign-in loads", false, "not loaded") }
+        func page(_ expression: String) async -> JSONValue? {
+            let result = try? await tab.devTools.send("Runtime.evaluate", ["expression": .string(expression), "returnByValue": .bool(true)],
+                                                      timeout: .seconds(10))
+            return result?["result"]?["value"]
+        }
+        let before = await landedRequests()
+        _ = await page("document.getElementById('pass').focus()")
+        controller.fillForPerson(item)
+        _ = await waitUntilAsync(.seconds(5)) { await page("document.getElementById('pass').value") != .string("") }
+        _ = await page("document.getElementById('go').click()")
+        let told = await waitUntilAsync(.seconds(5)) { controller.notice != nil }
+        try? await Task.sleep(for: .milliseconds(300))
+        capture(controller, named: "vault-panel-address-blocked.png")
+        let landed = await landedRequests()
+        check("panel: the person's fill holds the GET sign-in's address, and the panel says so",
+              told && controller.notice == L10n.string("The page tried to put the filled password in its address. Yardlet stopped it, so the page did not move.")
+                && landed == before && tab.lastPageURL?.contains("vault/get") == true,
+              "notice \(controller.notice ?? "none"); landed \(landed - before); at \(tab.lastPageURL ?? "nil")")
     }
 
     /// The person's two-factor codes in the panel (design §14): a code field on a site whose item has a

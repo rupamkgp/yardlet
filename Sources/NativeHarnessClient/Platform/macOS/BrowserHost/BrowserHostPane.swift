@@ -817,6 +817,8 @@ final class BrowserHostPaneController {
             }
         case .navigationBlocked(_, let url):
             showNotice(L10n.format("Blocked %@: only http, https, file, about and data addresses open here.", url))
+        case .filledValueBlocked:
+            showNotice(L10n.string("The page tried to put the filled password in its address. Yardlet stopped it, so the page did not move."))
         case .pageCrashed:
             // The crash shows instead (`crash`); a load error before it was the ended page's.
             clearError()

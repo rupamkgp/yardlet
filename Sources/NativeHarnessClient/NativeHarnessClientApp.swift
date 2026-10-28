@@ -431,7 +431,14 @@ final class NativeHarnessClientAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct NativeHarnessClientApp: App {
     @NSApplicationDelegateAdaptor(NativeHarnessClientAppDelegate.self) private var appDelegate
-    @State private var model = AppModel.live()
+    @State private var model = Self.liveModel()
+
+    /// The app's model, once what Yardlet kept of addresses that carried a vault password is gone: before the task
+    /// workspaces and the browser host read it (`BrowserFilledValueCleanup`).
+    private static func liveModel() -> AppModel {
+        BrowserFilledValueCleanup.runAtLaunch()
+        return AppModel.live()
+    }
 
     var body: some Scene {
         // A fixed scene ID keeps SwiftUI's own saved window frame from depending on the root view's type.

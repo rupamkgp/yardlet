@@ -1239,6 +1239,7 @@
 "Download finished" = "다운로드 완료";
 "Chromium could not start: %@" = "Chromium을 시작하지 못했습니다: %@";
 "Blocked %@: only http, https, file, about and data addresses open here." = "%@ 주소는 열지 않았습니다. http, https, file, about, data 주소만 열 수 있습니다.";
+"The page tried to put the filled password in its address. Yardlet stopped it, so the page did not move." = "Yardlet이 채운 비밀번호를 페이지가 주소에 담아 보내려 해서 막았습니다. 페이지는 이동하지 않았습니다.";
 "Crashed" = "비정상 종료";
 "This page crashed" = "페이지가 비정상적으로 종료되었습니다";
 "%@ ended unexpectedly. Error code: %@" = "%@ 페이지가 예기치 않게 종료되었습니다. 오류 코드: %@";

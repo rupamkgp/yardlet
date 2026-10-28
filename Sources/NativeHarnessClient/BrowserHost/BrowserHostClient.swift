@@ -51,6 +51,10 @@ final class BrowserHostClient {
     private var remembered: [UUID: BrowserRememberedTabs] = [:]
     /// Addresses of each session's recently closed tabs, newest last.
     private var closedAddresses: [UUID: [String]] = [:]
+    /// Whether an address or a title carries a value the vault filled lately (`VaultScrubList.carries`). A tab keeps
+    /// such a page out of what it remembers: the page its task saves and opens again, a closed tab's, and the one
+    /// opened again after the host ended.
+    var carriesFilledValue: (String) -> Bool = { _ in false }
     private var sessionObservers: [UUID: [UUID: () -> Void]] = [:]
     /// Cookie imports waiting for the host's `cookiesImported`, and digests for its `cookieDigest`.
     private var cookieImports: [Int: CheckedContinuation<Int, Never>] = [:]
@@ -1113,6 +1117,15 @@ final class BrowserHostClient {
     /// tab) unless the person typed it again, nor a failed address's error page. Titles follow their pages.
     private func noteHistory(_ event: BrowserHostEvent, of tab: BrowserTab) {
         guard let addressHistory else { return }
+        // A page whose address or title carries a value the vault filled is no visit to keep.
+        switch event {
+        case .address(_, let url), .newDocument(_, let url):
+            if carriesFilledValue(url) { return }
+        case .title(_, let title):
+            if carriesFilledValue(title) || tab.currentURL.map(carriesFilledValue) == true { return }
+        default:
+            break
+        }
         switch event {
         case .address(_, let url):
             guard !BrowserURLPolicy.sameAddress(url, tab.visitedAddress) else { return }
@@ -1621,13 +1634,14 @@ final class BrowserTab {
             devTools.receive(message)
         case .address(_, let url):
             currentURL = url
-            if !url.isEmpty, url != "about:blank" { lastPageURL = url }
+            if !url.isEmpty, url != "about:blank", client?.carriesFilledValue(url) != true { lastPageURL = url }
             // Another site's icon is not this page's; the same site's stays until its own arrives.
             if favicon != nil, URL(string: url)?.host() != faviconHost {
                 favicon = nil
                 faviconHost = nil
             }
         case .title(_, let title):
+            let title = client?.carriesFilledValue(title) == true ? "" : title
             if title != self.title { noteChangeWhileHidden() }
             self.title = title
         case .favicon(_, let url, let png):

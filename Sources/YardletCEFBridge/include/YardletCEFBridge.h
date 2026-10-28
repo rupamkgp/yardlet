@@ -77,7 +77,11 @@ typedef enum {
     /// YardletPageState flags.
     YardletCEFEventPageState = 25,
     /// The renderer yardlet_cef_discard ended has ended: the tab is discarded, its page loads again on reload.
-    YardletCEFEventDiscarded = 26
+    YardletCEFEventDiscarded = 26,
+    /// A navigation of the tab (any frame, a redirect, a new window) was refused before it was sent: its address
+    /// carried a value yardlet_cef_guard_filled_values named. No text: the address holds the value. number: 1 in the
+    /// main frame.
+    YardletCEFEventFilledValueBlocked = 27
 } YardletCEFEvent;
 
 /// What a frame's renderer says of its page (YardletCEFHelper's PageState.c names the same flags).
@@ -317,6 +321,12 @@ void yardlet_cef_drag(int tab, int phase, int x, int y, const char *const *files
                       uint32_t operations, uint32_t modifiers);
 
 int yardlet_cef_send_devtools_message(int tab, const char *message, size_t length);
+
+/// Spellings of a value the vault fills into `tab`'s page (the password as written, base64, hex …). Until the
+/// tab's main frame starts another document, every navigation of the tab whose address carries one, as written,
+/// percent-encoded once or twice, or with `+` for a space, is refused (YardletCEFEventFilledValueBlocked).
+/// Returns 0 when the tab has no browser.
+int yardlet_cef_guard_filled_values(int tab, const char *const *values, int count);
 
 /// Turns the renderer's accessibility tree on or off for `tab`. While on, CEF computes the whole
 /// tree (windowless browsers use Chromium's WebContentsOnly mode) and reports it through the

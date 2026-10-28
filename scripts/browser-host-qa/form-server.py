@@ -11,7 +11,8 @@ and a password field, large and empty so the caret's pixels can be found; it rec
 input event is and moves as an SPA does, by pushState, after a click on #go or Enter in #pass;
 ?autofocus=<id> gives that field autofocus, and window.__restored says whether it came back from the
 back-forward cache), /login-frame?src=<url> (that page in a frame at the top
-left), and for the vault for agents /vault/login (a sign-in form), /vault/react (fields kept the way React keeps
+left), and for the vault for agents /vault/login (a sign-in form), /vault/get and /vault/elsewhere (sign-ins that would
+send the password where it does not belong, VAULT_GET below), /vault/react (fields kept the way React keeps
 controlled inputs), /vault/otp (a one-time code field and six one-digit boxes, checked against RFC 6238's
 test key in the page), /vault/otp/setup (a site's two-factor setup: a QR code of an otpauth:// address and a
 field for the first code, checked against the QR code's test key), /vault/otp/export (a picture of Google
@@ -265,7 +266,7 @@ LOGIN_FRAME = '''<!doctype html><meta charset="utf-8"><title>Login frame</title>
 
 
 VAULT_LOGIN = '''<!doctype html><meta charset="utf-8"><title>Vault sign-in</title>
-<form id="form"><label>Email <input id="user" name="user" autocomplete="username"></label>
+<form id="form" method="post"><label>Email <input id="user" name="user" autocomplete="username"></label>
 <label>Password <input id="pass" name="pass" type="password" autocomplete="current-password"></label>
 <label>Note <input id="note" name="note"></label><button id="go">Sign in</button></form>
 <script>
@@ -275,6 +276,32 @@ for (const id of ['user', 'pass']) document.getElementById(id).addEventListener(
 document.getElementById('form').addEventListener('submit', e => { e.preventDefault();
   window.qa.submitted = {user: user.value, pass: pass.value, note: note.value}; });
 </script>'''
+
+# Sign-ins that would send a filled password where it does not belong (docs/BROWSER_VAULT_DESIGN.md, "Filled values
+# and addresses"): /vault/get (a form without a method or a script of its own, so the browser puts its fields in the
+# address; #js builds such an address itself and #nested puts one inside another's query) and /vault/elsewhere (a form
+# posting to the other site, 127.0.0.1 for localhost). Each goes to /vault/landed; the QA asks /qa/landed how many
+# requests arrived there.
+VAULT_GET = '''<!doctype html><meta charset="utf-8"><title>Vault GET sign-in</title>
+<form id="form" action="/vault/landed"><label>Email <input id="user" name="email" autocomplete="username"></label>
+<label>Password <input id="pass" name="password" type="password" autocomplete="current-password"></label>
+<button id="go">Sign in</button></form>
+<button id="js" onclick="location.href = '/vault/landed?p=' + encodeURIComponent(pass.value)">Script sign-in</button>
+<button id="nested" onclick="location.href = '/vault/landed?next=' + encodeURIComponent('/home?p=' + encodeURIComponent(pass.value))">Nested sign-in</button>'''
+
+VAULT_ELSEWHERE = '''<!doctype html><meta charset="utf-8"><title>Vault elsewhere</title>
+<form id="form" method="post"><label>Email <input id="user" name="email" autocomplete="username"></label>
+<label>Password <input id="pass" name="password" type="password" autocomplete="current-password"></label>
+<button id="go">Sign in</button></form>
+<script>
+const other = location.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
+form.action = location.protocol + '//' + other + ':' + location.port + '/vault/landed';
+</script>'''
+
+VAULT_LANDED = '<!doctype html><meta charset="utf-8"><title>Vault landed</title><h1>Landed</h1>'
+# How many requests reached /vault/landed, which /qa/landed answers: the QA app asks over loopback rather than reading
+# this server's log from its folder.
+landed = 0
 
 VAULT_REACT = '''<!doctype html><meta charset="utf-8"><title>Vault controlled</title>
 <form id="form"><input id="user" autocomplete="username"><input id="pass" type="password"><button>Sign in</button></form>
@@ -929,6 +956,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         with (args.output_dir / 'requests.jsonl').open('a') as log:
             log.write(json.dumps({'path': self.path, 'ua': self.headers.get('User-Agent')}) + '\n')
+        global landed
+        if self.path.startswith('/vault/landed'):
+            landed += 1
+        if self.path == '/qa/landed':
+            return self.send(str(landed).encode(), {'Content-Type': 'text/plain', 'Cache-Control': 'no-store'})
         if self.path == '/favicon.ico':
             self.send_response(204)
             self.end_headers()
@@ -960,6 +992,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = ISOLATION.encode()
         elif self.path.startswith('/vault/login'):
             payload = VAULT_LOGIN.encode()
+        elif self.path.startswith('/vault/get'):
+            payload = VAULT_GET.encode()
+        elif self.path.startswith('/vault/elsewhere'):
+            payload = VAULT_ELSEWHERE.encode()
+        elif self.path.startswith('/vault/landed'):
+            payload = VAULT_LANDED.encode()
         elif self.path.startswith('/vault/react'):
             payload = VAULT_REACT.encode()
         elif self.path.startswith('/vault/otp/setup'):
@@ -1083,6 +1121,9 @@ class Handler(BaseHTTPRequestHandler):
         fields = {name: values[0] for name, values in parse_qs(self.rfile.read(length).decode()).items()}
         with (args.output_dir / 'requests.jsonl').open('a') as log:
             log.write(json.dumps({'path': self.path, 'method': 'POST', 'fields': sorted(fields)}) + '\n')
+        global landed
+        if self.path.startswith('/vault/landed'):
+            landed += 1
         if self.path.startswith('/follow/signin'):
             return self.redirect('/follow/home', ['qa_follow=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600' % (
                 ''.join(c for c in fields.get('user', '') if c.isalnum()) or 'none')])
@@ -1101,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith('/checkout/complete'):
             payload = "<!doctype html><script>parent.postMessage({step: 'challenge', result: '%s'}, '*')</script>" % (
                 html.escape(fields.get('cres', '')))
+        elif self.path.startswith('/vault/landed'):
+            payload = VAULT_LANDED
         elif self.path.startswith('/checkout/return'):
             payload = '<!doctype html><meta charset="utf-8"><title>Checkout returned</title><h1>%s</h1>' % (
                 html.escape(fields.get('cres', '')))

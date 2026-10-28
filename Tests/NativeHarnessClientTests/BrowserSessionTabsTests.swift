@@ -64,6 +64,12 @@ final class BrowserSessionTabsTests: XCTestCase {
         let second = try client.newTab(forSession: session, url: "https://b.test", viewport: .offscreenDefault, select: true)
         let third = try client.newTab(forSession: session, url: "https://c.test", viewport: .offscreenDefault, select: false)
         connection.eventHandler?(.address(tab: second.id, url: "https://b.test/page"))
+        // A page whose address or title carries a value the vault filled is not one the tab remembers.
+        client.carriesFilledValue = { $0.contains("hunter22") }
+        connection.eventHandler?(.address(tab: second.id, url: "https://b.test/login?password=hunter22"))
+        connection.eventHandler?(.title(tab: second.id, title: "Signed in as hunter22"))
+        XCTAssertEqual(second.lastPageURL, "https://b.test/page")
+        XCTAssertEqual(second.title, "")
         second.close()
         XCTAssertTrue(client.tab(forSession: session) === third, "the tab that took its place, as Chrome")
         third.close()
@@ -136,6 +142,9 @@ final class BrowserSessionTabsTests: XCTestCase {
         connection.eventHandler?(.loadError(tab: fronted.id, url: "https://gone.test/", code: -105, message: "ERR_NAME_NOT_RESOLVED"))
         connection.eventHandler?(.address(tab: fronted.id, url: "https://gone.test/"))
         connection.eventHandler?(.address(tab: fronted.id, url: "https://c.test/after"))
+        client.carriesFilledValue = { $0.contains("hunter22") }
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://c.test/login?password=hunter22"))
+        connection.eventHandler?(.address(tab: fronted.id, url: "https://www.google.com/search?q=hunter22"))
         let next = try XCTUnwrap(history.pages["https://c.test/next"])
         XCTAssertEqual([next.visitCount, next.typedCount], [1, 1], "a move within the page is no visit")
         XCTAssertEqual(next.title, "Next")
@@ -143,6 +152,7 @@ final class BrowserSessionTabsTests: XCTestCase {
         XCTAssertEqual(history.pages["https://c.test/after"]?.typedCount, 0, "a failed typed address types nothing after it")
         XCTAssertNil(history.pages["https://gone.test/"], "an error page is no visit")
         XCTAssertEqual(history.searches.values.map(\.terms), ["two words"], "a results page counts as its search")
+        XCTAssertFalse(history.pages.keys.contains { $0.contains("hunter22") }, "a page that carries a filled value is no visit")
     }
 
     func testObserversHearTabChangesButNotFrames() throws {

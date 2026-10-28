@@ -289,6 +289,7 @@ final class MacBrowserHost: NativeSurfaceResource {
         client.externalApps = LaunchServicesApps()
         client.addressHistory = addressHistory
         client.onChromiumWindowsChange = { [unowned self] in self.chromiumWindows.present() }
+        client.carriesFilledValue = { MacAgentToolService.shared.broker.carriesVaultValue($0) }
         followMemorySaver(client)
         return client
     }()

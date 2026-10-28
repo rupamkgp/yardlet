@@ -118,6 +118,8 @@ extension BrowserHostPaneController {
 
     private func personSignedIn(_ fields: [String: String], on tab: BrowserTab) {
         guard let password = fields["password"], !password.isEmpty else { return }
+        // A form sent in the address carries what the person typed there too: no tool result does.
+        MacAgentToolService.shared.broker.noteVaultValues([password])
         let username = fields["username"] ?? ""
         Task { @MainActor [weak self] in
             // The origin comes from the browser, not from the page's script.
@@ -191,6 +193,9 @@ extension BrowserHostPaneController {
             if let site, VaultSite.matches(site, origin: frame.origin) { item = self.vault.link(item.id, to: site) ?? item }
             guard let grant = self.vault.valuesForPerson(item, origin: frame.origin) else { return }
             MacAgentToolService.shared.broker.noteVaultValues([grant.password, grant.code])
+            if let password = grant.password, password.count >= VaultScrubList.shortest {
+                tab.send(.guardFilledValues(tab: tab.id, values: VaultScrubList.spellings(of: password)))
+            }
             MacBrowserHost.shared.loginFollow.personFilling(on: tab)
             let filled = await VaultPageScripts.fillForPerson(tab.devTools, username: grant.username, password: grant.password,
                                                               code: grant.code, codeOnly: codeOnly)

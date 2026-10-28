@@ -325,6 +325,10 @@ final class BrowserHost {
             guard let origin = fields["origin"] as? String, let scheme = fields["scheme"] as? String else { return }
             let kept = yardlet_cef_allow_external_scheme(Int32(tab), origin, scheme) == 1
             FileHandle.standardError.write(Data("external app allowed tab=\(tab) scheme=\(scheme) kept=\(kept)\n".utf8))
+        case "guardFilledValues":
+            // The values are kept by the bridge only, for the document they went into; nothing writes them down.
+            let values = (fields["values"] as? [String] ?? []).filter { !$0.isEmpty && !$0.contains("\0") }
+            withCStringArray(values) { _ = yardlet_cef_guard_filled_values(Int32(tab), $0, Int32(values.count)) }
         case "presentChromiumWindows":
             var placements: [Int: ChromiumWindows.Placement] = [:]
             for placement in fields["placements"] as? [[String: Any]] ?? [] {
@@ -627,6 +631,10 @@ final class BrowserHost {
             send(["tooltip": fields])
         case YardletCEFEventNavigationBlocked.rawValue:
             send(["navigationBlocked": ["tab": tab, "url": text ?? ""]])
+        case YardletCEFEventFilledValueBlocked.rawValue:
+            // One line per refusal, for reading a person's host.log: never the address, which holds the value.
+            FileHandle.standardError.write(Data("filled value kept out of an address tab=\(tab) mainFrame=\(value)\n".utf8))
+            send(["filledValueBlocked": ["tab": tab]])
         case YardletCEFEventResponsiveness.rawValue:
             reportResponsiveness(tab: tab, isResponsive: value != 0)
         case YardletCEFEventCookiesCopied.rawValue:

@@ -178,6 +178,11 @@ final class AgentToolBroker: AgentToolLaunchProviding {
         tools.vaultScrub.scrub(text)
     }
 
+    /// Whether text (an address, a title) carries a value the vault filled lately, in any spelling it scrubs.
+    func carriesVaultValue(_ text: String) -> Bool {
+        tools.vaultScrub.carries(text)
+    }
+
     /// Ends a task's token and closes its browser tab.
     func releaseAgentTools(for localSessionID: UUID) {
         for id in Array((toolListWatches[localSessionID] ?? [:]).keys) {

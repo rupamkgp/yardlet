@@ -37,7 +37,11 @@ package enum VaultToolCatalog {
                 ]),
                 "submit": .object([
                     "type": .string("boolean"),
-                    "description": .string("Submit the form after filling it.")
+                    "description": .string("Whether to submit the form after filling it. By default Yardlet submits a form "
+                        + "that sends its fields to the page's own address over https (by POST when it holds a password), so "
+                        + "the values stay on the page briefly; false leaves it unsent (the first step of a sign-in in steps). "
+                        + "A form that would send a password by GET or a secret to another address is never submitted: the "
+                        + "result says why. true also presses Enter in a field that is in no form.")
                 ]),
                 "tabId": .object([
                     "type": .string("string"),

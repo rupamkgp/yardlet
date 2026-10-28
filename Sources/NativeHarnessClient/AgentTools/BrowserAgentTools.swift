@@ -378,6 +378,12 @@ final class BrowserAgentTools {
             let urls = blocked.joined(separator: ", ")
             notices.append("The page tried to open \(urls), which the browser's address policy blocks.")
         }
+        if page.takeFilledValueBlocks() > 0 {
+            notices.append("The page tried to go to an address carrying the password Yardlet filled into it (a form that "
+                + "sends its fields in the address, as one without method=\"post\" does). Yardlet stopped it before anything "
+                + "was sent, and the page stayed where it was. If the page's own script had not loaded yet, wait for it and "
+                + "click its sign-in button again; otherwise hand the tab to the person with browser_handoff.")
+        }
         for opened in page.takeOpenedTabs() {
             notices.append(opened.tab.map { "The page opened \(opened.url) in a new tab (tabId \"\($0)\"); "
                 + "browser_tab_list shows which tab is active." }

@@ -6,23 +6,25 @@ import YardletAgentTools
 /// page or a result most often turns them into. Short values are left alone: they would blank out
 /// ordinary text.
 struct VaultScrubList {
-    private var entries: [(value: String, until: Date)] = []
+    private var entries: [(value: [UInt8], until: Date)] = []
     static let keep: TimeInterval = 30 * 60
     static let shortest = 4
 
     mutating func add(_ value: String?, now: Date = Date()) {
         guard let value, value.count >= Self.shortest else { return }
         let until = now.addingTimeInterval(Self.keep)
-        for form in Set(Self.forms(of: value)) {
-            entries.removeAll { $0.until < now || $0.value == form }
-            entries.append((form, until))
+        for spelling in Set(Self.spellings(of: value)) {
+            let bytes = Array(spelling.utf8)
+            entries.removeAll { $0.until < now || $0.value == bytes }
+            entries.append((bytes, until))
         }
     }
 
     /// The value as written, escaped in JSON (a script's result), and as base64 (plain, unpadded and
-    /// URL-safe), percent-encoding and hex. A page can still make a spelling this misses; these keep the
-    /// usual ones from passing for something else.
-    static func forms(of value: String) -> [String] {
+    /// URL-safe) and hex. Each is also found percent-encoded, in either case, once or twice (an address
+    /// inside another's query), and with `+` for a space (a form's fields in an address). A page can
+    /// still make a spelling this misses; these keep the usual ones from passing for something else.
+    static func spellings(of value: String) -> [String] {
         let bytes = Data(value.utf8)
         let base64 = bytes.base64EncodedString()
         let unpadded = base64.trimmingCharacters(in: CharacterSet(charactersIn: "="))
@@ -33,18 +35,35 @@ struct VaultScrubList {
             encoder.outputFormatting = formatting
             return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }.map { String($0.dropFirst().dropLast()) }
         }
-        // What `encodeURIComponent` leaves as it is.
-        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
-        let percent = value.addingPercentEncoding(withAllowedCharacters: unreserved)
-        return [value, base64, unpadded, urlSafe, hex, hex.uppercased()] + json + (percent.map { [$0] } ?? [])
+        return [value, base64, unpadded, urlSafe, hex, hex.uppercased()] + json
     }
 
     func scrub(_ text: String, now: Date = Date()) -> String {
-        var text = text
-        for entry in entries.sorted(by: { $0.value.count > $1.value.count }) where entry.until >= now {
-            text = text.replacingOccurrences(of: entry.value, with: "[saved value]")
+        let live = entries.filter { $0.until >= now }.map(\.value).sorted { $0.count > $1.count }
+        guard !live.isEmpty else { return text }
+        let bytes = Array(text.utf8)
+        var scrubbed: [UInt8] = []
+        var index = 0
+        var changed = false
+        while index < bytes.count {
+            if let end = live.lazy.compactMap({ Self.end(of: $0, in: bytes, at: index) }).first {
+                scrubbed += Array("[saved value]".utf8)
+                index = end
+                changed = true
+            } else {
+                scrubbed.append(bytes[index])
+                index += 1
+            }
         }
-        return text
+        return changed ? String(decoding: scrubbed, as: UTF8.self) : text
+    }
+
+    /// Whether the text carries a value in any of its spellings: an address or title not to keep.
+    func carries(_ text: String, now: Date = Date()) -> Bool {
+        let live = entries.filter { $0.until >= now }.map(\.value)
+        guard !live.isEmpty else { return false }
+        let bytes = Array(text.utf8)
+        return bytes.indices.contains { index in live.contains { Self.end(of: $0, in: bytes, at: index) != nil } }
     }
 
     func scrub(_ result: AgentToolResult, now: Date = Date()) -> AgentToolResult {
@@ -55,6 +74,36 @@ struct VaultScrubList {
             return content
         }
         return result
+    }
+
+    /// Where `spelling` ends when it starts at `start` in `text`, each byte as itself, as `%XX` or `%25XX`,
+    /// and a space also as `+` or `%2B`.
+    static func end(of spelling: [UInt8], in text: [UInt8], at start: Int) -> Int? {
+        func hex(_ at: Int) -> UInt8? {
+            guard at + 1 < text.count, let high = Self.hexDigit(text[at]), let low = Self.hexDigit(text[at + 1]) else { return nil }
+            return high << 4 | low
+        }
+        func matches(_ byte: UInt8, _ wanted: UInt8) -> Bool { byte == wanted || (wanted == 0x20 && byte == 0x2B) }
+        func end(_ next: Int, _ at: Int) -> Int? {
+            guard next < spelling.count else { return at }
+            guard at < text.count else { return nil }
+            let wanted = spelling[next]
+            if text[at] == 0x25, let byte = hex(at + 1) {
+                if matches(byte, wanted), let found = end(next + 1, at + 3) { return found }
+                if byte == 0x25, let inner = hex(at + 3), matches(inner, wanted), let found = end(next + 1, at + 5) { return found }
+            }
+            return matches(text[at], wanted) ? end(next + 1, at + 1) : nil
+        }
+        return end(0, start)
+    }
+
+    private static func hexDigit(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 0x30...0x39: byte - 0x30
+        case 0x41...0x46: byte - 0x41 + 10
+        case 0x61...0x66: byte - 0x61 + 10
+        default: nil
+        }
     }
 }
 
@@ -351,6 +400,25 @@ extension BrowserAgentTools {
             vault.record(grant, for: request, filled: [], failure: "The page navigated before the fill.")
             throw BrowserAgentToolError("The page navigated before Yardlet could fill it; nothing was filled.")
         }
+        // A secret goes only into a form that sends it to the item's own sites over https.
+        let submission = try await callInVaultWorld(page, objectID, Self.submissionFunction)
+        let targets = (submission["targets"]?.arrayValue ?? []).compactMap { target -> FormTarget? in
+            guard let action = target["action"]?.stringValue, let method = target["method"]?.stringValue else { return nil }
+            return FormTarget(action: action, method: method)
+        }
+        if grant.password != nil || grant.code != nil,
+           let elsewhere = targets.first(where: { !Self.isItemDestination($0.action, of: grant.item) }) {
+            let message = "Yardlet did not fill “\(grant.item.name)”: the form sends its fields to "
+                + "\(VaultSite.origin(of: elsewhere.action) ?? "another address"), which is not one of the item's sites over https."
+            vault.record(grant, for: request, filled: [], failure: message)
+            throw BrowserAgentToolError(message)
+        }
+        // Before the value goes in: a page may submit as soon as it does, and its address must not carry it.
+        vaultScrub.add(grant.password)
+        vaultScrub.add(grant.code)
+        if let password = grant.password, password.count >= VaultScrubList.shortest {
+            page.guardFilledValues(VaultScrubList.spellings(of: password))
+        }
         let filled = try await callInVaultWorld(page, objectID, Self.fillFunction, arguments: [
             .string(kind.rawValue),
             grant.username.map(JSONValue.string) ?? .null,
@@ -363,8 +431,6 @@ extension BrowserAgentTools {
             throw BrowserAgentToolError(message)
         }
         let kinds = filled["kinds"]?.arrayValue?.compactMap(\.stringValue) ?? []
-        vaultScrub.add(grant.password)
-        vaultScrub.add(grant.code)
         if kinds.contains("password") || kinds.contains("one_time_code") {
             page.vaultFill = BrowserAgentVaultFill(contextID: contextID, loaderID: frame.loaderID, eventMark: page.cdp.eventLog.count)
             page.vaultFilledDocuments.insert(frame.loaderID)
@@ -372,13 +438,25 @@ extension BrowserAgentTools {
         vault.record(grant, for: request, filled: kinds)
         NotificationCenter.default.post(name: .vaultFilled, object: nil, userInfo: [VaultFillNotice.tabKey: page.tabID])
 
+        // A safe form is submitted unless the agent says not to, so the values stay on the page as briefly as they can;
+        // another is left unsent whatever the agent asked. A field in no form is submitted with Enter only when asked.
+        let asked = arguments["submit"]?.boolValue
         var submitted = false
-        if arguments["submit"]?.boolValue == true {
-            let viaForm = try await callInVaultWorld(page, objectID, Self.submitFunction)
-            if viaForm.boolValue != true, let enter = BrowserAgentKeyPress.parse("Enter") {
-                try await dispatch(enter, on: page)
+        let secret = kinds.contains("password") || kinds.contains("one_time_code")
+        var unsent = submission["form"]?.boolValue == true && secret
+            ? Self.submissionRisk(targets, pageOrigin: frame.origin, password: kinds.contains("password")) : nil
+        if asked != false, unsent == nil {
+            switch try await callInVaultWorld(page, objectID, Self.submitFunction).stringValue {
+            case "submitted":
+                submitted = true
+            case "address":
+                unsent = Self.addressRisk
+            default:
+                if asked == true, let enter = BrowserAgentKeyPress.parse("Enter") {
+                    try await dispatch(enter, on: page)
+                    submitted = true
+                }
             }
-            submitted = true
         }
         let what: String
         switch (kinds.contains("username"), kinds.contains("password"), kinds.contains("one_time_code")) {
@@ -388,6 +466,12 @@ extension BrowserAgentTools {
         default: what = "the one-time code"
         }
         let host = VaultSite.host(of: frame.origin)
+        if let unsent, asked != false {
+            return .text("Filled \(what) of “\(grant.item.name)” into the form on \(host) but did not submit it: \(unsent) "
+                + "Click the page's sign-in button: the page's own script usually sends the form another way. If the page "
+                + "would put the password in an address or send it to another site, Yardlet stops it and says so. "
+                + "The values are not shown to you.")
+        }
         return .text("Filled \(what) of “\(grant.item.name)” into the form on \(host)"
             + (submitted ? " and submitted it." : ".") + " The values are not shown to you.")
     }
@@ -533,16 +617,79 @@ extension BrowserAgentTools {
         }
         """
 
+    /// Where a form sends its fields, and how (`get`, `post`).
+    struct FormTarget: Equatable {
+        var action: String
+        var method: String
+    }
+
+    /// Where the field's form sends its fields: `form` (whether the field is in one), and `targets`, the form's
+    /// action and each submit button's own (`formaction`, `formmethod`) as absolute addresses, leaving out a
+    /// `method="dialog"` that sends nothing. A field in no form has none: the page's script sends what it sends. The
+    /// prototype's getters keep a field named `action` from answering.
+    static let submissionFunction = """
+        function() {
+          const form = (this instanceof HTMLInputElement && this.form) || this.closest('form');
+          if (!form) return { form: false, targets: [] };
+          const get = (type, name, e) => Object.getOwnPropertyDescriptor(type.prototype, name).get.call(e);
+          const formAction = get(HTMLFormElement, 'action', form), formMethod = get(HTMLFormElement, 'method', form);
+          const targets = [{ action: formAction, method: formMethod }];
+          for (const e of get(HTMLFormElement, 'elements', form)) {
+            const type = e instanceof HTMLButtonElement ? HTMLButtonElement : e instanceof HTMLInputElement ? HTMLInputElement : null;
+            if (!type || !['submit', 'image'].includes(get(type, 'type', e))) continue;
+            targets.push({ action: e.hasAttribute('formaction') ? get(type, 'formAction', e) : formAction,
+                           method: e.hasAttribute('formmethod') ? get(type, 'formMethod', e) : formMethod });
+          }
+          return { form: true, targets: targets.filter(t => t.method !== 'dialog') };
+        }
+        """
+
+    /// Whether a form may send the item's secrets to `destination`: one of the item's sites over https (or the
+    /// exact local origin a development item names), or a `javascript:` action, which sends nothing.
+    static func isItemDestination(_ destination: String, of item: VaultItem) -> Bool {
+        if destination.lowercased().hasPrefix("javascript:") { return true }
+        guard let origin = VaultSite.origin(of: destination) else { return false }
+        return item.sites.contains { VaultSite.matches($0, origin: origin) }
+    }
+
+    static let addressRisk = "the form sends its fields in the page's address (it has no method=\"post\"), which would "
+        + "put the password there."
+
+    /// Why Yardlet does not submit a form that holds a secret itself, or nil for a safe one: every way it sends goes
+    /// to the page's own origin over https (or to the local development server the page is on), and by POST when it
+    /// holds a password, which GET would put in the address. A one-time code may go by GET: it is spent once sent. An
+    /// action of `javascript:` leaves sending to the page's script.
+    static func submissionRisk(_ targets: [FormTarget], pageOrigin: String, password: Bool) -> String? {
+        if password, targets.contains(where: { $0.method.lowercased() != "post" }) { return addressRisk }
+        for target in targets where !target.action.lowercased().hasPrefix("javascript:") {
+            guard let origin = VaultSite.origin(of: target.action), origin == VaultSite.origin(of: pageOrigin) else {
+                return "the form sends its fields to \(VaultSite.origin(of: target.action) ?? "another address"), not to "
+                    + "this page's own address."
+            }
+            if origin.hasPrefix("http://"), VaultSite.normalize(origin) != origin {
+                return "the form sends its fields over plain http."
+            }
+        }
+        return nil
+    }
+
     /// Submits the field's form as a click on its submit button would (handlers that listen for the
-    /// click still run); false when the field is in no form.
+    /// click still run): `submitted`, or `no form` when the field is in none. A form that holds a password
+    /// and is sent by GET, as one without `method="post"` is, would put the password in the address: it is
+    /// left unsent (`address`).
     static let submitFunction = """
         function() {
           const form = (this instanceof HTMLInputElement && this.form) || this.closest('form');
-          if (!form) return false;
+          if (!form) return 'no form';
           const button = Array.from(form.querySelectorAll('button, input[type=submit], input[type=image]'))
             .find(b => (b.type || 'submit') === 'submit' && !b.disabled);
+          const get = (type, name, e) => Object.getOwnPropertyDescriptor(type.prototype, name).get.call(e);
+          const method = button && button.hasAttribute('formmethod') ? button.formMethod : get(HTMLFormElement, 'method', form);
+          const password = Array.from(get(HTMLFormElement, 'elements', form))
+            .some(e => e instanceof HTMLInputElement && e.type === 'password' && e.value);
+          if (method === 'get' && password) return 'address';
           if (button) button.click(); else if (form.requestSubmit) form.requestSubmit(); else form.submit();
-          return true;
+          return 'submitted';
         }
         """
 }
