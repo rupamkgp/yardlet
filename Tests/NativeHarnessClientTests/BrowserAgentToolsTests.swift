@@ -32,6 +32,11 @@ final class ScriptedCDP: BrowserAgentCDP {
             await withCheckedContinuation { suspended.append($0) }
         }
         if let responder = responders[method] { return try responder(params) }
+        // The vault's look for elements that show a filled value (`vaultSecretNodes`): this page has none.
+        if method == "Runtime.evaluate", params["objectGroup"] != nil {
+            return .object(["result": .object(["type": .string("object"), "objectId": .string("none-shown")])])
+        }
+        if method == "Runtime.getProperties" { return .object(["result": .array([])]) }
         if method == "Runtime.evaluate", let expression = params["expression"]?.stringValue {
             if expression.contains("location.href") {
                 return Self.value(.array([.string(pageURL), .string(pageTitle)]))
@@ -750,7 +755,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         cdp.responders["Runtime.callFunctionOn"] = { params in
             let function = params["functionDeclaration"]?.stringValue ?? ""
             if function.contains("ownerDocument === document") { return ScriptedCDP.value(.bool(true)) }
-            if failFill { throw BrowserDevToolsError.timedOut("Runtime.callFunctionOn") }
+            if failFill, function == BrowserAgentTools.fillFunction { throw BrowserDevToolsError.timedOut("Runtime.callFunctionOn") }
             return ScriptedCDP.value(.object(["kinds": .array([.string("password"), .string("username")])]))
         }
         cdp.responders["Runtime.evaluate"] = { params in
