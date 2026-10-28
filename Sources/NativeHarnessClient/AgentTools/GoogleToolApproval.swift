@@ -1,16 +1,18 @@
 import Foundation
 import YardletAgentTools
 
-/// What Claude Code's request card says for a Google tool that writes: a Gmail send or label change
-/// (`GmailToolApproval`), a Calendar event created, changed, deleted, or answered, or a Drive file
-/// created, copied, or changed; and for a Microsoft or Apple service's write (`MicrosoftToolApproval`,
-/// `AppleToolApproval`). It names the
-/// account and what the call would do. Claude Code asks before each such call; the card offers no
-/// "always allow", as for a scheduled-task change.
+/// What Claude Code's request card says for a Google tool that writes: a Gmail send, draft deletion,
+/// or label change (`GmailToolApproval`, with the draft it read), a Calendar event created, changed,
+/// deleted, or answered, or a Drive file created, copied, or changed; and for a Microsoft or Apple
+/// service's write (`MicrosoftToolApproval`, `AppleToolApproval`). It names the account and what the
+/// call would do. Claude Code asks before each such call; the card offers no "always allow", as for a
+/// scheduled-task change.
 enum GoogleToolApproval {
-    static func request(toolName: String?, input: JSONValue,
+    static func request(toolName: String?, input: JSONValue, gmailDraft: GmailDraftPreview? = nil,
                         labels: ConnectorToolLabels = .shared) -> (title: String, detail: String)? {
-        if let gmail = GmailToolApproval.request(toolName: toolName, input: input, labels: labels) { return gmail }
+        if let gmail = GmailToolApproval.request(toolName: toolName, input: input, draft: gmailDraft, labels: labels) {
+            return gmail
+        }
         guard let toolName, let label = labels.label(forClaudeTool: toolName),
               let service = label.localService, service.approvalRequiredTools.contains(label.tool) else { return nil }
         let account = label.account ?? service.name

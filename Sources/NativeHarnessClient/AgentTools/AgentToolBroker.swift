@@ -6,6 +6,8 @@ import YardletAgentTools
 struct ConnectorToolContext: Equatable, Sendable {
     var taskID: UUID?
     var scope: ConnectorTaskScope?
+    /// The task's folders, primary first, where a Gmail attachment may come from.
+    var workspaceRoots: [URL] = []
 }
 
 /// Tools of the services the user connected in Yardlet (docs/CONNECTORS.md).
@@ -199,7 +201,8 @@ final class AgentToolBroker: AgentToolLaunchProviding {
     }
 
     private func connectorContext(_ sessionID: UUID) -> ConnectorToolContext {
-        ConnectorToolContext(taskID: sessionID, scope: connectorScopes[sessionID])
+        ConnectorToolContext(taskID: sessionID, scope: connectorScopes[sessionID],
+                             workspaceRoots: workspaceRoots[sessionID] ?? [])
     }
 
     func handle(_ call: AgentToolCall) async -> AgentToolResult {

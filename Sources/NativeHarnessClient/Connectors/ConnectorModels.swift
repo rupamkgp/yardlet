@@ -341,10 +341,10 @@ enum LocalConnectorService: String, Codable, Sendable, CaseIterable, Identifiabl
         }
     }
 
-    /// Tools each harness asks the person about before every call: sending and changing labels,
-    /// writing events, creating and changing files, sending Teams messages, inviting testers,
-    /// sending builds and review replies, submitting for review, and changing the Mac's calendars
-    /// and reminders. Xcode's tools are asked about as the harness asks about any server's.
+    /// Tools each harness asks the person about before every call: sending, deleting drafts, and
+    /// changing labels, writing events, creating and changing files, sending Teams messages, inviting
+    /// testers, sending builds and review replies, submitting for review, and changing the Mac's
+    /// calendars and reminders. Xcode's tools are asked about as the harness asks about any server's.
     var approvalRequiredTools: Set<String> {
         switch self {
         case .gmail: GmailToolCatalog.approvalRequired

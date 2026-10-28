@@ -952,7 +952,7 @@ actor ClaudeAdapter:
         }
     }
 
-    private func accept(_ frame: ClaudeRawFrame, for localSessionID: UUID) {
+    private func accept(_ frame: ClaudeRawFrame, for localSessionID: UUID) async {
         let value = frame.value
         if value["type"]?.stringValue == "control_cancel_request",
            let requestID = value["request_id"]?.stringValue,
@@ -1002,11 +1002,18 @@ actor ClaudeAdapter:
             // choose, so only a plain tool request shows the CLI's "don't ask again" offer.
             let isAnswerableTool = request["tool_name"]?.stringValue
                 .map(ClaudeAnswerableTool.names.contains) ?? false
-            // A scheduled-task change, and a Google write (a Gmail send or label change, a Calendar
-            // event, a Drive file), is asked each time, with no "always allow", as the Claude app asks
-            // before its own (`ScheduleToolApproval`, `GoogleToolApproval`).
-            let schedule = ScheduleToolApproval.request(toolName: request["tool_name"]?.stringValue, input: input)
-                ?? GoogleToolApproval.request(toolName: request["tool_name"]?.stringValue, input: input)
+            // A scheduled-task change, and a Google write (a Gmail send, draft deletion, or label
+            // change, a Calendar event, a Drive file), is asked each time, with no "always allow", as
+            // the Claude app asks before its own (`ScheduleToolApproval`, `GoogleToolApproval`). A
+            // Gmail draft to send or delete is read first, so its card shows what it holds; the
+            // session's later frames wait for it.
+            let toolName = request["tool_name"]?.stringValue
+            var gmailDraft: GmailDraftPreview?
+            if GmailToolApproval.readsDraft(toolName: toolName) {
+                gmailDraft = await GmailToolApproval.draft(toolName: toolName, input: input)
+            }
+            let schedule = ScheduleToolApproval.request(toolName: toolName, input: input)
+                ?? GoogleToolApproval.request(toolName: toolName, input: input, gmailDraft: gmailDraft)
             let suggestionOffer = structured == nil && !isAnswerableTool && schedule == nil
                 ? ClaudePermissionSuggestions.offer(from: request)
                 : nil

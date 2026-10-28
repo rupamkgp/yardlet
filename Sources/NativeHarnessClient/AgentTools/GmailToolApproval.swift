@@ -1,11 +1,16 @@
 import Foundation
 import YardletAgentTools
 
-/// What Claude Code's request card says for a Gmail call that sends or changes labels, as the
-/// Claude app's Gmail cards say it (2.42304.0 `gmailSendMessage`, `gmailLabelThread`): which
-/// account, the recipients and subject over the body, or the labels. Claude Code asks before each
-/// such call; the card offers no "always allow", as for a scheduled-task change.
+/// What Claude Code's request card says for a Gmail call that sends, deletes a draft, or changes
+/// labels, as the Claude app's Gmail cards say it (2.42304.0 `gmailSendMessage`,
+/// `gmailLabelThread`): which account, the recipients, subject, and attachments over the body, or
+/// the labels. A draft to send or delete is read from Gmail first, so its card shows what it holds
+/// rather than an ID. Claude Code asks before each such call; the card offers no "always allow", as
+/// for a scheduled-task change.
 enum GmailToolApproval {
+    /// The most attachments a card names one by one.
+    static let listedAttachments = 20
+
     /// The Gmail tool behind a Claude Code name that asks every time, with its account; nil for
     /// any other tool.
     static func tool(named claudeToolName: String?,
@@ -15,7 +20,24 @@ enum GmailToolApproval {
         return (label.tool, label.account)
     }
 
-    static func request(toolName: String?, input: JSONValue,
+    /// Whether the call's card shows a draft read from Gmail: a send or delete of one.
+    static func readsDraft(toolName: String?, labels: ConnectorToolLabels = .shared) -> Bool {
+        guard let tool = tool(named: toolName, labels: labels)?.tool else { return false }
+        return tool == GmailToolCatalog.sendDraft || tool == GmailToolCatalog.deleteDraft
+    }
+
+    /// The draft the call names, read from Gmail within a few seconds; nil when it could not be.
+    static func draft(toolName: String?, input: JSONValue, reader: GmailDraftReader = .shared) async -> GmailDraftPreview? {
+        let prefix = "mcp__\(AgentToolEnvironment.serverName)__"
+        guard let toolName, toolName.hasPrefix(prefix) else { return nil }
+        var arguments: [String: ToolJSON] = [:]
+        for key in ["draftId", "messageId"] {
+            if let value = input[key]?.stringValue, !value.isEmpty { arguments[key] = .string(value) }
+        }
+        return await reader.read(tool: String(toolName.dropFirst(prefix.count)), arguments: arguments)
+    }
+
+    static func request(toolName: String?, input: JSONValue, draft: GmailDraftPreview? = nil,
                         labels: ConnectorToolLabels = .shared) -> (title: String, detail: String)? {
         guard let (tool, account) = tool(named: toolName, labels: labels) else { return nil }
         let mailbox = account ?? "Gmail"
@@ -39,17 +61,31 @@ enum GmailToolApproval {
             if input["replyToMessageId"]?.stringValue?.isEmpty == false {
                 lines.append(L10n.string("Replies in the message's thread."))
             }
-            var detail = lines.joined(separator: "\n")
+            lines += attachmentLines(GmailAttachmentFiles.describe(list("attachments")))
             let body = input["body"]?.stringValue ?? input["htmlBody"]?.stringValue.map(GmailText.plainText(fromHTML:))
-            if let body = body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
-                let preview = body.count > 1_200 ? String(body.prefix(1_200)) + "…" : body
-                detail += (detail.isEmpty ? "" : "\n\n") + preview
+            return (L10n.format("Allow Claude to send an email from %@?", mailbox), detail(lines, body))
+        case GmailToolCatalog.sendDraft, GmailToolCatalog.deleteDraft:
+            let title = tool == GmailToolCatalog.sendDraft
+                ? L10n.format("Allow Claude to send a draft from %@?", mailbox)
+                : L10n.format("Allow Claude to delete a draft from %@?", mailbox)
+            guard let draft else {
+                if let id = input["draftId"]?.stringValue, !id.isEmpty {
+                    lines.append(L10n.format("Draft %@", id))
+                } else if let id = input["messageId"]?.stringValue, !id.isEmpty {
+                    lines.append(L10n.format("Message %@", id))
+                }
+                lines.append(L10n.string("Yardlet could not read this draft from Gmail."))
+                return (title, lines.joined(separator: "\n"))
             }
-            return (L10n.format("Allow Claude to send an email from %@?", mailbox), detail)
-        case GmailToolCatalog.sendDraft:
-            let draft = input["draftId"]?.stringValue ?? ""
-            return (L10n.format("Allow Claude to send a draft from %@?", mailbox),
-                    draft.isEmpty ? "" : L10n.format("Draft %@", draft))
+            if let to = draft.to { lines.append(L10n.format("To: %@", to)) }
+            if let cc = draft.cc { lines.append(L10n.format("Cc: %@", cc)) }
+            if let bcc = draft.bcc { lines.append(L10n.format("Bcc: %@", bcc)) }
+            lines.append(L10n.format("Subject: %@", draft.subject ?? L10n.string("(no subject)")))
+            if let saved = draft.saved {
+                lines.append(L10n.format("Saved: %@", saved.formatted(date: .abbreviated, time: .shortened)))
+            }
+            lines += attachmentLines(draft.attachments)
+            return (title, detail(lines, draft.body))
         default:
             if let thread = input["threadId"]?.stringValue, !thread.isEmpty {
                 lines.append(L10n.format("Thread %@", thread))
@@ -63,6 +99,86 @@ enum GmailToolApproval {
             if remove.contains("UNREAD") { lines.append(L10n.string("Marks it read.")) }
             if add.contains("UNREAD") { lines.append(L10n.string("Marks it unread.")) }
             return (L10n.format("Allow Claude to change labels in %@?", mailbox), lines.joined(separator: "\n"))
+        }
+    }
+
+    /// The lines over the body's first 1,200 characters.
+    private static func detail(_ lines: [String], _ body: String?) -> String {
+        var detail = lines.joined(separator: "\n")
+        if let body = body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+            let preview = body.count > 1_200 ? String(body.prefix(1_200)) + "…" : body
+            detail += (detail.isEmpty ? "" : "\n\n") + preview
+        }
+        return detail
+    }
+
+    /// "Attachments: 1.4 MB" and a line for each file with its size.
+    private static func attachmentLines(_ files: [GmailAttachmentFiles.File]) -> [String] {
+        guard !files.isEmpty else { return [] }
+        func size(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
+        var lines = [L10n.format("Attachments: %@", size(files.compactMap(\.size).reduce(0, +)))]
+        for file in files.prefix(listedAttachments) {
+            lines.append("• " + (file.size.map { "\(file.name) (\(size($0)))" } ?? L10n.format("%@ (not found)", file.name)))
+        }
+        if files.count > listedAttachments {
+            lines.append(L10n.format("…and %lld more", Int64(files.count - listedAttachments)))
+        }
+        return lines
+    }
+}
+
+/// A draft as its request card shows it, read from Gmail before it is sent or deleted.
+struct GmailDraftPreview: Equatable, Sendable {
+    var to: String?
+    var cc: String?
+    var bcc: String?
+    var subject: String?
+    var saved: Date?
+    var body: String?
+    var attachments: [GmailAttachmentFiles.File] = []
+}
+
+extension GmailDraftPreview {
+    init(_ message: GmailMessage) {
+        func header(_ name: String) -> String? { message.header(name).flatMap { $0.isEmpty ? nil : $0 } }
+        let parts = GmailMessage.parts(message.json["payload"])
+        self.init(to: header("To"), cc: header("Cc"), bcc: header("Bcc"), subject: header("Subject"),
+                  saved: message.internalDate, body: parts.plain ?? parts.html.map(GmailText.plainText(fromHTML:)),
+                  attachments: parts.attachments.map { part in
+                      let size: Int? = if case .integer(let bytes)? = part["size"] { Int(bytes) } else { nil }
+                      return GmailAttachmentFiles.File(name: part["filename"]?.stringValue ?? "", size: size)
+                  })
+    }
+}
+
+/// Reads a draft for a request card from an adapter, off the main actor: the connector center
+/// sets how, with the account behind each Yardlet tool name. A read that takes longer than a few
+/// seconds leaves the card without it.
+final class GmailDraftReader: @unchecked Sendable {
+    typealias Read = @Sendable (_ tool: String, _ arguments: [String: ToolJSON]) async -> GmailDraftPreview?
+
+    static let shared = GmailDraftReader()
+
+    private let lock = NSLock()
+    private var reader: Read?
+    private let timeout: Duration = .seconds(5)
+
+    func set(_ read: Read?) {
+        lock.withLock { reader = read }
+    }
+
+    func read(tool: String, arguments: [String: ToolJSON]) async -> GmailDraftPreview? {
+        guard let read = lock.withLock({ reader }) else { return nil }
+        let timeout = timeout
+        return await withTaskGroup(of: GmailDraftPreview?.self) { group in
+            group.addTask { await read(tool, arguments) }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 }

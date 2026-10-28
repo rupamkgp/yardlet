@@ -2374,6 +2374,13 @@
 "Allow Claude to send an email from %@?" = "Allow Claude to send an email from %@?";
 "Allow Claude to send a draft from %@?" = "Allow Claude to send a draft from %@?";
 "Draft %@" = "Draft %@";
+"Allow Claude to delete a draft from %@?" = "Allow Claude to delete a draft from %@?";
+"Yardlet could not read this draft from Gmail." = "Yardlet could not read this draft from Gmail.";
+"(no subject)" = "(no subject)";
+"Saved: %@" = "Saved: %@";
+"Attachments: %@" = "Attachments: %@";
+"%@ (not found)" = "%@ (not found)";
+"…and %lld more" = "…and %lld more";
 "Thread %@" = "Thread %@";
 "Message %@" = "Message %@";
 "Adds: %@" = "Adds: %@";

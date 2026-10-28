@@ -344,6 +344,9 @@ final class ConnectorCenter: ConnectorToolProviding {
         googleAppClientID = environment.repository.loadGoogleAppClientID()
         microsoftApp = environment.repository.loadMicrosoftApp()
         ConnectorToolLabels.shared.update(connectors)
+        GmailDraftReader.shared.set { [weak self] tool, arguments in
+            await self?.gmailDraftPreview(tool: tool, arguments: arguments)
+        }
     }
 
     /// Replaces where harness homes come from, once the app knows its saved accounts.
@@ -1074,13 +1077,15 @@ final class ConnectorCenter: ConnectorToolProviding {
         return session
     }
 
-    private func callGoogleTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON) async -> AgentToolResult {
+    private func callGoogleTool(_ record: ConnectorRecord, tool: String, arguments: ToolJSON,
+                                taskFolders: [URL]) async -> AgentToolResult {
         let session = accountSession(record.credentialID)
         let google = environment.google
         do {
             switch record.localService {
             case .gmail?:
-                return try await GmailToolRunner(api: GmailAPI(base: google.gmailAPI, session: session)).call(tool, arguments)
+                return try await GmailToolRunner(api: GmailAPI(base: google.gmailAPI, session: session),
+                                                 taskFolders: taskFolders).call(tool, arguments)
             case .googleCalendar?:
                 return try await GoogleCalendarToolRunner(api: GoogleREST(base: google.calendarAPI, session: session),
                                                           timeZone: environment.timeZone(), now: environment.now)
@@ -1560,7 +1565,8 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
         if record.program != nil { return await callProgramTool(record, tool: toolName, arguments: arguments) }
         switch record.localService {
-        case let service? where service.isGoogle: return await callGoogleTool(record, tool: toolName, arguments: arguments)
+        case let service? where service.isGoogle:
+            return await callGoogleTool(record, tool: toolName, arguments: arguments, taskFolders: context.workspaceRoots)
         case let service? where service.isMicrosoft: return await callMicrosoftTool(record, tool: toolName, arguments: arguments)
         case .appStoreConnect?: return await callAppStoreConnectTool(record, tool: toolName, arguments: arguments)
         case .xcode?: return await callXcodeTool(record, tool: toolName, arguments: arguments)
@@ -1585,6 +1591,16 @@ final class ConnectorCenter: ConnectorToolProviding {
         }
     }
 
+
+    /// The draft a Gmail send or delete names, read for its request card (`GmailToolApproval`); nil
+    /// when the tool is not a connected Gmail account's or Gmail did not answer.
+    func gmailDraftPreview(tool name: String, arguments: [String: ToolJSON]) async -> GmailDraftPreview? {
+        guard let (record, _) = owner(ofTool: name), record.localService == .gmail, record.status == .connected else {
+            return nil
+        }
+        let api = GmailAPI(base: environment.google.gmailAPI, session: accountSession(record.credentialID))
+        return try? await GmailToolRunner(api: api).draftPreview(arguments)
+    }
 
     /// The connector and server tool name behind one of Yardlet's names.
     private func owner(ofTool name: String) -> (ConnectorRecord, String)? {

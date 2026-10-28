@@ -5,8 +5,9 @@ import XCTest
 
 /// Yardlet's own Gmail server (docs/CONNECTORS.md, "Google"): the Google OAuth app kept in the secure
 /// store, each Google account's sign-in over the loopback redirect, token refresh and a revoked
-/// sign-in, every tool's Gmail API request and answer, the harness asking before sends and label
-/// changes, several accounts, and the tools reaching each harness. Google is a local fake here:
+/// sign-in, every tool's Gmail API request and answer, attachments from local files, the harness
+/// asking before sends, draft deletions, and label changes, several accounts, and the tools
+/// reaching each harness. Google is a local fake here:
 /// no request leaves the machine and no real account signs in.
 @MainActor
 final class GmailConnectorTests: XCTestCase {
@@ -51,8 +52,18 @@ final class GmailConnectorTests: XCTestCase {
         return (center, connected)
     }
 
-    private func call(_ center: ConnectorCenter, _ name: String, _ arguments: [String: ToolJSON] = [:]) async throws -> AgentToolResult {
-        try XCTUnwrapAsync(await center.callConnectorTool(named: name, arguments: .object(arguments), for: ConnectorToolContext()))
+    private func call(_ center: ConnectorCenter, _ name: String, _ arguments: [String: ToolJSON] = [:],
+                      folders: [URL] = []) async throws -> AgentToolResult {
+        try XCTUnwrapAsync(await center.callConnectorTool(named: name, arguments: .object(arguments),
+                                                          for: ConnectorToolContext(workspaceRoots: folders)))
+    }
+
+    /// An empty folder of the test's own, removed afterwards.
+    private func makeFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "yardlet-gmail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        directories.append(folder)
+        return folder
     }
 
     private func json(_ result: AgentToolResult, file: StaticString = #filePath, line: UInt = #line) throws -> ToolJSON {
@@ -153,10 +164,11 @@ final class GmailConnectorTests: XCTestCase {
         let tools = await center.connectorTools(for: ConnectorToolContext())
         XCTAssertEqual(tools.compactMap { $0["name"]?.stringValue },
                        ["gmail_search_threads", "gmail_get_thread", "gmail_get_message", "gmail_list_labels",
-                        "gmail_create_draft", "gmail_send_draft", "gmail_send_message", "gmail_modify_labels"])
+                        "gmail_create_draft", "gmail_send_draft", "gmail_send_message", "gmail_modify_labels",
+                        "gmail_delete_draft"])
         XCTAssertEqual(tools.first?["title"], .string("Gmail · person@example.test: Search threads"))
         XCTAssertTrue(tools.first?["description"]?.stringValue?.hasPrefix("[Gmail · person@example.test] ") == true)
-        XCTAssertEqual(ConnectorSettingsState.make(record, in: center), .connected(tools: 8))
+        XCTAssertEqual(ConnectorSettingsState.make(record, in: center), .connected(tools: 9))
         XCTAssertEqual(ConnectorToolLabels.shared.label(forClaudeTool: "mcp__yardlet__gmail_send_message")?.account,
                        "person@example.test")
     }
@@ -492,6 +504,107 @@ final class GmailConnectorTests: XCTestCase {
         XCTAssertEqual(google.posted.count, posts)
     }
 
+
+    // MARK: - Attachments
+
+    func testAttachmentsGoInMultipartMixedThroughTheUploadEndpoint() async throws {
+        let google = FakeGoogle()
+        let (center, _) = try await signedIn(google: google)
+        let folder = try makeFolder()
+        // macOS keeps a Korean name decomposed; the recipient gets it composed.
+        let png = folder.appending(path: "스크린샷 1.png".decomposedStringWithCanonicalMapping)
+        let pngBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + Data(repeating: 7, count: 300)
+        try pngBytes.write(to: png)
+        let notes = folder.appending(path: "notes.md")
+        try Data("# 데모 설명\n화면 18장".utf8).write(to: notes)
+
+        let draft = try json(try await call(center, "gmail_create_draft", [
+            "replyToMessageId": .string("m1"), "body": .string("화면을 첨부합니다."),
+            "attachments": .array([.string(png.path(percentEncoded: false)), .string(notes.path(percentEncoded: false))])
+        ], folders: [folder]))
+        XCTAssertEqual(draft["draftId"], .string("r-1"))
+        XCTAssertEqual(draft["attachments"]?.arrayValue?.map { $0["filename"] }, [.string("스크린샷 1.png"), .string("notes.md")])
+        XCTAssertEqual(draft["attachments"]?.arrayValue?.first?["size"], .integer(Int64(pngBytes.count)))
+        let upload = try XCTUnwrap(google.uploads.last)
+        XCTAssertEqual(upload.path, "/upload/gmail/v1/users/me/drafts")
+        XCTAssertEqual(upload.query, "uploadType=multipart")
+        XCTAssertEqual(upload.metadata, .object(["message": .object(["threadId": .string("t1")])]))
+        let mime = upload.message
+        XCTAssertTrue(mime.contains("In-Reply-To: <m1@example.com>\r\n"), mime)
+        XCTAssertTrue(mime.contains("Content-Type: multipart/mixed; boundary="), mime)
+        XCTAssertTrue(mime.contains(Data("화면을 첨부합니다.".utf8).base64EncodedString()), "The text comes first")
+        let name = "=?UTF-8?B?\(Data("스크린샷 1.png".utf8).base64EncodedString())?="
+        XCTAssertTrue(mime.contains("Content-Type: image/png; name=\"\(name)\"\r\n"
+            + "Content-Disposition: attachment; filename=\"\(name)\"\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+            + pngBytes.base64EncodedString(options: .lineLength76Characters)), mime)
+        XCTAssertTrue(mime.contains("Content-Type: text/markdown; charset=\"UTF-8\"; name=\"notes.md\""), mime)
+        XCTAssertFalse(google.posted.contains { $0.path.hasSuffix("/drafts") }, "Not as JSON raw")
+
+        // HTML and attachments: the text and HTML side by side, then the files.
+        let sent = try json(try await call(center, "gmail_send_message", [
+            "to": .string("client@example.com"), "subject": .string("Demo"), "htmlBody": .string("<p>Screens</p>"),
+            "attachments": .string(png.path(percentEncoded: false))
+        ], folders: [folder]))
+        XCTAssertEqual(sent["sent"], .bool(true))
+        let send = try XCTUnwrap(google.uploads.last)
+        XCTAssertEqual(send.path, "/upload/gmail/v1/users/me/messages/send")
+        XCTAssertEqual(send.metadata, .object([:]))
+        XCTAssertTrue(send.message.contains("Content-Type: multipart/alternative; boundary=\""), send.message)
+        XCTAssertTrue(send.message.contains("Content-Type: text/html; charset=\"UTF-8\""), send.message)
+        XCTAssertTrue(send.message.contains("Content-Disposition: attachment;"), send.message)
+
+        // Nothing goes when a file is too large, hidden, outside the folders, or not given by a full path.
+        let uploads = google.uploads.count
+        let big = folder.appending(path: "video.mov")
+        FileManager.default.createFile(atPath: big.path(percentEncoded: false), contents: nil)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(GmailAttachmentFiles.limit + 1))
+        try handle.close()
+        let hidden = folder.appending(path: ".env")
+        try Data("TOKEN=x".utf8).write(to: hidden)
+        let link = folder.appending(path: "hosts.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(filePath: "/etc/hosts"))
+        for (path, reason) in [(big.path(percentEncoded: false), "over Gmail's 25 MB"),
+                               (hidden.path(percentEncoded: false), "hidden"),
+                               (link.path(percentEncoded: false), "files come from"),
+                               ("notes.md", "absolute path"),
+                               (folder.path(percentEncoded: false), "not a file")] {
+            let refused = try await call(center, "gmail_create_draft", ["attachments": .array([.string(path)])],
+                                         folders: [folder])
+            XCTAssertTrue(refused.isError && refused.text.contains(reason), "\(path): \(refused.text)")
+        }
+        XCTAssertEqual(google.uploads.count, uploads)
+
+        // Only the task's folders and the person's own: another folder is not one of them.
+        let elsewhere = try makeFolder().appending(path: "x.txt")
+        try Data("x".utf8).write(to: elsewhere)
+        XCTAssertNoThrow(try GmailAttachmentFiles.resolve(png.path(percentEncoded: false), roots: [folder]))
+        XCTAssertThrowsError(try GmailAttachmentFiles.resolve(elsewhere.path(percentEncoded: false), roots: [folder]))
+    }
+
+    // MARK: - Deleting drafts
+
+    func testDeleteDraftByItsIDOrByItsMessage() async throws {
+        let google = FakeGoogle()
+        let (center, _) = try await signedIn(google: google)
+        let deleted = try json(try await call(center, "gmail_delete_draft", ["draftId": .string("r-1")]))
+        XCTAssertEqual(deleted, .object(["deleted": .bool(true), "draftId": .string("r-1")]))
+        XCTAssertEqual(google.requests.last?.httpMethod, "DELETE")
+        XCTAssertEqual(google.requests.last?.url?.path(), "/gmail/v1/users/me/drafts/r-1")
+
+        // By the message get_thread shows with the DRAFT label, found on the second page of drafts.
+        let byMessage = try json(try await call(center, "gmail_delete_draft", ["messageId": .string("m-draft-old")]))
+        XCTAssertEqual(byMessage["draftId"], .string("r-old"))
+        XCTAssertEqual(google.requests.last?.url?.path(), "/gmail/v1/users/me/drafts/r-old")
+
+        let deletes = google.requests.filter { $0.httpMethod == "DELETE" }.count
+        let notADraft = try await call(center, "gmail_delete_draft", ["messageId": .string("m3")])
+        XCTAssertEqual(notADraft.text, "No draft has the message m3. A draft's message has the DRAFT label.")
+        let both = try await call(center, "gmail_delete_draft", ["draftId": .string("r-1"), "messageId": .string("m3")])
+        XCTAssertEqual(both.text, "Give either draftId or messageId, not both.")
+        XCTAssertEqual(google.requests.filter { $0.httpMethod == "DELETE" }.count, deletes)
+    }
+
     // MARK: - Asking before sends and label changes
 
     func testSendingAndChangingLabelsAskInEveryHarness() async throws {
@@ -506,7 +619,8 @@ final class GmailConnectorTests: XCTestCase {
             XCTAssertEqual(tools[name]?["annotations"]?["openWorldHint"], .bool(true), name)
         }
         XCTAssertEqual(tools["modify_labels"]?["annotations"]?["destructiveHint"], .bool(true))
-        XCTAssertEqual(GmailToolCatalog.approvalRequired, ["send_draft", "send_message", "modify_labels"])
+        XCTAssertEqual(tools["delete_draft"]?["annotations"]?["destructiveHint"], .bool(true))
+        XCTAssertEqual(GmailToolCatalog.approvalRequired, ["send_draft", "send_message", "modify_labels", "delete_draft"])
         for tool in GmailToolCatalog.tools {
             let description = tool["description"]?.stringValue ?? ""
             XCTAssertLessThan(description.count, 260, description)
@@ -562,7 +676,33 @@ final class GmailConnectorTests: XCTestCase {
                                              input: .object([:]), suggestions: [suggestion]))
         let read = try await recorder.waitFor("read-1")
         XCTAssertFalse(read.actions.isEmpty, "Reading is the CLI's ordinary card")
+
+        // A draft to delete is read from Gmail first: its recipients, subject, and attachments.
+        await transport.emit(Self.canUseTool(id: "delete-1", tool: "mcp__yardlet__gmail_delete_draft",
+                                             input: .object(["draftId": .string("r-1")]), suggestions: [suggestion]))
+        let delete = try await recorder.waitFor("delete-1")
+        XCTAssertEqual(delete.title, L10n.format("Allow Claude to delete a draft from %@?", "person@example.test"))
+        let deleteDetail = try XCTUnwrap(delete.detail)
+        XCTAssertTrue(deleteDetail.contains(L10n.format("To: %@", "Client <client@example.com>")), deleteDetail)
+        XCTAssertTrue(deleteDetail.contains(L10n.format("Subject: %@", "Demo screens")), deleteDetail)
+        XCTAssertTrue(deleteDetail.contains("demo-01.png (\(ByteCountFormatter.string(fromByteCount: 61_440, countStyle: .file)))"),
+                      deleteDetail)
+        XCTAssertTrue(deleteDetail.contains("Here are the screens."), deleteDetail)
+        XCTAssertTrue(delete.actions.isEmpty)
         await adapter.close(handle)
+
+        // A send names each file it attaches with its size, and one that is not there.
+        let folder = try makeFolder()
+        let shot = folder.appending(path: "shot.png")
+        try Data(repeating: 1, count: 2_048).write(to: shot)
+        let attaching = try XCTUnwrap(GmailToolApproval.request(toolName: "mcp__yardlet__gmail_send_message", input: .object([
+            "to": .string("client@example.com"),
+            "attachments": .array([.string(shot.path(percentEncoded: false)), .string("/nowhere/notes.md")])
+        ])))
+        let size = ByteCountFormatter.string(fromByteCount: 2_048, countStyle: .file)
+        XCTAssertTrue(attaching.detail.contains(L10n.format("Attachments: %@", size)), attaching.detail)
+        XCTAssertTrue(attaching.detail.contains("• shot.png (\(size))"), attaching.detail)
+        XCTAssertTrue(attaching.detail.contains("• " + L10n.format("%@ (not found)", "notes.md")), attaching.detail)
 
         let archive = try XCTUnwrap(GmailToolApproval.request(
             toolName: "mcp__yardlet__gmail_modify_labels",
@@ -572,6 +712,7 @@ final class GmailConnectorTests: XCTestCase {
         let draft = try XCTUnwrap(GmailToolApproval.request(toolName: "mcp__yardlet__gmail_send_draft",
                                                             input: .object(["draftId": .string("r-1")])))
         XCTAssertEqual(draft.title, L10n.format("Allow Claude to send a draft from %@?", "person@example.test"))
+        XCTAssertTrue(draft.detail.contains(L10n.string("Yardlet could not read this draft from Gmail.")), draft.detail)
         XCTAssertNil(GmailToolApproval.request(toolName: "mcp__yardlet__gmail_create_draft", input: .object([:])))
         XCTAssertNil(GmailToolApproval.request(toolName: "mcp__claude_ai_Gmail__send_message", input: .object([:])),
                      "claude.ai's own Gmail is its own")
@@ -601,14 +742,18 @@ final class GmailConnectorTests: XCTestCase {
         XCTAssertEqual(mine, theirs)
 
         let names = await center.connectorTools(for: ConnectorToolContext()).compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(names.count, 16)
+        XCTAssertEqual(names.count, 18)
         XCTAssertTrue(names.contains("gmail_developer_send_message"))
+        XCTAssertTrue(names.contains("gmail_developer_delete_draft"))
+        XCTAssertEqual(GmailToolApproval.request(toolName: "mcp__yardlet__gmail_developer_delete_draft",
+                                                 input: .object(["draftId": .string("r-1")]))?.title,
+                       L10n.format("Allow Claude to delete a draft from %@?", "developer@company.test"))
 
         // Turned off in one task, only that account leaves it.
         let task = UUID()
         center.setConnector(work.id, on: false, inTask: task)
         let inTask = await center.connectorTools(for: ConnectorToolContext(taskID: task)).compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(inTask.count, 8)
+        XCTAssertEqual(inTask.count, 9)
         XCTAssertTrue(inTask.allSatisfy { !$0.hasPrefix("gmail_developer_") })
 
         // Signing in to an account that is here already keeps one connector for it.
@@ -657,7 +802,7 @@ final class GmailConnectorTests: XCTestCase {
                 XCTAssertEqual(gmail, [], "Antigravity gets no connectors")
                 XCTAssertTrue(call.isError)
             } else {
-                XCTAssertEqual(gmail.count, 8, harness.rawValue)
+                XCTAssertEqual(gmail.count, 9, harness.rawValue)
                 XCTAssertFalse(call.isError, "\(harness.rawValue): \(call.text)")
                 XCTAssertTrue(call.text.contains("\"labels\""), call.text)
             }
@@ -755,9 +900,18 @@ final class FakeGoogle: ConnectorHTTPTransport, @unchecked Sendable {
         var body: ToolJSON
     }
 
+    /// A message through the upload endpoint: its metadata and the message itself.
+    struct Upload: Equatable {
+        var path: String
+        var query: String?
+        var metadata: ToolJSON
+        var message: String
+    }
+
     private let lock = NSLock()
     private var recorded: [URLRequest] = []
     private var posts: [Post] = []
+    private var uploaded: [Upload] = []
     private var accessTokens: [String: String] = [:]
     private var refreshTokens: [String: String] = [:]
     /// What each refresh token was granted, as Google lists it again on every refresh.
@@ -772,6 +926,7 @@ final class FakeGoogle: ConnectorHTTPTransport, @unchecked Sendable {
 
     var requests: [URLRequest] { lock.withLock { recorded } }
     var posted: [Post] { lock.withLock { posts } }
+    var uploads: [Upload] { lock.withLock { uploaded } }
     /// The account the browser signs in to next.
     var signInAs: String {
         get { lock.withLock { nextAccount } }
@@ -814,9 +969,38 @@ final class FakeGoogle: ConnectorHTTPTransport, @unchecked Sendable {
             return reply(url, 401, ["error": .object(["code": .integer(401), "status": .string("UNAUTHENTICATED"),
                                                       "message": .string("Request had invalid authentication credentials.")])])
         }
+        if url.path().hasPrefix("/upload/") { return upload(request, url) }
         let body = request.httpBody.flatMap { try? JSONDecoder().decode(ToolJSON.self, from: $0) }
         if request.httpMethod == "POST" { lock.withLock { posts.append(Post(path: url.path(), body: body ?? .null)) } }
         return gmail(url, method: request.httpMethod ?? "GET", account: account, body: body)
+    }
+
+    /// `uploadType=multipart`: the JSON metadata part, then the `message/rfc822` part.
+    private func upload(_ request: URLRequest, _ url: URL) -> (Data, HTTPURLResponse) {
+        guard let type = request.value(forHTTPHeaderField: "Content-Type"), type.hasPrefix("multipart/related; boundary="),
+              let body = request.httpBody.map({ String(decoding: $0, as: UTF8.self) }) else {
+            return reply(url, 400, ["error": .object(["message": .string("Not a multipart upload.")])])
+        }
+        let boundary = String(type.dropFirst("multipart/related; boundary=".count))
+        let parts = body.components(separatedBy: "--\(boundary)").dropFirst().dropLast().map { part -> (String, String) in
+            // "\r\n" is one Character.
+            let pieces = part.dropFirst().components(separatedBy: "\r\n\r\n")
+            return (pieces[0], String(pieces.dropFirst().joined(separator: "\r\n\r\n").dropLast()))
+        }
+        guard parts.count == 2, parts[0].0.contains("application/json"), parts[1].0 == "Content-Type: message/rfc822",
+              let metadata = try? JSONDecoder().decode(ToolJSON.self, from: Data(parts[0].1.utf8)) else {
+            return reply(url, 400, ["error": .object(["message": .string("Bad parts.")])])
+        }
+        let path = url.path()
+        lock.withLock { uploaded.append(Upload(path: path, query: url.query(), metadata: metadata, message: parts[1].1)) }
+        if path.hasSuffix("/drafts") {
+            let id = lock.withLock { drafts += 1; return drafts }
+            return reply(url, 200, ["id": .string("r-\(id)"), "message": .object([
+                "id": .string("m-draft-\(id)"), "threadId": metadata["message"]?["threadId"] ?? .string("t-new-\(id)")])])
+        }
+        let id = lock.withLock { sends += 1; return sends }
+        return reply(url, 200, ["id": .string("m-sent-\(id)"), "threadId": .string("t-sent"),
+                                "labelIds": .array([.string("SENT")])])
     }
 
     private func reply(_ url: URL, _ status: Int, _ body: [String: ToolJSON]) -> (Data, HTTPURLResponse) {
@@ -895,6 +1079,17 @@ final class FakeGoogle: ConnectorHTTPTransport, @unchecked Sendable {
             let id = lock.withLock { drafts += 1; return drafts }
             return reply(url, 200, ["id": .string("r-\(id)"), "message": .object([
                 "id": .string("m-draft-\(id)"), "threadId": body?["message"]?["threadId"] ?? .string("t-new-\(id)")])])
+        case ("GET", "drafts/r-1"):
+            return reply(url, 200, ["id": .string("r-1"), "message": Self.draft()])
+        case ("GET", "drafts"):
+            // Two pages: the old draft is on the second.
+            guard query.first(where: { $0.name == "pageToken" })?.value == "drafts-2" else {
+                return reply(url, 200, ["drafts": .array([Self.draftEntry("r-1", "m-draft-1")]),
+                                        "nextPageToken": .string("drafts-2")])
+            }
+            return reply(url, 200, ["drafts": .array([Self.draftEntry("r-old", "m-draft-old")])])
+        case ("DELETE", "drafts/r-1"), ("DELETE", "drafts/r-old"):
+            return (Data(), HTTPURLResponse(url: url, statusCode: 204, httpVersion: "HTTP/1.1", headerFields: [:])!)
         case ("POST", "drafts/send"), ("POST", "messages/send"):
             let id = lock.withLock { sends += 1; return sends }
             return reply(url, 200, ["id": .string("m-sent-\(id)"), "threadId": .string("t-sent"),
@@ -931,6 +1126,21 @@ final class FakeGoogle: ConnectorHTTPTransport, @unchecked Sendable {
         if !metadata { payload["parts"] = .array(parts) }
         return .object(["id": .string(id), "threadId": .string(thread), "labelIds": .array(labels.map { .string($0) }),
                         "snippet": .string(snippet), "internalDate": .string(String(date)), "payload": .object(payload)])
+    }
+
+    private static func draftEntry(_ id: String, _ message: String) -> ToolJSON {
+        .object(["id": .string(id), "message": .object(["id": .string(message), "threadId": .string("t1")])])
+    }
+
+    static func draft() -> ToolJSON {
+        message(id: "m-draft-1", thread: "t1", labels: ["DRAFT"], date: 1_792_300_000_000, snippet: "Here are the screens.",
+                headers: [("To", "Client <client@example.com>"), ("Subject", "Demo screens")],
+                parts: [
+                    .object(["mimeType": .string("text/plain"), "filename": .string(""),
+                             "body": .object(["data": .string(b64(Data("Here are the screens.".utf8)))])]),
+                    .object(["mimeType": .string("image/png"), "filename": .string("demo-01.png"),
+                             "body": .object(["size": .integer(61_440), "attachmentId": .string("ANGjdJ-png")])])
+                ], metadata: false)
     }
 
     static func m1(_ metadata: Bool) -> ToolJSON {

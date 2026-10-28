@@ -695,15 +695,28 @@ Gmail (`GmailToolCatalog`, `GmailToolRunner`, Gmail API v1):
 | `get_thread` | `GET users/me/threads/{id}?format=full` or `metadata` | `messageFormat`: `PLAIN_TEXT` (default: body text and attachment names), `FULL_CONTENT` (+HTML), `MINIMAL`, `METADATA_ONLY` |
 | `get_message` | `GET users/me/messages/{id}` | The same formats |
 | `list_labels` | `GET users/me/labels` | id, name, type |
-| `create_draft` | `POST users/me/drafts` | to, cc, bcc, subject, body, htmlBody, replyToMessageId. For a reply: that thread, `In-Reply-To` and `References`, a "Re:" subject, and Reply-To or From when there are no recipients |
+| `create_draft` | `POST users/me/drafts`; with attachments, `POST upload/gmail/v1/users/me/drafts?uploadType=multipart` | to, cc, bcc, subject, body, htmlBody, replyToMessageId, attachments. For a reply: that thread, `In-Reply-To` and `References`, a "Re:" subject, and Reply-To or From when there are no recipients |
 | `send_draft` | `POST users/me/drafts/send` | Draft ID |
-| `send_message` | `POST users/me/messages/send` | The same fields as create_draft, recipients required |
+| `send_message` | `POST users/me/messages/send`; with attachments, `upload/…/messages/send` | The same fields as create_draft, recipients required |
 | `modify_labels` | `POST users/me/threads/{id}/modify` or `messages/{id}/modify` | One of `threadId` or `messageId` + `addLabelIds` and `removeLabelIds`. Removing INBOX = archive, removing or adding UNREAD = read or unread |
+| `delete_draft` | `DELETE users/me/drafts/{id}` (for a `messageId`, `GET users/me/drafts` first, 500 at a time) | One of `draftId` or `messageId` (a message `get_thread` shows with the DRAFT label). Deletes it for good, not to the trash |
 
 - Body: decoded by the part's charset (EUC-KR and others), HTML-only converted to text, 40,000 characters per message.
   Outgoing mail has a UTF-8 base64 body, non-ASCII subjects and display names in RFC 2047, and HTML together with a text
   part in `multipart/alternative`. Addresses with a line break or a comma are refused before sending (header injection).
   Gmail fills in From.
+- Attachments (`GmailAttachmentFiles`): the agent gives absolute paths of local files (`~/` works), and the connector
+  reads them and attaches them after the body in `multipart/mixed`. Files come only from the task's folders
+  (`ConnectorToolContext.workspaceRoots`, the same list browser uploads use), the temporary folders (`/tmp` and
+  `$TMPDIR`, where agents keep files they make, such as Claude Code's scratchpad) and the person's Desktop, Documents
+  and Downloads, never from a hidden file or folder below them (`.env`, `.ssh`, `.git`). `..` and symbolic links are
+  resolved with `realpath` before the check. Only regular files, up to 25 MB in all (Gmail's attachment limit); more is
+  refused before anything is read. The MIME type comes from the extension (`UTType`, else
+  `application/octet-stream`), and UTF-8 text gets `charset="UTF-8"`. File names are composed to NFC (macOS keeps
+  Korean names decomposed) without control characters, and a non-ASCII name goes in `name` and `filename` as RFC 2047
+  encoded words, as Gmail's web client sends it. A message with attachments goes through the upload endpoint (up to
+  35 MB) as a JSON metadata part and a `message/rfc822` part instead of JSON `raw`. The result lists each attached
+  file's name, type and size.
 - Labels use one `modify_labels` instead of the five tools on the claude.ai side.
 
 Calendar (`GoogleCalendarToolRunner`, Calendar API v3):
@@ -801,8 +814,8 @@ none is sent:
 - Analytics and Ads answers over 100,000 characters become an error that says how to narrow the request.
 - Descriptions say only what the tool does, in under 260 characters. Annotations: reading tools have
   `readOnlyHint: true` and `openWorldHint: false`, sending and writing tools `openWorldHint: true`, and `modify_labels`,
-  `delete_event`, `update_file` and the Docs, Sheets and Slides writes other than `insert_dimension` have
-  `destructiveHint: true`.
+  `delete_draft`, `delete_event`, `update_file` and the Docs, Sheets and Slides writes other than `insert_dimension`
+  have `destructiveHint: true`.
 - Bodies, requests and responses are not written to the log. Errors show only Google's `error.message` and the HTTP
   status ("Gmail: Requested entity was not found. (HTTP 404)").
 
@@ -811,11 +824,15 @@ none is sent:
 - Tools that ask follow the harness's approval settings. Yardlet keeps no approval rules of its own and puts annotations
   (`destructiveHint` and others) on write tools.
 - Claude Code: connector tools are not in `--allowedTools`, so the CLI asks according to the task's permission mode. The
-  request cards for write tools (Gmail `send_draft`, `send_message` and `modify_labels`, Calendar `create_event`,
+  request cards for write tools (Gmail `send_draft`, `send_message`, `modify_labels` and `delete_draft`, Calendar `create_event`,
   `update_event`, `delete_event` and `respond_to_event`, Drive `create_file`, `copy_file`, `update_file`, `update_doc`,
   `update_values`, `update_formulas`, `insert_dimension`, `update_spreadsheet` and `update_presentation`;
   `LocalConnectorService.approvalRequiredTools`) use Yardlet's text and have no "Always allow" (`GmailToolApproval`,
-  `GoogleToolApproval`): mail shows the recipients, cc, bcc, subject and the first 1,200 characters of the body; labels
+  `GoogleToolApproval`): mail shows the recipients, cc, bcc, subject, attachments (the total, then each file's name
+  and size, up to 20, or "not found" when it is not on disk) and the first 1,200 characters of the body; a card that
+  sends or deletes a draft first reads the draft from Gmail (`GmailDraftReader`, up to 5 seconds, while that session's
+  next frames wait) and shows its recipients, subject, last saved time, attachments and body instead of an ID, or the
+  ID and "could not read" when Gmail did not answer; labels
   show the thread, what is added and removed, and archive, read or unread; events show the title, date and time,
   invitees, Meet, and whether Google sends mail; Drive shows the title, type, folder and the first 600 characters of the
   content. Docs, Sheets and Slides show "Allow Claude to change a document (a spreadsheet, a presentation) in

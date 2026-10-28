@@ -2374,6 +2374,13 @@
 "Allow Claude to send an email from %@?" = "Claude가 %@에서 메일을 보내도록 허용할까요?";
 "Allow Claude to send a draft from %@?" = "Claude가 %@에서 임시보관 메일을 보내도록 허용할까요?";
 "Draft %@" = "임시보관 메일 %@";
+"Allow Claude to delete a draft from %@?" = "Claude가 %@에서 임시보관 메일을 지우도록 허용할까요?";
+"Yardlet could not read this draft from Gmail." = "Yardlet이 Gmail에서 이 임시보관 메일을 읽지 못했습니다.";
+"(no subject)" = "(제목 없음)";
+"Saved: %@" = "마지막 저장: %@";
+"Attachments: %@" = "첨부 파일: %@";
+"%@ (not found)" = "%@ (찾을 수 없음)";
+"…and %lld more" = "… 외 %lld개";
 "Thread %@" = "스레드 %@";
 "Message %@" = "메일 %@";
 "Adds: %@" = "추가: %@";

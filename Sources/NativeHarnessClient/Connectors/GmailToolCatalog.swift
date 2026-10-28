@@ -4,13 +4,14 @@ import YardletAgentTools
 /// Yardlet's own Gmail server: the tools it offers each signed-in Gmail account, named as the
 /// claude.ai Gmail connector names them where they do the same thing (`search_threads`,
 /// `get_thread`, `get_message`, `list_labels`, `create_draft`, `send_message`, `send_draft`), with
-/// one `modify_labels` for the label changes it spreads over several tools. Each reaches a harness
-/// under the account's slug (`gmail_search_threads`).
+/// one `modify_labels` for the label changes it spreads over several tools, and `delete_draft`.
+/// Each reaches a harness under the account's slug (`gmail_search_threads`).
 ///
-/// Every tool works with `gmail.modify` alone: Google lists it for reading, drafting, sending, and
-/// changing labels, without the permanent deletion of `https://mail.google.com/`
-/// (developers.google.com/workspace/gmail/api/auth/scopes). Sending and changing labels ask the
-/// person before every call through the harness's own approval (`approvalRequired`).
+/// Every tool works with `gmail.modify` alone: Google lists it for reading, drafting, deleting a
+/// draft, sending, and changing labels, without the permanent deletion of messages that
+/// `https://mail.google.com/` allows (developers.google.com/workspace/gmail/api/auth/scopes).
+/// Sending, deleting a draft, and changing labels ask the person before every call through the
+/// harness's own approval (`approvalRequired`).
 enum GmailToolCatalog {
     static let searchThreads = "search_threads"
     static let getThread = "get_thread"
@@ -20,13 +21,15 @@ enum GmailToolCatalog {
     static let sendDraft = "send_draft"
     static let sendMessage = "send_message"
     static let modifyLabels = "modify_labels"
+    static let deleteDraft = "delete_draft"
 
     /// The one scope Yardlet asks Google for.
     static let scope = "https://www.googleapis.com/auth/gmail.modify"
 
     /// Asked about before every call, as the Claude app asks before its Gmail connector sends or
-    /// labels: Claude Code's request card without "always allow", Codex `approval_mode = "prompt"`.
-    static let approvalRequired: Set<String> = [sendDraft, sendMessage, modifyLabels]
+    /// labels: Claude Code's request card without "always allow". Codex asks as the task's approval
+    /// setting and the tools' annotations say.
+    static let approvalRequired: Set<String> = [sendDraft, sendMessage, modifyLabels, deleteDraft]
 
     enum Format: String, CaseIterable {
         case minimal = "MINIMAL"
@@ -83,6 +86,13 @@ enum GmailToolCatalog {
                 "messageId": string("The one message to change. Give this or threadId."),
                 "addLabelIds": stringArray("Label IDs to add, from list_labels (STARRED, UNREAD, IMPORTANT, or a user label's ID)."),
                 "removeLabelIds": stringArray("Label IDs to remove (INBOX, UNREAD, or a user label's ID).")
+             ], readOnly: false, destructive: true),
+        tool(deleteDraft, "Delete draft",
+             "Deletes a draft for good, by its ID or by its message's ID (get_thread shows a draft's message with the "
+                + "DRAFT label).",
+             properties: [
+                "draftId": string("The draft's ID, as create_draft returned it. Give this or messageId."),
+                "messageId": string("The ID of the draft's message, labelled DRAFT. Give this or draftId.")
              ], readOnly: false, destructive: true)
     ]
 
@@ -110,7 +120,9 @@ enum GmailToolCatalog {
             "subject": string("The subject line."),
             "body": string("The plain-text body, without Markdown."),
             "htmlBody": string("An HTML body, sent beside the plain-text one."),
-            "replyToMessageId": string("The message this replies to.")
+            "replyToMessageId": string("The message this replies to."),
+            "attachments": stringArray("Local files to attach, as absolute paths (~/ for the home folder): from the "
+                + "task's folders, the temporary folder, Desktop, Documents, or Downloads, not hidden ones. 25 MB in all.")
         ]
     }
 

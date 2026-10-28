@@ -2,6 +2,7 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import UniformTypeIdentifiers
 import YardletAgentTools
 
 /// The Gmail REST API (developers.google.com/workspace/gmail/api/reference/rest) for one account,
@@ -40,6 +41,35 @@ struct GmailAPI: Sendable {
         try await send(method: "POST", path: path, query: [], body: body)
     }
 
+    func delete(_ path: String) async throws {
+        _ = try await send(method: "DELETE", path: path, query: [], body: nil)
+    }
+
+    /// A message through the upload endpoint (`…/upload/gmail/v1/`, up to 35 MB), as a message
+    /// with attachments goes: the metadata as JSON, then the message as `message/rfc822`
+    /// (developers.google.com/workspace/gmail/api/guides/uploads).
+    func upload(_ path: String, metadata: ToolJSON, message: Data) async throws -> ToolJSON {
+        let boundary = "yardlet-\(UUID().uuidString)"
+        var body = Data()
+        func line(_ text: String) { body.append(Data((text + "\r\n").utf8)) }
+        line("--\(boundary)")
+        line("Content-Type: application/json; charset=UTF-8")
+        line("")
+        body.append(try JSONEncoder().encode(metadata))
+        line("")
+        line("--\(boundary)")
+        line("Content-Type: message/rfc822")
+        line("")
+        body.append(message)
+        line("")
+        line("--\(boundary)--")
+        var components = URLComponents(url: base.appending(path: path), resolvingAgainstBaseURL: false)!
+        components.path = "/upload" + components.path
+        components.queryItems = [URLQueryItem(name: "uploadType", value: "multipart")]
+        return try await send(method: "POST", url: components.url!, payload: body,
+                              contentType: "multipart/related; boundary=\(boundary)", timeout: 120)
+    }
+
     /// A Gmail ID as a path segment: message, thread, draft, and label IDs are letters, digits,
     /// `_`, `-`, `:`, and `.`.
     static func segment(_ id: String) throws -> String {
@@ -57,14 +87,18 @@ struct GmailAPI: Sendable {
             // `+` is a space to Google's query parser; Gmail's `+word` operator needs it kept.
             components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         }
-        let url = components.url!
         let payload = try body.map { try JSONEncoder().encode($0) }
+        return try await send(method: method, url: components.url!, payload: payload, contentType: "application/json")
+    }
+
+    private func send(method: String, url: URL, payload: Data?, contentType: String,
+                      timeout: TimeInterval = 30) async throws -> ToolJSON {
         let (data, response) = try await session.send {
-            var request = URLRequest(url: url, timeoutInterval: 30)
+            var request = URLRequest(url: url, timeoutInterval: timeout)
             request.httpMethod = method
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             if let payload {
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue(contentType, forHTTPHeaderField: "Content-Type")
                 request.httpBody = payload
             }
             return request
@@ -98,19 +132,24 @@ struct GmailMessage {
         }?["value"]?.stringValue
     }
 
-    /// `internalDate` (milliseconds since 1970) as local ISO 8601.
-    var date: String? {
+    /// `internalDate`, milliseconds since 1970.
+    var internalDate: Date? {
         let raw: Double? = switch json["internalDate"] {
         case .string(let text)?: Double(text)
         case .integer(let value)?: Double(value)
         case .number(let value)?: value
         default: nil
         }
-        guard let raw else { return header("Date") }
+        return raw.map { Date(timeIntervalSince1970: $0 / 1000) }
+    }
+
+    /// `internalDate` as local ISO 8601.
+    var date: String? {
+        guard let internalDate else { return header("Date") }
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = .autoupdatingCurrent
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date(timeIntervalSince1970: raw / 1000))
+        return formatter.string(from: internalDate)
     }
 
     /// The fields one format returns.
@@ -243,8 +282,9 @@ enum GmailText {
 }
 
 /// An RFC 5322 message for a draft or a send, as `raw` (base64url): UTF-8 bodies in base64, a
-/// non-ASCII subject or display name as RFC 2047 encoded words, and a reply's `In-Reply-To` and
-/// `References`. Gmail fills `From` with the signed-in account.
+/// non-ASCII subject, display name, or file name as RFC 2047 encoded words, a reply's
+/// `In-Reply-To` and `References`, and attachments in `multipart/mixed` after the body. Gmail
+/// fills `From` with the signed-in account.
 struct GmailOutgoingMessage: Equatable {
     var to: [String] = []
     var cc: [String] = []
@@ -254,16 +294,30 @@ struct GmailOutgoingMessage: Equatable {
     var htmlBody: String?
     var inReplyTo: String?
     var references: String?
+    var attachments: [Attachment] = []
     var boundary = "yardlet-" + UUID().uuidString.lowercased()
+
+    /// A local file attached under its own name (`GmailAttachmentFiles`).
+    struct Attachment: Equatable {
+        var filename: String
+        var mimeType: String
+        var data: Data
+    }
 
     enum Problem: Error, Equatable, LocalizedError {
         case invalidAddress(String)
         case noRecipients
+        case unattachable(path: String, reason: String)
+        case attachmentsTooLarge(bytes: Int)
 
         var errorDescription: String? {
             switch self {
             case .invalidAddress(let address): "Not an email address: \(address)"
             case .noRecipients: "Give at least one recipient in to, cc, or bcc."
+            case .unattachable(let path, let reason): "Cannot attach \(path): \(reason)"
+            case .attachmentsTooLarge(let bytes):
+                "The attachments come to \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)), "
+                    + "over Gmail's 25 MB. Share large files as a Drive link instead."
             }
         }
     }
@@ -291,15 +345,14 @@ struct GmailOutgoingMessage: Equatable {
         if let inReplyTo { lines.append("In-Reply-To: " + Self.oneLine(inReplyTo)) }
         if let references { lines.append("References: " + Self.oneLine(references)) }
         lines.append("MIME-Version: 1.0")
-        let plain = body ?? htmlBody.map(GmailText.plainText(fromHTML:)) ?? ""
-        if let htmlBody {
-            lines.append("Content-Type: multipart/alternative; boundary=\"\(boundary)\"")
-            lines.append("")
-            lines += ["--\(boundary)"] + Self.part("text/plain", plain)
-            lines += ["--\(boundary)"] + Self.part("text/html", htmlBody)
-            lines.append("--\(boundary)--")
+        if attachments.isEmpty {
+            lines += bodyEntity(boundary: boundary)
         } else {
-            lines += Self.part("text/plain", plain)
+            lines.append("Content-Type: multipart/mixed; boundary=\"\(boundary)\"")
+            lines.append("")
+            lines += ["--\(boundary)"] + bodyEntity(boundary: boundary + "-alt")
+            for attachment in attachments { lines += ["--\(boundary)"] + Self.part(attachment) }
+            lines.append("--\(boundary)--")
         }
         return lines.joined(separator: "\r\n")
     }
@@ -307,11 +360,35 @@ struct GmailOutgoingMessage: Equatable {
     /// The message as Gmail's `raw` field takes it.
     var raw: String { ConnectorOAuth.base64URL(Data(mime.utf8)) }
 
+    /// The text, or the text and HTML side by side under `boundary`.
+    private func bodyEntity(boundary: String) -> [String] {
+        let plain = body ?? htmlBody.map(GmailText.plainText(fromHTML:)) ?? ""
+        guard let htmlBody else { return Self.part("text/plain", plain) }
+        return ["Content-Type: multipart/alternative; boundary=\"\(boundary)\"", ""]
+            + ["--\(boundary)"] + Self.part("text/plain", plain)
+            + ["--\(boundary)"] + Self.part("text/html", htmlBody)
+            + ["--\(boundary)--", ""]
+    }
+
     private static func part(_ type: String, _ text: String) -> [String] {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "\r\n")
         return ["Content-Type: \(type); charset=\"UTF-8\"", "Content-Transfer-Encoding: base64", "",
-                Data(normalized.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn,
-                                                                     .endLineWithLineFeed]), ""]
+                base64Lines(Data(normalized.utf8)), ""]
+    }
+
+    /// An attachment named as Gmail names one: the name quoted, as encoded words when it is not ASCII.
+    private static func part(_ attachment: Attachment) -> [String] {
+        let name = attachment.filename
+        let quoted = name.unicodeScalars.allSatisfy(\.isASCII)
+            ? name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            : encodedWords(name)
+        return ["Content-Type: \(attachment.mimeType); name=\"\(quoted)\"",
+                "Content-Disposition: attachment; filename=\"\(quoted)\"",
+                "Content-Transfer-Encoding: base64", "", base64Lines(attachment.data), ""]
+    }
+
+    private static func base64Lines(_ data: Data) -> String {
+        data.base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed])
     }
 
     private static func oneLine(_ text: String) -> String {
@@ -341,5 +418,102 @@ struct GmailOutgoingMessage: Equatable {
         }
         if !chunk.isEmpty { words.append(chunk) }
         return words.map { "=?UTF-8?B?\(Data($0.utf8).base64EncodedString())?=" }.joined(separator: "\r\n ")
+    }
+}
+
+/// Local files a draft or a send attaches, by absolute path (`~/` for the home folder). A file
+/// comes only from the task's folders, the temporary folders where agents keep what they make, or
+/// the person's Desktop, Documents, and Downloads; never from a hidden file or folder below one of
+/// them (`.env`, `.ssh`), and only after `..` and symbolic links are resolved. Together they stay
+/// within Gmail's 25 MB for attachments.
+enum GmailAttachmentFiles {
+    static let limit = 25 * 1024 * 1024
+
+    /// What a request card shows of one: its name and size, nil when it is not there to read.
+    struct File: Equatable, Sendable {
+        var name: String
+        var size: Int?
+    }
+
+    static func roots(taskFolders: [URL], home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                      temporary: URL = FileManager.default.temporaryDirectory) -> [URL] {
+        taskFolders + [URL(filePath: "/tmp"), temporary] + ["Desktop", "Documents", "Downloads"].map { home.appending(path: $0) }
+    }
+
+    static func load(_ paths: [String], roots: [URL]) throws -> [GmailOutgoingMessage.Attachment] {
+        var files: [(path: String, url: URL)] = []
+        var total = 0
+        for path in paths {
+            let url = try resolve(path, roots: roots)
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true, let size = values?.fileSize else {
+                throw GmailOutgoingMessage.Problem.unattachable(path: path, reason: "it is not a file.")
+            }
+            total += size
+            files.append((path, url))
+        }
+        guard total <= limit else { throw GmailOutgoingMessage.Problem.attachmentsTooLarge(bytes: total) }
+        return try files.map { file in
+            guard let data = try? Data(contentsOf: file.url) else {
+                throw GmailOutgoingMessage.Problem.unattachable(path: file.path, reason: "it could not be read.")
+            }
+            let name = displayName(file.path)
+            var type = UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            if type.hasPrefix("text/"), String(data: data, encoding: .utf8) != nil { type += "; charset=\"UTF-8\"" }
+            return GmailOutgoingMessage.Attachment(filename: name, mimeType: type, data: data)
+        }
+    }
+
+    /// The file a path names, inside one of the roots and under no hidden name there.
+    static func resolve(_ path: String, roots: [URL]) throws -> URL {
+        let expanded = expandingHome(path)
+        guard expanded.hasPrefix("/") else {
+            throw GmailOutgoingMessage.Problem.unattachable(path: path, reason: "give an absolute path.")
+        }
+        guard let url = canonical(expanded) else {
+            throw GmailOutgoingMessage.Problem.unattachable(path: path, reason: "there is no such file.")
+        }
+        let holding = roots.compactMap { canonical($0.path(percentEncoded: false)) }
+            .filter { BrowserAgentWorkspaceFile.contains($0, url) }
+        guard !holding.isEmpty else {
+            throw GmailOutgoingMessage.Problem.unattachable(path: path, reason: "files come from the task's folders, "
+                + "the temporary folder, Desktop, Documents, or Downloads.")
+        }
+        guard holding.contains(where: { root in
+            !url.pathComponents.dropFirst(root.pathComponents.count).contains { $0.hasPrefix(".") }
+        }) else {
+            throw GmailOutgoingMessage.Problem.unattachable(path: path, reason: "it is hidden or in a hidden folder.")
+        }
+        return url
+    }
+
+    /// The names and sizes a request card lists, read from the disk as they are now.
+    static func describe(_ paths: [String]) -> [File] {
+        paths.map { path in
+            let size = canonical(expandingHome(path)).flatMap {
+                try? $0.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            }.flatMap { $0.isRegularFile == true ? $0.fileSize : nil }
+            return File(name: displayName(path), size: size)
+        }
+    }
+
+    /// The name the recipient sees: the path's last part in composed form (macOS keeps Korean
+    /// names decomposed, which other systems show as separate letters), without control characters.
+    static func displayName(_ path: String) -> String {
+        let name = (expandingHome(path) as NSString).lastPathComponent.precomposedStringWithCanonicalMapping
+        return String(String.UnicodeScalarView(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+    }
+
+    private static func expandingHome(_ path: String) -> String {
+        (path.trimmingCharacters(in: .whitespaces) as NSString).expandingTildeInPath
+    }
+
+    /// The path with `..` and every symbolic link resolved, as `realpath(3)` gives it (`/tmp` is
+    /// `/private/tmp`); nil when nothing is there.
+    private static func canonical(_ path: String) -> URL? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return URL(filePath: String(cString: resolved))
     }
 }

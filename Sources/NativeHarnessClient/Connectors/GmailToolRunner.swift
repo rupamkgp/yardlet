@@ -10,6 +10,9 @@ struct GmailToolRunner {
     var searchConcurrency = 5
     /// The most messages a search shows per thread, the latest ones.
     var messagesPerThread = 10
+    /// The calling task's folders, where attachments may come from besides the person's own
+    /// (`GmailAttachmentFiles`).
+    var taskFolders: [URL] = []
 
     enum ArgumentError: Error, Equatable, LocalizedError {
         case missing(String)
@@ -36,6 +39,7 @@ struct GmailToolRunner {
             case GmailToolCatalog.sendDraft: result = try await sendDraft(arguments)
             case GmailToolCatalog.sendMessage: result = try await sendMessage(arguments)
             case GmailToolCatalog.modifyLabels: result = try await modifyLabels(arguments)
+            case GmailToolCatalog.deleteDraft: result = try await deleteDraft(arguments)
             default: return .error("Unknown tool: \(name)")
             }
             return .text(Self.text(result))
@@ -164,6 +168,8 @@ struct GmailToolRunner {
         message.subject = arguments["subject"]?.stringValue ?? ""
         message.body = arguments["body"]?.stringValue
         message.htmlBody = arguments["htmlBody"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        message.attachments = try GmailAttachmentFiles.load(try Self.strings(arguments, "attachments"),
+                                                            roots: GmailAttachmentFiles.roots(taskFolders: taskFolders))
         var threadId: String?
         if let reply = arguments["replyToMessageId"]?.stringValue, !reply.isEmpty {
             let id = try GmailAPI.segment(reply)
@@ -188,14 +194,33 @@ struct GmailToolRunner {
 
     private func createDraft(_ arguments: [String: ToolJSON]) async throws -> ToolJSON {
         let (message, threadId) = try await outgoing(arguments)
-        var raw: [String: ToolJSON] = ["raw": .string(message.raw)]
-        if let threadId { raw["threadId"] = .string(threadId) }
-        let draft = try await api.post("users/me/drafts", .object(["message": .object(raw)]))
+        let draft = try await submit(message, threadId: threadId, to: "users/me/drafts") { .object(["message": $0]) }
         var result: [String: ToolJSON] = [:]
         if let id = draft["id"] { result["draftId"] = id }
         if let id = draft["message"]?["id"] { result["messageId"] = id }
         if let thread = draft["message"]?["threadId"] { result["threadId"] = thread }
+        if !message.attachments.isEmpty { result["attachments"] = Self.attached(message) }
         return .object(result)
+    }
+
+    /// Posts the message as JSON `raw`, or through the upload endpoint when it has attachments:
+    /// `wrap` puts the message's fields where the call takes them.
+    private func submit(_ message: GmailOutgoingMessage, threadId: String?, to path: String,
+                        wrap: (ToolJSON) -> ToolJSON = { $0 }) async throws -> ToolJSON {
+        var fields: [String: ToolJSON] = [:]
+        if let threadId { fields["threadId"] = .string(threadId) }
+        guard !message.attachments.isEmpty else {
+            fields["raw"] = .string(message.raw)
+            return try await api.post(path, wrap(.object(fields)))
+        }
+        return try await api.upload(path, metadata: wrap(.object(fields)), message: Data(message.mime.utf8))
+    }
+
+    private static func attached(_ message: GmailOutgoingMessage) -> ToolJSON {
+        .array(message.attachments.map {
+            .object(["filename": .string($0.filename), "mimeType": .string($0.mimeType),
+                     "size": .integer(Int64($0.data.count))])
+        })
     }
 
     private func sendDraft(_ arguments: [String: ToolJSON]) async throws -> ToolJSON {
@@ -206,9 +231,53 @@ struct GmailToolRunner {
     private func sendMessage(_ arguments: [String: ToolJSON]) async throws -> ToolJSON {
         let (message, threadId) = try await outgoing(arguments)
         guard message.hasRecipients else { throw GmailOutgoingMessage.Problem.noRecipients }
-        var body: [String: ToolJSON] = ["raw": .string(message.raw)]
-        if let threadId { body["threadId"] = .string(threadId) }
-        return Self.sent(try await api.post("users/me/messages/send", .object(body)))
+        let sent = Self.sent(try await submit(message, threadId: threadId, to: "users/me/messages/send"))
+        guard !message.attachments.isEmpty, var fields = sent.objectValue else { return sent }
+        fields["attachments"] = Self.attached(message)
+        return .object(fields)
+    }
+
+    /// Deletes the draft for good (`drafts.delete`), not to the trash.
+    private func deleteDraft(_ arguments: [String: ToolJSON]) async throws -> ToolJSON {
+        let id = try await draftID(arguments)
+        try await api.delete("users/me/drafts/\(id)")
+        return .object(["deleted": .bool(true), "draftId": .string(id)])
+    }
+
+    /// What a draft holds, for the request card before it is sent or deleted (`GmailToolApproval`).
+    func draftPreview(_ arguments: [String: ToolJSON]) async throws -> GmailDraftPreview {
+        let full = [URLQueryItem(name: "format", value: "full")]
+        if let draft = Self.text(arguments, "draftId") {
+            let id = try GmailAPI.segment(draft)
+            return GmailDraftPreview(GmailMessage(json: try await api.get("users/me/drafts/\(id)", full)["message"] ?? .null))
+        }
+        let id = try GmailAPI.segment(try Self.required(arguments, "messageId"))
+        return GmailDraftPreview(GmailMessage(json: try await api.get("users/me/messages/\(id)", full)))
+    }
+
+    /// The draft a call names: by its ID, or the draft whose message it gives, found in the
+    /// mailbox's drafts a page of 500 at a time.
+    private func draftID(_ arguments: [String: ToolJSON]) async throws -> String {
+        let draft = Self.text(arguments, "draftId")
+        let message = Self.text(arguments, "messageId")
+        guard (draft == nil) != (message == nil) else {
+            throw ArgumentError.invalid("Give either draftId or messageId, not both.")
+        }
+        if let draft { return try GmailAPI.segment(draft) }
+        let messageID = try GmailAPI.segment(message ?? "")
+        var pageToken: String?
+        for _ in 0..<20 {
+            var query = [URLQueryItem(name: "maxResults", value: "500")]
+            if let pageToken { query.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+            let page = try await api.get("users/me/drafts", query)
+            if let id = page["drafts"]?.arrayValue?.first(where: { $0["message"]?["id"]?.stringValue == messageID })?["id"]?
+                .stringValue {
+                return try GmailAPI.segment(id)
+            }
+            pageToken = page["nextPageToken"]?.stringValue
+            if pageToken == nil { break }
+        }
+        throw ArgumentError.invalid("No draft has the message \(messageID). A draft's message has the DRAFT label.")
     }
 
     private static func sent(_ message: ToolJSON) -> ToolJSON {
@@ -246,6 +315,10 @@ struct GmailToolRunner {
     }
 
     // MARK: Arguments
+
+    private static func text(_ arguments: [String: ToolJSON], _ name: String) -> String? {
+        arguments[name]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+    }
 
     private static func required(_ arguments: [String: ToolJSON], _ name: String) throws -> String {
         guard let value = arguments[name]?.stringValue?.trimmingCharacters(in: .whitespaces), !value.isEmpty else {

@@ -109,7 +109,7 @@ final class GoogleCalendarDriveConnectorTests: XCTestCase {
                         "drive_update_values", "drive_update_formulas", "drive_insert_dimension", "drive_update_spreadsheet",
                         "drive_read_presentation", "drive_read_slide_page", "drive_read_slide_page_thumbnail",
                         "drive_update_presentation"])
-        XCTAssertEqual(tools.count, 8 + 9 + 21)
+        XCTAssertEqual(tools.count, 9 + 9 + 21)
         let exposed = await center.connectorTools(for: ConnectorToolContext())
         XCTAssertEqual(exposed.first { $0["name"] == .string("calendar_list_events") }?["title"],
                        .string("Google Calendar · person@example.test: List events"))
