@@ -443,6 +443,8 @@ extension AppModel: SessionToolHandling {
         var id: String
         var kind: String
         var title: String?
+        /// A task's link for a reply (`SessionToolText.link`); a subagent has none.
+        var link: String?
         var state: String
         var ended: Bool
         var answer: String?
@@ -459,13 +461,15 @@ extension AppModel: SessionToolHandling {
             return SessionToolOutcome(id: id.uuidString, kind: "task", state: "gone", ended: true)
         }
         if sessionTools.isQueued(id) {
-            return SessionToolOutcome(id: id.uuidString, kind: "task", title: session.title, state: "queued", ended: false)
+            return SessionToolOutcome(id: id.uuidString, kind: "task", title: session.title,
+                                      link: SessionToolText.link(title: session.title, taskID: id), state: "queued", ended: false)
         }
         let state = TaskAttentionProjection.state(of: session, detail: taskAttentionDetails[id],
                                                   isShellBusy: shellBusySessionIDs.contains(id))
         let presentation = sessionToolPresentation(of: session)
         return SessionToolOutcome(
-            id: id.uuidString, kind: "task", title: session.title, state: SessionToolText.stateWord(state),
+            id: id.uuidString, kind: "task", title: session.title,
+            link: SessionToolText.link(title: session.title, taskID: id), state: SessionToolText.stateWord(state),
             ended: !Self.isWorking(session), answer: Self.latestAnswer(in: presentation).map(Self.answerExcerpt))
     }
 
@@ -608,7 +612,7 @@ extension AppModel: SessionToolHandling {
             })
             if notifies { watchForNotification(child.id, caller: caller) }
             let queued = "Queued task \(child.id.uuidString) (\(child.title)), \(createdTaskPlacement(parentTaskID, caller: caller)); it starts when "
-                + "there is room. wait_tasks with this id waits for it.\n" + account.assignment.toolLine
+                + "there is room. wait_tasks with this id waits for it.\n" + Self.createdTaskLinkLine(child) + account.assignment.toolLine
             guard wait else { return .text(queued) }
             let ended = await waitForAny([child.id], timeout: caller.remaining)
             return createdChildResult(child.id, ended: ended)
@@ -622,7 +626,8 @@ extension AppModel: SessionToolHandling {
         if notifies { watchForNotification(child.id, caller: caller) }
         guard wait else {
             return .text("Created task \(child.id.uuidString) (\(child.title)), \(createdTaskPlacement(parentTaskID, caller: caller)); its first "
-                + "turn is running. wait_tasks or read_task show its answer.\n" + account.assignment.toolLine)
+                + "turn is running. wait_tasks or read_task show its answer.\n" + Self.createdTaskLinkLine(child)
+                + account.assignment.toolLine)
         }
         let ended = await waitForAny([child.id], timeout: caller.remaining)
         return createdChildResult(child.id, ended: ended)
@@ -649,6 +654,11 @@ extension AppModel: SessionToolHandling {
     private func createdTaskPlacement(_ parentTaskID: UUID?, caller: SessionToolCaller) -> String {
         guard let parentTaskID else { return "as a top-level task" }
         return parentTaskID == caller.hostTaskID ? "nested under this task" : "nested under task \(parentTaskID.uuidString)"
+    }
+
+    /// The new task's link, on a line of its own, in what `create_task` answers without `wait`.
+    private static func createdTaskLinkLine(_ task: SessionRecord) -> String {
+        "Link: " + SessionToolText.link(title: task.title, taskID: task.id) + "\n"
     }
 
     /// What `create_task` with `wait` answers: the child's state and latest answer, and that it goes

@@ -370,12 +370,13 @@ extension AppModel: ScheduleToolHandling {
         let limit = Self.integer(arguments[ScheduleToolCatalog.Key.limit])
             .map { min(max($0, 1), ScheduleToolCatalog.maximumRunLimit) } ?? ScheduleToolCatalog.defaultRunLimit
         let runs = schedule.state.runs.prefix(limit).map { run in
-            ScheduleToolRun(
+            let task = run.taskID.flatMap { id in store.sessions.first { $0.id == id } }
+            return ScheduleToolRun(
                 at: scheduleToolISO(run.at), scheduledFor: run.slot.map(scheduleToolISO),
                 trigger: run.trigger.rawValue, outcome: run.outcome.rawValue,
                 skipReason: run.skipReason.map(Self.skipWords), failure: run.failure,
-                taskId: run.taskID?.uuidString,
-                taskTitle: run.taskID.flatMap { id in store.sessions.first { $0.id == id }?.title })
+                taskId: run.taskID?.uuidString, taskTitle: task?.title,
+                taskLink: task.map { SessionToolText.link(title: $0.title, taskID: $0.id) })
         }
         return .text(SessionToolText.json(ScheduleToolRuns(
             scheduleId: schedule.id.uuidString, totalRuns: schedule.state.runs.count, runs: Array(runs))))
@@ -416,6 +417,7 @@ extension AppModel: ScheduleToolHandling {
         var failure: String?
         var taskId: String?
         var taskTitle: String?
+        var taskLink: String?
     }
 
     struct ScheduleToolRuns: Encodable, Equatable {

@@ -4,15 +4,17 @@ import XCTest
 @testable import NativeHarnessClient
 
 /// Links to other tasks in a conversation (`TaskLink`), in the forms agents write them: a Yardlet task
-/// ID as an anchor, the Claude app's `#local_…` session anchor, and the Codex app's
-/// `codex://threads/<id>`. Each names a task Yardlet opens; the prose text shows the pointing hand over
-/// it and hands the click to the window as written. No harness runs; the Claude app's folder is a
-/// temporary copy of its layout.
+/// ID as an anchor, as the session tools give it (`SessionToolText.link`), the Claude app's `#local_…`
+/// session anchor, and the Codex app's `codex://threads/<id>`. Each names a task Yardlet opens; the
+/// prose text of a Claude Code or Codex reply shows the pointing hand over it and hands the click to the
+/// window as written. No harness runs; the Claude app's folder is a temporary copy of its layout.
 @MainActor
 final class TaskLinkTests: XCTestCase {
     private static let taskID = UUID(uuidString: "13242C33-725C-4AC5-A49B-BA5FA470EE9E")!
     private static let desktopID = "local_0ec681f3-5b06-444b-a704-cb7d1556b843"
-    private static let message = "Started [the release task](#13242C33-725C-4AC5-A49B-BA5FA470EE9E), and see "
+    /// A title with the characters that would end a link, format its text or split a table cell.
+    private static let title = "Release [v2] *notes* `cut` a|b_c\\d (draft)"
+    private static let message = "Started \(SessionToolText.link(title: title, taskID: taskID)), and see "
         + "[PRO-972 session](#local_0ec681f3-5b06-444b-a704-cb7d1556b843) and [the parser](Sources/Parser.swift)."
 
     func testTheLinkFormsAgentsWrite() throws {
@@ -36,6 +38,22 @@ final class TaskLinkTests: XCTestCase {
         XCTAssertEqual(links.map(\.absoluteString), [
             "#13242C33-725C-4AC5-A49B-BA5FA470EE9E", "#" + Self.desktopID, "file:///work/uploader/Sources/Parser.swift"
         ])
+
+        // A session tool's link reads as its title alone, in a sentence or a table cell, in either harness's reply.
+        let link = SessionToolText.link(title: Self.title, taskID: Self.taskID)
+        for dialect in [TranscriptMarkdownDialect.standard, .codex] {
+            let blocks = TranscriptMarkdownDocument("| Task | State |\n|---|---|\n| \(link) | idle |\n\nSee \(link).",
+                                                    dialect: dialect).blocks
+            guard case let .table(_, rows, _)? = blocks.first, case let .paragraph(sentence)? = blocks.last else {
+                return XCTFail("\(dialect): \(blocks)")
+            }
+            XCTAssertEqual(rows.map(\.count), [2], "\(dialect): the title's | stays in its cell")
+            for content in [rows[0][0], sentence] {
+                let run = try XCTUnwrap(content.attributed.runs.first { $0.link != nil }, "\(dialect)")
+                XCTAssertEqual(String(content.attributed[run.range].characters), Self.title, "\(dialect)")
+                XCTAssertEqual(run.link.flatMap(TaskLink.init), .task(Self.taskID), "\(dialect)")
+            }
+        }
     }
 
     func testEachLinkFindsItsTask() async throws {
@@ -72,11 +90,17 @@ final class TaskLinkTests: XCTestCase {
         await model.shutdown()
     }
 
-    /// The prose text shows the pointing hand over each link and hands the window the link as the
-    /// agent wrote it, not a file in the task's folder.
+    /// The prose text of a Claude Code or a Codex reply shows the pointing hand over each link and
+    /// hands the window the link as the agent wrote it, not a file in the task's folder.
     func testTheProseShowsTheHandAndHandsTheWindowTheTaskLink() throws {
+        for harness in [HarnessKind.claudeCode, .codex] {
+            try assertTheProseHandsTheWindowTheTaskLink(harness: harness)
+        }
+    }
+
+    private func assertTheProseHandsTheWindowTheTaskLink(harness: HarnessKind) throws {
         var opened: [URL] = []
-        let view = ConversationAgentMessage(itemID: "answer", harness: .claudeCode, text: Self.message,
+        let view = ConversationAgentMessage(itemID: "answer", harness: harness, text: Self.message,
                                             isCommentary: false, isStreaming: false)
             .environment(\.transcriptWorkspaceURL, URL(filePath: "/tmp/yardlet-prose"))
             .environment(\.openURL, OpenURLAction { url in
@@ -88,17 +112,19 @@ final class TaskLinkTests: XCTestCase {
         let host = WindowlessRender.Host(view, size: NSSize(width: 720, height: 300), appearance: .light)
         defer { host.close() }
         host.settle()
-        let text = try XCTUnwrap(TranscriptProseRenderingTests.proseTextViews(in: host.hosting).first)
+        let text = try XCTUnwrap(TranscriptProseRenderingTests.proseTextViews(in: host.hosting).first, "\(harness)")
         let string = text.string as NSString
-        for words in ["the release task", "PRO-972 session"] {
+        for words in [Self.title, "PRO-972 session"] {
             let index = string.range(of: words).location
+            XCTAssertNotEqual(index, NSNotFound, "\(harness) shows \(words) as written: \(string)")
             text.clicked(onLink: try XCTUnwrap(text.textStorage?.attribute(.link, at: index, effectiveRange: nil)), at: index)
         }
-        XCTAssertEqual(opened.compactMap(TaskLink.init), [.task(Self.taskID), .claudeDesktopSession(Self.desktopID)])
+        XCTAssertEqual(opened.compactMap(TaskLink.init), [.task(Self.taskID), .claudeDesktopSession(Self.desktopID)],
+                       "\(harness)")
 
         let rects = text.linkRects()
-        XCTAssertEqual(rects.count, 3, "A rect for each link on its line: \(rects)")
-        for rect in rects { XCTAssertTrue(text.bounds.contains(rect), "\(rect) in \(text.bounds)") }
+        XCTAssertEqual(rects.count, 3, "\(harness): a rect for each link on its line: \(rects)")
+        for rect in rects { XCTAssertTrue(text.bounds.contains(rect), "\(harness): \(rect) in \(text.bounds)") }
         NSCursor.arrow.set()
         let point = text.convert(CGPoint(x: rects[0].midX, y: rects[0].midY), to: nil)
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,

@@ -257,6 +257,7 @@ final class ScheduleToolTests: XCTestCase {
         XCTAssertEqual(history.runs.first?.trigger, "manual")
         XCTAssertEqual(history.runs.first?.outcome, "started")
         XCTAssertEqual(history.runs.first?.taskId, task.id.uuidString)
+        XCTAssertEqual(history.runs.first?.taskLink, SessionToolText.link(title: task.title, taskID: task.id))
 
         // A second run while the first one's task still works is skipped and says why.
         try await model.store.updateSession(id: task.id, status: .running)
@@ -713,6 +714,7 @@ final class ScheduleToolTests: XCTestCase {
             var trigger: String
             var outcome: String
             var taskId: String?
+            var taskLink: String?
         }
         var totalRuns: Int
         var runs: [Run]

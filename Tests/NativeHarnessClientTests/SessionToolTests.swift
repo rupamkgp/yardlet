@@ -138,6 +138,8 @@ final class SessionToolTests: XCTestCase {
                        [fixture.caller, fixture.neighbor, fixture.busy, fixture.sibling, fixture.codex].map(\.id.uuidString),
                        "The caller, then its split neighbour, then the project newest first")
         XCTAssertEqual(project.tasks[0].isSelf, true)
+        XCTAssertEqual(project.tasks[0].link, "[Caller](#\(fixture.caller.id.uuidString))",
+                       "A link an agent writes as is opens the task (TaskLinkTests)")
         XCTAssertNil(project.tasks[0].inSameSplit)
         XCTAssertEqual(project.tasks[1].inSameSplit, true, "The neighbour is listed though it is another project's")
         XCTAssertEqual(project.tasks[1].project, "site")
@@ -218,8 +220,9 @@ final class SessionToolTests: XCTestCase {
         // A cursor names a place in the order, so the task it was read after may leave the list.
         let first = pages[0]
         let entries = whole.tasks.dropFirst(2).map {
-            SessionToolText.TaskEntry(taskId: $0.taskId, title: $0.title, harness: $0.harness, project: $0.project,
-                                      state: $0.state, isRunning: $0.isRunning, lastActivityAt: $0.lastActivityAt)
+            SessionToolText.TaskEntry(taskId: $0.taskId, title: $0.title, link: $0.link, harness: $0.harness,
+                                      project: $0.project, state: $0.state, isRunning: $0.isRunning,
+                                      lastActivityAt: $0.lastActivityAt)
         }
         let afterRemoval = try XCTUnwrap(SessionToolText.page(entries, limit: 2, cursor: first.nextCursor))
         XCTAssertEqual(afterRemoval.tasks.map(\.taskId), pages[1].tasks.map(\.taskId))
@@ -774,6 +777,7 @@ final class SessionToolTests: XCTestCase {
         let states = try decode([Outcome].self, now.text)
         XCTAssertEqual(states.first?.ended, false)
         XCTAssertEqual(states.first?.kind, "task")
+        XCTAssertEqual(states.first?.link, "[Busy](#\(fixture.busy.id.uuidString))")
 
         let clock = ContinuousClock()
         let started = clock.now
@@ -807,6 +811,8 @@ final class SessionToolTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
         let child = try XCTUnwrap(model.store.sessions.first { $0.parentTaskID == fixture.caller.id && $0.id != fixture.sibling.id })
         XCTAssertTrue(result.text.contains(child.id.uuidString), result.text)
+        XCTAssertTrue(result.text.contains("\nLink: " + SessionToolText.link(title: child.title, taskID: child.id) + "\n"),
+                      result.text)
         XCTAssertEqual(child.harness, .claudeCode)
         XCTAssertEqual(child.workspaceURL, fixture.caller.workspaceURL)
         XCTAssertEqual(child.projectID, fixture.app.id)
@@ -1865,6 +1871,7 @@ final class SessionToolTests: XCTestCase {
     private struct Entry: Decodable {
         var taskId: String
         var title: String
+        var link: String
         var harness: String
         var project: String?
         var state: String
@@ -1886,6 +1893,7 @@ final class SessionToolTests: XCTestCase {
     private struct Outcome: Decodable {
         var id: String
         var kind: String
+        var link: String?
         var state: String
         var ended: Bool
         var answer: String?

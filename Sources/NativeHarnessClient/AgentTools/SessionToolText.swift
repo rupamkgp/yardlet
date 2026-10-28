@@ -11,6 +11,8 @@ enum SessionToolText {
     struct TaskEntry: Encodable, Equatable {
         var taskId: String
         var title: String
+        /// The task as a link for a reply (`link(title:taskID:)`).
+        var link: String
         var harness: String
         var project: String?
         /// `waiting`, `unread`, `active` or `idle` (`TaskAttentionProjection`).
@@ -55,6 +57,7 @@ enum SessionToolText {
         return TaskEntry(
             taskId: session.id.uuidString,
             title: session.title,
+            link: link(title: session.title, taskID: session.id),
             harness: session.harness.rawValue,
             project: projectName,
             state: stateWord(state),
@@ -122,6 +125,23 @@ enum SessionToolText {
               (try? Date(String(parts[1]), strategy: .iso8601)) != nil, UUID(uuidString: String(parts[2])) != nil
         else { return nil }
         return (group, String(parts[1]), String(parts[2]))
+    }
+
+    /// The Markdown link that opens a task when an agent writes it in a reply, as the conversation
+    /// opens `[title](#<task id>)` (`TaskLink`). The title is the link's text on one line, with the
+    /// characters that would end the link, format its text or split a table cell escaped as CommonMark
+    /// escapes them, so the value works copied as is.
+    static func link(title: String, taskID: UUID) -> String {
+        var text = ""
+        for character in title {
+            if character.isNewline {
+                text.append(" ")
+                continue
+            }
+            if "\\[]`*_~<|".contains(character) { text.append("\\") }
+            text.append(character)
+        }
+        return "[\(text)](#\(taskID.uuidString))"
     }
 
     static func stateWord(_ state: TaskAttentionState) -> String {
