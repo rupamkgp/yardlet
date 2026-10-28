@@ -262,7 +262,12 @@ enum RemoteConversationProjection {
         }
         item.title = RemoteText.short(request.title, RemoteText.titleLimit)
         item.detail = RemoteText.short(request.detail, RemoteText.requestDetailLimit)
-        item.command = RemoteText.short(request.command, RemoteText.commandLimit)
+        if let command = RemoteText.short(request.command, .max) {
+            // A phone must not take a cut command for the whole one (§6).
+            let capped = RemoteText.capped(command, RemoteText.commandLimit)
+            item.command = capped.text
+            if capped.truncated { item.truncated = true }
+        }
         switch request.form {
         case let .choices(questions):
             item.questions = questions.compactMap { RemoteText.short($0.question, RemoteText.questionLimit) }

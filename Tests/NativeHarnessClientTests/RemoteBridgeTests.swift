@@ -66,6 +66,16 @@ final class RemoteBridgeTests: XCTestCase {
         XCTAssertEqual(request.options, ["allowOnce", "deny"])
         XCTAssertEqual(request.moreOnMac, true, "Always allow stays on the Mac")
         XCTAssertNil(request.inWork)
+        XCTAssertNil(request.truncated)
+        // A command cut to its limit says so.
+        let long = PermissionRequest(id: "bash-2", title: "Bash", detail: nil,
+                                     command: String(repeating: "x", count: RemoteText.commandLimit + 10))
+        let waiting = TranscriptConversationProjection.presentation(
+            from: [TranscriptEntry(content: .user(text: "Go")), TranscriptEntry(content: .permission(long, state: .pending))],
+            harness: .claudeCode, status: .waitingForApproval, latestTurnIsComplete: false)
+        let cut = RemoteConversationProjection.request(try XCTUnwrap(waiting.turns.last?.requests.first), turnID: "t", inWork: false)
+        XCTAssertEqual(cut.command?.count, RemoteText.commandLimit)
+        XCTAssertEqual(cut.truncated, true)
 
         let json = RemoteJSON.string(RemoteEvent.items(turn.items))
         XCTAssertFalse(json.contains("SECRET FILE CONTENTS"))
