@@ -165,6 +165,11 @@ private extension VaultItem {
         case .newPassword: false
         }
     }
+
+    /// Whether two items are one account's: the same username apart from case. An item with none is no account.
+    func isSameAccount(as other: VaultItem) -> Bool {
+        !username.isEmpty && username.compare(other.username, options: .caseInsensitive) == .orderedSame
+    }
 }
 
 /// One fill an agent asks for: the page's origin comes from the browser, never from the model.
@@ -288,17 +293,27 @@ final class VaultCenter: ObservableObject {
                 return refuse(request, item: nil, "Several items for \(host) are named “\(name)”: "
                     + here.map(Self.label).joined(separator: ", ") + ". Name one by its username.", retry: .withChanges)
             }
-            guard let named = here.first ?? onSite.first(where: isNamed) ?? items.first(where: isNamed) else {
+            guard var named = here.first ?? onSite.first(where: isNamed) ?? items.first(where: isNamed) else {
                 return refuse(request, item: nil, "No saved item is named “\(name)”."
                     + (matching.isEmpty ? "" : " Items for \(host): " + matching.map(Self.label).joined(separator: ", ") + "."),
                     kind: .notFound, retry: matching.isEmpty ? .no : .withChanges)
             }
+            // The password and the code of one account are often two items, so an item here or with no site that
+            // lacks what is asked for gives way to the site's one item of the same username that has it.
+            if !named.has(request.kind), named.sites.isEmpty || onSite.contains(where: { $0.id == named.id }) {
+                let account = able.filter { $0.isSameAccount(as: named) }
+                if account.count == 1 { named = account[0] }
+            }
             guard onSite.contains(where: { $0.id == named.id }) else {
                 // An item with no site yet, such as a code from an authenticator app, is for no page until the
-                // person fills it on one; asking for it is no phishing sign.
+                // person links it to one; asking for it is no phishing sign.
                 if named.sites.isEmpty {
-                    return refuse(request, item: named, "“\(named.name)” has no site saved yet, so Yardlet does not fill "
-                        + "it for an agent. " + Self.personLinks(host))
+                    guard named.has(request.kind) else {
+                        return refuse(request, item: named, "“\(named.name)” has no site saved yet and holds nothing for a "
+                            + "\(request.kind.rawValue) fill.", retry: .withChanges)
+                    }
+                    return refuseUnlinked(request, item: named, "“\(named.name)” has no site saved yet, so Yardlet does not "
+                        + "fill it for an agent.", codes: [named])
                 }
                 // An item named for another site: a page asking for it is a phishing sign, so the person hears of it.
                 let title = describeTask(request.sessionID)?.title ?? L10n.string("A task")
@@ -311,7 +326,7 @@ final class VaultCenter: ObservableObject {
             item = named
         } else {
             guard let only = matching.first else {
-                return refuse(request, item: nil, "No item is saved for \(host)." + unlinkedCodes(request))
+                return refuseCode(request, item: nil, "No item is saved for \(host).")
             }
             guard matching.count == 1 else {
                 return refuse(request, item: nil, "Several items are saved for \(host): "
@@ -324,7 +339,7 @@ final class VaultCenter: ObservableObject {
         case .login where !item.hasPassword && item.username.isEmpty:
             return refuse(request, item: item, "“\(item.name)” has no username or password.")
         case .oneTimeCode where !item.hasOneTimeCode:
-            return refuse(request, item: item, "“\(item.name)” has no one-time code set up." + unlinkedCodes(request))
+            return refuseCode(request, item: item, "“\(item.name)” has no one-time code set up.")
         case .passkey where !item.hasPasskey:
             return refuse(request, item: item, "“\(item.name)” has no passkey.")
         default:
@@ -488,25 +503,31 @@ final class VaultCenter: ObservableObject {
         item.username.isEmpty ? "“\(item.name)”" : "“\(item.name)” (\(item.username))"
     }
 
-    /// How an item with no site comes to fill on one: the person fills it there once.
-    private static func personLinks(_ host: String) -> String {
-        "Ask the person to fill it from the two-factor code bar in this task's browser panel; that saves the site "
-            + "of \(host) for it, and later fills here work."
+    /// A refused code, naming the codes with no site the code bar offers on this page, if any.
+    private func refuseCode(_ request: VaultFillRequest, item: VaultItem?, _ message: String)
+        -> Result<VaultFillGrant, VaultRefusal> {
+        let codes = request.kind == .oneTimeCode ? unlinkedCodeItems(for: request.origin) : []
+        guard !codes.isEmpty else { return refuse(request, item: item, message) }
+        return refuseUnlinked(request, item: item, message + " " + codes.map(Self.label).joined(separator: ", ")
+            + " may be its two-factor code, saved with no site.", codes: codes)
     }
 
-    /// For a refused code: the codes with no site the code bar offers on this page, if any.
-    private func unlinkedCodes(_ request: VaultFillRequest) -> String {
-        let unlinked = request.kind == .oneTimeCode ? unlinkedCodeItems(for: request.origin) : []
-        guard !unlinked.isEmpty else { return "" }
-        return " " + unlinked.map(Self.label).joined(separator: ", ") + " may be its two-factor code, saved with no site. "
-            + Self.personLinks(VaultSite.host(of: request.origin))
+    /// A refusal over codes with no site (design §14.3): it says how the person links one to the page's site, in
+    /// Settings → Passwords or by filling it once from the code bar, and its failure names the codes and the site.
+    private func refuseUnlinked(_ request: VaultFillRequest, item: VaultItem?, _ message: String, codes: [VaultItem])
+        -> Result<VaultFillGrant, VaultRefusal> {
+        let site = VaultSite.suggestion(for: request.origin, suffixes: suffixes) ?? VaultSite.host(of: request.origin)
+        return refuse(request, item: item, message + " Ask the person to link \(codes.count == 1 ? "it" : "the right one") to "
+            + "\(site) in Yardlet's Settings → Passwords, under “Two-factor codes with no site”, or to fill it once from the "
+            + "two-factor code bar in this task's browser panel; later fills here then work.",
+            details: ["unlinkedCodes": .array(codes.map { .string($0.name) }), "site": .string(site)])
     }
 
     private func refuse(_ request: VaultFillRequest, item: VaultItem?, _ message: String,
-                        kind: AgentToolFailure.Kind = .refused, retry: AgentToolFailure.Retry = .no)
-        -> Result<VaultFillGrant, VaultRefusal> {
+                        kind: AgentToolFailure.Kind = .refused, retry: AgentToolFailure.Retry = .no,
+                        details: [String: ToolJSON] = [:]) -> Result<VaultFillGrant, VaultRefusal> {
         log(request, item: item, kinds: [request.kind.rawValue], outcome: .refused, reason: message, confirmedBy: nil)
-        return .failure(VaultRefusal(message: message, failure: AgentToolFailure(kind, retry: retry)))
+        return .failure(VaultRefusal(message: message, failure: AgentToolFailure(kind, retry: retry, details: details)))
     }
 
     private func log(_ request: VaultFillRequest, item: VaultItem?, kinds: [String], outcome: VaultUse.Outcome,
@@ -532,7 +553,63 @@ final class VaultCenter: ObservableObject {
     func unlinkedCodeItems(for origin: String) -> [VaultItem] {
         guard environment.isAllowedBuild, isEnabled,
               let site = VaultSite.suggestion(for: origin, suffixes: suffixes) else { return [] }
-        return items.filter { $0.sites.isEmpty && $0.hasOneTimeCode && VaultSite.isNamed(site, by: $0.name) }
+        return items.filter { $0.sites.isEmpty && $0.hasOneTimeCode && VaultSite.isNamed(site, by: $0.name, suffixes: suffixes) }
+    }
+
+    /// The two-factor codes with no site, which Settings → Passwords lists for the person to link.
+    var unlinkedCodes: [VaultItem] { items.filter { $0.sites.isEmpty && $0.hasOneTimeCode } }
+
+    /// Links each code with no site to the sign-in of its account, where nothing else could be meant (design §14.3):
+    /// the one item with a password or passkey whose username is the code's and one of whose sites the code's name
+    /// names, which no other such code goes to and whose account has no code on those sites yet. The code keeps the
+    /// sites the sign-in has saved, never one made up from its name. Runs as the vault opens and after an import.
+    /// Returns the items it linked.
+    @discardableResult
+    func linkCodesToTheirSignIns() -> [VaultItem] {
+        guard environment.isAllowedBuild, isEnabled else { return [] }
+        let codes = unlinkedCodes.filter { !$0.username.isEmpty }
+        guard !codes.isEmpty else { return [] }
+        let suffixes = self.suffixes
+        let pairs = codes.compactMap { code -> (code: VaultItem, signIn: UUID, sites: [String])? in
+            let signIns = items.compactMap { item -> (UUID, [String])? in
+                guard item.hasPassword || item.hasPasskey, item.isSameAccount(as: code) else { return nil }
+                let named = item.sites.filter { VaultSite.isNamed($0, by: code.name, suffixes: suffixes) }
+                return named.isEmpty ? nil : (item.id, named)
+            }
+            guard signIns.count == 1 else { return nil }
+            return (code, signIns[0].0, signIns[0].1)
+        }
+        var linked: [VaultItem] = []
+        for pair in pairs where pairs.filter({ $0.signIn == pair.signIn }).count == 1 {
+            guard !items.contains(where: { $0.hasOneTimeCode && $0.isSameAccount(as: pair.code)
+                && $0.sites.contains(where: pair.sites.contains) }) else { continue }
+            var item: VaultItem?
+            for site in pair.sites { item = link(pair.code.id, to: site) }
+            if let item { linked.append(item) }
+        }
+        return linked
+    }
+
+    /// The site Settings → Passwords suggests for each code with no site, for the person to check before it is saved:
+    /// a site of a saved item that the code's name names (its account's first), else a site of an item saved under
+    /// the code's name, else the site of the latest page the code was asked for. A code none of these points to gets
+    /// no suggestion: a site is never made up from the name alone.
+    func suggestedSites(for codes: [VaultItem]) -> [UUID: String] {
+        let suffixes = self.suffixes
+        let uses = environment.repository.allUses()
+        var suggested: [UUID: String] = [:]
+        for code in codes {
+            let others = items.filter { $0.id != code.id && !$0.sites.isEmpty }
+            let ordered = others.filter { $0.isSameAccount(as: code) } + others.filter { !$0.isSameAccount(as: code) }
+            // An import names a second code of one issuer after its account too.
+            let suffix = " (\(code.username))"
+            let name = code.name.hasSuffix(suffix) ? String(code.name.dropLast(suffix.count)) : code.name
+            suggested[code.id] = ordered.lazy.flatMap(\.sites).first { VaultSite.isNamed($0, by: code.name, suffixes: suffixes) }
+                ?? others.first { $0.name.compare(name, options: .caseInsensitive) == .orderedSame }?.sites.first
+                ?? uses.reversed().lazy.filter { $0.itemID == code.id }
+                    .compactMap { VaultSite.suggestion(for: $0.origin, suffixes: suffixes) }.first
+        }
+        return suggested
     }
 
     /// Saves a site for an item the person chose on one of its pages, as "Autofill and save" does in other

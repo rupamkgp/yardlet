@@ -2720,6 +2720,11 @@
 "Two-factor codes" = "인증 코드";
 "Two-factor code" = "2단계 인증 코드";
 "Import QR Code…" = "QR 코드 가져오기…";
+"Two-factor codes with no site" = "사이트가 없는 인증 코드";
+"Link All" = "모두 연결";
+"Link" = "연결";
+"Site" = "사이트";
+"Site for “%@”" = "“%@” 사이트";
 "No two-factor QR code is in the picture." = "그림에서 2단계 인증 QR 코드를 찾지 못했습니다.";
 "Copy Code" = "코드 복사";
 "Code %@, %lld seconds left" = "코드 %1$@, %2$lld초 남음";

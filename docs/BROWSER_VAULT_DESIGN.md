@@ -497,6 +497,8 @@ Vault
 - The switch is on by default. With no items at all, the tool is not added, so for someone who does not use it nothing
   changes.
 - Rows: name, site, kind, step, last use. Clicking a row opens the item sheet.
+- Above the items, "Two-factor codes" (section 14.3) and, while any is left, "Two-factor codes with no site": each with
+  a suggested site to check, "Link" and "Link All" (section 14.3).
 - CSV import takes the `name,url,username,password` shape that Chrome, 1Password and Bitwarden export (the same columns
   as Aside's help page). Imported items also default to "Always". After the import, Yardlet asks whether to move the
   source file to the Trash.
@@ -695,7 +697,7 @@ app (such as Google Authenticator).
 | Code at sign-in | Filling a sign-in fills the code too, inline menu ([help](https://support.1password.com/one-time-passwords/), [release notes](https://releases.1password.com/b5x/stable/)) | Inline menu and shortcut, the code copied automatically after sign-in autofill (on by default) ([help](https://bitwarden.com/help/auto-fill-browser/)) | One click on the autofill suggestion ([WWDC21](https://developer.apple.com/videos/play/wwdc2021/10105/)) | One click on the code bar when a code field shows; the key button gives the code when clicked from a code field |
 | Viewing and copying codes | Item details | Item details | Clicking the code in account details copies it ([help](https://support.apple.com/en-ca/guide/passwords/mchl873a6e72/2.0/mac/26)) | Settings → Vault "Two-factor codes" list and the item sheet: code, seconds left, copy |
 | Moving over from authenticator apps | — | Bitwarden Authenticator imports Google Authenticator QR codes ([help](https://bitwarden.com/help/authenticator-import-export/)) | — | Google Authenticator export QR (image files or a page), the `OTPAuth` and `login_totp` columns in CSV |
-| A code whose item has no website for the page | Not found in the official help | "all autofill methods with the browser extension require your login items to have an assigned website URI"; in the item, "Autofill and save" fills and adds the page's URI ([help](https://bitwarden.com/help/auto-fill-browser/)) | A code is set up inside an account, which has its website ([help](https://support.apple.com/en-ca/guide/passwords/mchl873a6e72/2.0/mac/26)) | The code bar offers a code with no site whose name names the page's site; filling it saves the site (section 14.3) |
+| A code whose item has no website for the page | Not found in the official help | "all autofill methods with the browser extension require your login items to have an assigned website URI"; in the item, "Autofill and save" fills and adds the page's URI ([help](https://bitwarden.com/help/auto-fill-browser/)) | A code is set up inside an account, which has its website ([help](https://support.apple.com/en-ca/guide/passwords/mchl873a6e72/2.0/mac/26)) | A code takes the site of its account's sign-in, or the person links it in settings or picks it on the code bar, which saves the site (section 14.3) |
 
 The 2FAS authenticator's browser extension, whose codes have no domain either, asks on the phone which code goes with a
 site the first time, because "it doesn't know which token should be assigned to the X.com domain", and answers that
@@ -746,16 +748,37 @@ apps, and backup and restore work only between devices of the same kind
   ask for Touch ID (the same level as the person's key button fill, and phone authenticator apps do not ask by default
   either). The keychain is read only while this list is visible.
 - **Items without a site:** like an authenticator app's entries, they show and copy the code, and an import saves them
-  without a site, since an issuer such as "Amazon Web Services" names no domain. When a code field shows and none of the
-  site's own items has a code, the code bar offers the codes with no site whose name names the page's site: the name,
-  or its first word, is the registrable domain's own label apart from case, spaces and punctuation (`Vercel` for
-  `vercel.com`, `Amazon Web Services` for `signin.aws.amazon.com`, not `Vercel` for `vercel-login.com`). The bar says
-  the site it keeps ("Fill the two-factor code from “Vercel” and link it to vercel.com?"), and filling it saves that site
-  in the item, as Bitwarden's "Autofill and save" and 2FAS do (section 14.2); from then on it is the site's code for the
-  code bar and the agent. Nothing is saved before the person picks a code, and a code whose name names no site (a
-  personal label) still gets its site in the item sheet. An agent never fills a code with no site: its refusal names
-  the code and says the person can fill it once from the code bar, and asking for one by name is no phishing sign
-  (section 6.3).
+  without a site, since an issuer such as "Amazon Web Services" names no domain. A name names a site when the name, or
+  its first word, is the own label of the site's registrable domain apart from case, spaces and punctuation (`Vercel`
+  for `vercel.com`, `Amazon Web Services` for `signin.aws.amazon.com`, not `Vercel` for `vercel-login.com`). A code
+  with no site gets one in three ways, and never from its name alone:
+  - **From its account's sign-in, by itself:** as the vault opens and after codes or sign-ins are imported, a code with
+    no site takes the sites of the one item with a password or passkey whose username is the code's (apart from case)
+    and one of whose sites the code's name names: the "Instagram" code of `ada` takes `instagram.com` from the
+    `www.instagram.com` sign-in of `ada`. It takes those saved sites of the sign-in, never a site made from the name.
+    Nothing is linked when the code has no username, when two such sign-ins are found, when two codes would go to one
+    sign-in, or when the account already has a code on those sites; those wait for the person.
+  - **In Settings → Passwords, "Two-factor codes with no site":** each such code, with a suggested site the person
+    checks or changes and links, one row or all at once. The suggestion is a site of a saved item the name names (the
+    same account's first), else a site of an item saved under the code's name (without the account an import adds to a
+    second code of one issuer), else the site of the latest page the code was asked for in the usage log. With none of
+    these the field stays empty: a site guessed from the name alone (`parsec.com` for "Parsec", whose site is
+    `parsec.app`) would send the code to whoever holds that name.
+  - **From the code bar:** when a code field shows and none of the site's own items has a code, the code bar offers the
+    codes with no site whose name names the page's site. The bar says the site it keeps ("Fill the two-factor code from
+    “Vercel” and link it to vercel.com?"), and filling it saves that site in the item, as Bitwarden's "Autofill and
+    save" and 2FAS do (section 14.2).
+
+  From then on it is the site's code for the code bar and the agent. A linked code stays an item of its own beside the
+  sign-in rather than being merged into it as 1Password keeps a code in its login: the vault already keeps a site's
+  password and code in two items (an imported code, a code saved from the setup bar into a new item) and each fill
+  takes the item that has what it asks for, so linking needs no new path, loses nothing, and taking the site out in the
+  item sheet undoes it. Merging would move a secret between keychain items, choose whose name and agent use win, and
+  need a copy kept to undo it. Since the two items are one account's, an agent's fill naming either takes the site's
+  one item of that username that has what is asked for: a login named after the "Instagram" code fills the
+  `www.instagram.com` sign-in. An agent never fills a code with no site: its refusal (a `refused` failure, retry `no`,
+  with `unlinkedCodes` and `site`) names the code and says the person can link it in the settings list or fill it once
+  from the code bar, and asking for one by name is no phishing sign (section 6.3).
 
 ### 14.4 Rules kept
 
@@ -787,6 +810,12 @@ offered the Vercel code too. That is no worse than before it was linked: a phone
 any site. The bar names the site it would save, the person decides, and only the site they filled it on is saved, which
 then holds that item to the same site rule as any other (section 6.2). Agents keep to saved sites, so a look-alike page
 cannot get a code while the person is away.
+
+Linking a code by its account's sign-in adds no site the person did not save: the site is one the person saved a
+sign-in for, and the code goes there only when its name names that site and its username is the sign-in's. A code is
+linked to the wrong account only if a service's code and another service's sign-in share both a username and a name,
+and then it goes only to a site the person signs in to anyway. The settings list's suggestions are saved only when the
+person links them.
 
 ### 14.6 What it cannot replace
 
@@ -841,6 +870,17 @@ cannot get a code while the person is away.
   request interception (`Fetch.fulfillRequest`, nothing leaves the Mac) offers a "QA Vendor" code with no site in the
   code bar with `qa-vendor.test`, and filling it passes the page's check and saves that site in the item. The panel PNG
   `vault-panel-unlinked-code-bar` was checked by eye.
+- Linking by the account's sign-in and the settings list (2026-10-29):
+  `VaultTests.testACodeWithNoSiteTakesItsAccountsSignInOnlyWhenNothingElseCouldBeMeant` (a code linked to its account's
+  sign-in, none linked without a username, with two sign-ins, with two codes for one sign-in, beside a sign-in that has a
+  code, or with a name that names no saved site; a code imported later linked at once; the refusal's failure before it
+  is linked; a fill named after either item of the account taking the one that has what is asked for; suggestions from
+  a named site, an item of the same name and the usage log, and none from the name alone) and
+  `VaultSettingsRenderingTests.testCodesWithNoSiteListTheSitesSuggestedForThem` (the list in light and dark). The vault
+  QA, 64 checks: an agent's fill of a code with no site is refused as `refused`, retry `no`, naming it and the settings
+  list; a code imported for an account whose sign-in is saved for `qa-partner.test` takes that site, the code bar offers
+  it there as the site's own, and an agent's fill there puts in its current code. The panel PNG
+  `vault-panel-linked-code-bar` was checked by eye.
 
 
 ## 15. Strong password suggestions (2026-10-28)

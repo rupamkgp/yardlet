@@ -118,7 +118,8 @@ extension VaultCenter {
     /// Saves imported sign-ins and says how many were saved. One already in the vault for the same
     /// site and username takes the new password and keeps the rest; any other becomes a new item
     /// the agent may use at any time, as an item made by hand is. A name already taken gets the
-    /// username after it, so an agent can name either.
+    /// username after it, so an agent can name either. Codes with no site whose account's sign-in came
+    /// in take its site (`linkCodesToTheirSignIns`).
     @discardableResult
     func importSignIns(_ entries: [VaultCSVImport.Entry]) -> Int {
         var saved = 0
@@ -144,6 +145,7 @@ extension VaultCenter {
             }
             saved += 1
         }
+        if saved > 0 { linkCodesToTheirSignIns() }
         return saved
     }
 }

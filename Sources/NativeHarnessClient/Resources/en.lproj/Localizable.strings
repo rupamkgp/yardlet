@@ -2720,6 +2720,11 @@
 "Two-factor codes" = "Two-factor codes";
 "Two-factor code" = "Two-factor code";
 "Import QR Code…" = "Import QR Code…";
+"Two-factor codes with no site" = "Two-factor codes with no site";
+"Link All" = "Link All";
+"Link" = "Link";
+"Site" = "Site";
+"Site for “%@”" = "Site for “%@”";
 "No two-factor QR code is in the picture." = "No two-factor QR code is in the picture.";
 "Copy Code" = "Copy Code";
 "Code %@, %lld seconds left" = "Code %@, %lld seconds left";

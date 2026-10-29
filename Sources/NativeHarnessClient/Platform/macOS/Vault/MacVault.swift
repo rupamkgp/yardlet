@@ -24,6 +24,8 @@ enum MacVault {
             secrets: KeychainVaultSecretStore.live(), repository: FileVaultRepository.live(), hmac: hmac,
             isAllowedBuild: isTeamSigned, confirm: confirm, randomBytes: randomBytes))
         observeLocks(of: center)
+        // Codes brought over before their account's sign-in was saved find it as the vault opens (design §14.3).
+        Task { @MainActor in center.linkCodesToTheirSignIns() }
         return center
     }
 

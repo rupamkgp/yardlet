@@ -141,7 +141,8 @@ private struct ProtobufReader {
 
 extension VaultCenter {
     /// Saves codes from an authenticator app's export or a QR image as items of their own, with no
-    /// site or password (an authenticator's entries), and leaves out codes the vault already keeps.
+    /// site or password (an authenticator's entries), and leaves out codes the vault already keeps. A
+    /// code whose account's sign-in is saved takes that sign-in's site (`linkCodesToTheirSignIns`).
     /// Returns how many it saved.
     func importOneTimeCodes(_ setups: [OneTimeCodeSetup]) -> Int {
         var saved = 0
@@ -155,6 +156,7 @@ extension VaultCenter {
             guard (try? save(item, secret: VaultSecret(oneTimeCode: setup.secret))) != nil else { continue }
             saved += 1
         }
+        if saved > 0 { linkCodesToTheirSignIns() }
         return saved
     }
 

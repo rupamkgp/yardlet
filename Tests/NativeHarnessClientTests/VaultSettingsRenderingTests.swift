@@ -10,6 +10,7 @@ import XCTest
 /// - `settings-vault-unsigned-*`: an ad-hoc build with an empty vault: the switch off and disabled.
 /// - `vault-item-*`: a saved item's sheet with its previous passwords, recent uses and passkey line.
 /// - `vault-item-new-*`: a new item from a page, with its site and username filled in.
+/// - `settings-vault-unlinked-*`: codes with no site, with the sites suggested for them and one left to type.
 @MainActor
 final class VaultSettingsRenderingTests: XCTestCase {
     private static let github = VaultItem(
@@ -76,6 +77,39 @@ final class VaultSettingsRenderingTests: XCTestCase {
             XCTAssertTrue(spoken.contains { $0.contains(text) }, "No \(text): \(spoken)")
         }
         XCTAssertFalse(spoken.contains { $0.contains("not-a-real-password") }, "A secret reached the page: \(spoken)")
+    }
+
+    /// Codes an authenticator app brought over with no site (design §14.3): each row holds the site the vault
+    /// suggests, from a saved sign-in its name names or its log, for the person to check and link; a code nothing
+    /// points to waits for a site to be typed, and linking saves the row's site.
+    func testCodesWithNoSiteListTheSitesSuggestedForThem() throws {
+        let directory = try WindowlessRender.directory("vault-qa")
+        let codes = [VaultItem(name: "GitHub", sites: [], username: "ada-codes", hasOneTimeCode: true),
+                     VaultItem(name: "Amazon Web Services (root)", sites: [], username: "root", hasOneTimeCode: true),
+                     VaultItem(name: "Personal", sites: [], username: "ada", hasOneTimeCode: true)]
+        let aws = VaultItem(name: "signin.aws.amazon.com", sites: ["amazon.com"], username: "admin", hasPassword: true)
+        let key = OneTimeCodeSecret(key: Data("12345678901234567890".utf8))
+        var secrets = Dictionary(uniqueKeysWithValues: codes.map { ($0.id, VaultSecret(oneTimeCode: key)) })
+        secrets[aws.id] = VaultSecret(password: "not-a-real-password")
+        secrets[Self.github.id] = VaultSecret(password: "not-a-real-password", oneTimeCode: key)
+        let vault = VaultCenter(environment: VaultCenter.Environment(
+            secrets: InMemoryVaultSecretStore(secrets), repository: InMemoryVaultRepository(items: [Self.github, aws] + codes),
+            hmac: MacVault.hmac, isAllowedBuild: true, defaults: .vaultTests()))
+        let size = NSSize(width: 640, height: 1080)
+        let content = VaultSettingsView(vault: vault).padding(20).frame(width: size.width, height: size.height, alignment: .top)
+        let captures = try WindowlessRender.hostedInBothAppearances("settings-vault-unlinked", in: directory, size: size) { appearance in
+            content.environment(\.colorScheme, appearance.colorScheme).background(ParityTheme.canvas)
+        }
+        for capture in captures { XCTAssertTrue(WindowlessRender.drawsContent(capture.bitmap, step: 6)) }
+        let host = WindowlessRender.Host(content, size: size)
+        defer { host.close() }
+        host.settle()
+        let spoken = host.accessibilityElements().map { "\($0.label) \($0.value)" }
+        for text in [L10n.string("Two-factor codes with no site"), L10n.string("Link All"), "github.com", "amazon.com",
+                     L10n.format("Site for “%@”", "Personal")] {
+            XCTAssertTrue(spoken.contains { $0.contains(text) }, "No \(text): \(spoken)")
+        }
+        XCTAssertEqual(vault.suggestedSites(for: codes), [codes[0].id: "github.com", codes[1].id: "amazon.com"])
     }
 
     func testAnUnsignedBuildShowsTheVaultOff() throws {

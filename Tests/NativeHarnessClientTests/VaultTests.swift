@@ -2,12 +2,13 @@ import AppKit
 import CoreImage.CIFilterBuiltins
 import Foundation
 import XCTest
+import YardletAgentTools
 @testable import NativeHarnessClient
 
 /// The vault's contracts that would break without a visible sign (docs/BROWSER_VAULT_DESIGN.md):
 /// which pages an item's sites cover, the RFC 6238 codes, the refusal of an item asked for on
 /// another site, the codes an authenticator app's export brings over, how such a code with no site
-/// comes to fill on its site, and the passwords it makes.
+/// comes to fill on its site, by the person or by its account's sign-in, and the passwords it makes.
 @MainActor
 final class VaultTests: XCTestCase {
     func testSitesCoverTheirSubdomainsOverHTTPSAndNothingThatOnlyLooksAlike() {
@@ -152,6 +153,79 @@ final class VaultTests: XCTestCase {
                 XCTAssertEqual(grant.item.id, item.id)
             }
         }
+    }
+
+    /// A code with no site (design §14.3) takes the site of its account's sign-in, the one item with a password
+    /// whose username is the code's on a site the code's name names, and nothing less certain: no username, two
+    /// such sign-ins, two codes for one sign-in, a sign-in that has a code, a name that names no saved site. Before
+    /// it is linked an agent's refusal points to the settings list, and a fill named after either item of the
+    /// account takes the one that has what is asked for. The list suggests sites from the vault and its log only.
+    func testACodeWithNoSiteTakesItsAccountsSignInOnlyWhenNothingElseCouldBeMeant() async throws {
+        let key = OneTimeCodeSecret(key: Data("12345678901234567890".utf8))
+        let code = { (name: String, username: String) in VaultItem(name: name, sites: [], username: username) }
+        let signIn = { (site: String, username: String) in VaultItem(name: "www." + site, sites: [site], username: username) }
+        let instagram = code("Instagram", "ada"), instagramLogin = signIn("instagram.com", "Ada")
+        let otherInstagram = VaultItem(name: "instagram.com", sites: ["instagram.com"], username: "grace")
+        let noUsername = code("Parsec", ""), parsec = signIn("parsec.app", "")
+        let google = code("Google", "ada"), googleLogins = [signIn("google.com", "ada"), VaultItem(
+            name: "accounts.google.com", sites: ["accounts.google.com"], username: "ada")]
+        let awsCodes = [code("Amazon Web Services", "root"), code("Amazon Web Services (root)", "root")]
+        let aws = VaultItem(name: "signin.aws.amazon.com", sites: ["signin.aws.amazon.com"], username: "root")
+        let stripe = code("Stripe", "ada"), stripeLogin = signIn("stripe.com", "ada")
+        let gitHub = code("GitHub", "ada-codes"), gitHubLogin = signIn("github.com", "ada")
+        let vercel = code("Vercel", "ada")
+        let personal = code("jk", "ada"), personalLogin = VaultItem(name: "jk", sites: ["example.test"], username: "grace")
+        let binance = code("binancejk", "ada")
+        let repository = InMemoryVaultRepository()
+        let center = VaultCenter(environment: VaultCenter.Environment(
+            secrets: InMemoryVaultSecretStore(), repository: repository, hmac: MacVault.hmac,
+            isAllowedBuild: true, defaults: .vaultTests()))
+        for item in [instagram, noUsername, google, stripe, gitHub, vercel, personal, binance] + awsCodes {
+            try center.save(item, secret: VaultSecret(oneTimeCode: key))
+        }
+        for item in [instagramLogin, otherInstagram, parsec, aws, gitHubLogin, personalLogin] + googleLogins {
+            try center.save(item, secret: VaultSecret(password: "correct horse"))
+        }
+        try center.save(stripeLogin, secret: VaultSecret(password: "correct horse", oneTimeCode: key))
+        let task = UUID()
+        func fill(_ kind: VaultFillKind, _ name: String?, on origin: String = "https://www.instagram.com")
+            async -> Result<VaultFillGrant, VaultRefusal> {
+            await center.authorize(VaultFillRequest(sessionID: task, itemName: name, kind: kind, origin: origin))
+        }
+
+        guard case let .success(login) = await fill(.login, "Instagram") else { return XCTFail("the account's login was refused") }
+        XCTAssertEqual(login.item.id, instagramLogin.id)
+        guard case let .failure(unlinked) = await fill(.oneTimeCode, "Instagram") else { return XCTFail("a code with no site filled") }
+        XCTAssertTrue(unlinked.message.contains("“Two-factor codes with no site”") && unlinked.message.contains("code bar"),
+                      unlinked.message)
+        XCTAssertEqual(unlinked.failure, AgentToolFailure(.refused, retry: .no, details: [
+            "unlinkedCodes": .array([.string("Instagram")]), "site": .string("instagram.com")]))
+        guard case let .failure(elsewhere) = await fill(.login, "Instagram", on: "https://www.tiktok.com") else {
+            return XCTFail("a code filled a login elsewhere")
+        }
+        XCTAssertEqual(elsewhere.failure.retry, .withChanges, elsewhere.message)
+
+        XCTAssertEqual(center.suggestedSites(for: [gitHub, personal, binance, vercel]), [
+            gitHub.id: "github.com", personal.id: "example.test"])
+        repository.appendUse(VaultUse(at: Date(), taskID: task, itemID: binance.id, itemName: binance.name,
+                                      origin: "https://accounts.binance.com", kinds: ["one_time_code"], outcome: .refused))
+        XCTAssertEqual(center.suggestedSites(for: [binance])[binance.id], "binance.com")
+
+        XCTAssertEqual(center.linkCodesToTheirSignIns().map(\.id), [instagram.id])
+        XCTAssertEqual(center.items.first { $0.id == instagram.id }?.sites, ["instagram.com"])
+        XCTAssertEqual(Set(center.unlinkedCodes.map(\.id)), Set([noUsername, google, stripe, gitHub, vercel, personal, binance]
+            .map(\.id) + awsCodes.map(\.id)))
+        for (kind, name, item) in [(VaultFillKind.oneTimeCode, nil, instagram), (.oneTimeCode, "www.instagram.com", instagram),
+                                   (.login, "Instagram", instagramLogin)] {
+            guard case let .success(grant) = await fill(kind, name) else { return XCTFail("\(kind) named \(name ?? "nothing") was refused") }
+            XCTAssertEqual(grant.item.id, item.id)
+        }
+
+        // A code brought in later finds the sign-in already saved.
+        let setup = OneTimeCodeSetup(secret: OneTimeCodeSecret(key: Data("another-test-key-000".utf8)), issuer: "Instagram",
+                                     account: "grace")
+        XCTAssertEqual(center.importOneTimeCodes([setup]), 1)
+        XCTAssertEqual(center.items.first { $0.name == "Instagram (grace)" }?.sites, ["instagram.com"])
     }
 
     func testAnItemAskedForOnAnotherSiteIsRefusedAndThePersonIsTold() async throws {

@@ -690,38 +690,33 @@ final class BrowserHostVaultQA {
         await exerciseUnlinkedCode(controller, page: page)
     }
 
-    /// A code brought over with no site (design §14.3) on a page of the site its name names: the code bar
-    /// offers it with the site it will keep, and filling it saves that site. The QA server's code page is
-    /// served at an https address under the reserved `.test` name through CDP request interception, so
-    /// the page has a registrable domain and nothing leaves the Mac.
+    /// A code brought over with no site (design §14.3): an agent's fill of it is refused with a failure that names it
+    /// and points to the settings list; on a page of the site its name names, the code bar offers it with the site it
+    /// will keep, and filling it saves that site. A code imported for an account whose sign-in is saved takes that
+    /// sign-in's site at once: the code bar offers it there as the site's own, and an agent fills it there. The QA
+    /// server's code page is served at https addresses under the reserved `.test` name (`serve`), so the page has a
+    /// registrable domain and nothing leaves the Mac.
     private func exerciseUnlinkedCode(_ controller: BrowserHostPaneController,
                                       page: @escaping (BrowserTab, String) async -> JSONValue?) async {
         guard let tab = controller.tab else { return check("panel: a tab for the code with no site", false, "no tab") }
         let host = "https://accounts.qa-vendor.test/"
+        let partner = "https://accounts.qa-partner.test/"
         let vendor = VaultItem(name: "QA Vendor", sites: [], username: "vendor@example.test")
         try? vault.save(vendor, secret: VaultSecret(oneTimeCode: OneTimeCodeSecret(key: Data("12345678901234567890".utf8))))
-        let base = base
-        let served = tab.devTools.observeEvents { method, params in
-            guard method == "Fetch.requestPaused", let id = params["requestId"]?.stringValue,
-                  let url = params["request"]?["url"]?.stringValue, url.hasPrefix(host),
-                  let source = URL(string: base + url.dropFirst(host.count)) else { return }
-            Task { @MainActor in
-                let (body, response) = (try? await URLSession.shared.data(from: source)) ?? (Data(), nil)
-                _ = try? await tab.devTools.send("Fetch.fulfillRequest", [
-                    "requestId": .string(id),
-                    "responseCode": .integer(Int64((response as? HTTPURLResponse)?.statusCode ?? 404)),
-                    "responseHeaders": .array([.object(["name": .string("Content-Type"),
-                                                        "value": .string("text/html; charset=utf-8")])]),
-                    "body": .string(body.base64EncodedString())
-                ])
-            }
-        }
-        defer {
-            tab.devTools.stopObservingEvents(served)
-            Task { _ = try? await tab.devTools.send("Fetch.disable") }
-        }
-        _ = try? await tab.devTools.send("Fetch.enable", ["patterns": .array([.object(["urlPattern": .string(host + "*")])])])
 
+        await navigate("vault/otp")
+        let field = Self.refs(in: await call(AgentToolCatalog.snapshot).text, role: "textbox").first ?? "@e1"
+        let refused = await call(VaultToolCatalog.fillCredential, ["ref": .string(field), "kind": .string("one_time_code"),
+                                                                  "item": .string("QA Vendor")])
+        let failure = refused.failure
+        check("an agent's fill of a code with no site is refused, naming it and the settings list to link it in",
+              refused.isError && failure?.kind == .refused && failure?.retry == AgentToolFailure.Retry.no
+                && failure?.details["unlinkedCodes"] == .array([.string("QA Vendor")])
+                && refused.text.contains("Two-factor codes with no site"),
+              refused.text + " \(String(describing: failure?.details))")
+
+        let stopServing = await serve([host, partner], on: tab)
+        defer { stopServing() }
         controller.addressInput = host + "vault/otp"
         controller.submitAddress()
         let loaded = await waitUntilAsync(.seconds(20)) {
@@ -741,6 +736,68 @@ final class BrowserHostVaultQA {
         check("panel: filling it keeps the site for that item and the page takes the code",
               filled && taken && kept == ["qa-vendor.test"],
               "filled \(filled), checked \(taken), sites \(kept ?? [])")
+
+        let partnerKey = OneTimeCodeSecret(key: Data("qa-partner-key-00000".utf8))
+        let partnerSignIn = VaultItem(name: "accounts.qa-partner.test", sites: ["qa-partner.test"], username: "partner@example.test")
+        try? vault.save(partnerSignIn, secret: VaultSecret(password: "qa-partner-not-real"))
+        let imported = vault.importOneTimeCodes([OneTimeCodeSetup(secret: partnerKey, issuer: "QA Partner",
+                                                                  account: "partner@example.test")])
+        let partnerCode = vault.items.first { $0.name == "QA Partner" }
+        check("a code imported for an account whose sign-in is saved takes that sign-in's site",
+              imported == 1 && partnerCode?.sites == ["qa-partner.test"],
+              "\(imported) imported, sites \(partnerCode?.sites ?? [])")
+
+        controller.addressInput = partner + "vault/otp"
+        controller.submitAddress()
+        let partnerLoaded = await waitUntilAsync(.seconds(20)) {
+            controller.tab?.currentURL == partner + "vault/otp" && controller.tab?.isLoading == false
+        }
+        let ownOffered = await waitUntilAsync(.seconds(6)) { controller.vaultCodeOffer != nil }
+        capture(controller, named: "vault-panel-linked-code-bar.png")
+        let own = controller.vaultCodeOffer
+        check("panel: the code bar offers the linked code there as the site's own",
+              partnerLoaded && ownOffered && partnerCode != nil && own?.items.map(\.id) == partnerCode.map { [$0.id] }
+                && own?.newSite == nil,
+              own.map { "\($0.items.map(\.name)) → \($0.newSite ?? "no new site")" } ?? "loaded \(partnerLoaded), no offer")
+        controller.vaultCodeOffer = nil
+
+        guard let agentTab = client.tab(forSession: session) else { return check("an agent's tab for the linked code", false, "no tab") }
+        let stopAgentServing = await serve([partner], on: agentTab)
+        defer { stopAgentServing() }
+        let opened = await call(AgentToolCatalog.navigate, ["url": .string(partner + "vault/otp")])
+        if opened.isError { check("load the linked code's site", false, opened.text) }
+        let partnerField = Self.refs(in: await call(AgentToolCatalog.snapshot).text, role: "textbox").first ?? "@e1"
+        let agentFill = await call(VaultToolCatalog.fillCredential, ["ref": .string(partnerField), "kind": .string("one_time_code")])
+        let value = await pageValue("document.getElementById('code').value")?.stringValue ?? ""
+        let current = [Date(), Date().addingTimeInterval(-30)].map { vault.code(for: partnerKey, at: $0) }
+        check("an agent fills the linked code on that site", !agentFill.isError && current.contains(value),
+              agentFill.text + " (\(value.count) digits, \(current.contains(value) ? "current" : "not current"))")
+    }
+
+    /// Serves the QA server's pages at the given https addresses in one tab through CDP request interception
+    /// (`Fetch.fulfillRequest`), so a page has a registrable domain and nothing leaves the Mac. Returns how to stop.
+    private func serve(_ hosts: [String], on tab: BrowserTab) async -> () -> Void {
+        let base = base
+        let served = tab.devTools.observeEvents { method, params in
+            guard method == "Fetch.requestPaused", let id = params["requestId"]?.stringValue,
+                  let url = params["request"]?["url"]?.stringValue, let host = hosts.first(where: { url.hasPrefix($0) }),
+                  let source = URL(string: base + url.dropFirst(host.count)) else { return }
+            Task { @MainActor in
+                let (body, response) = (try? await URLSession.shared.data(from: source)) ?? (Data(), nil)
+                _ = try? await tab.devTools.send("Fetch.fulfillRequest", [
+                    "requestId": .string(id),
+                    "responseCode": .integer(Int64((response as? HTTPURLResponse)?.statusCode ?? 404)),
+                    "responseHeaders": .array([.object(["name": .string("Content-Type"),
+                                                        "value": .string("text/html; charset=utf-8")])]),
+                    "body": .string(body.base64EncodedString())
+                ])
+            }
+        }
+        _ = try? await tab.devTools.send("Fetch.enable", ["patterns": .array(hosts.map { .object(["urlPattern": .string($0 + "*")]) })])
+        return {
+            tab.devTools.stopObservingEvents(served)
+            Task { _ = try? await tab.devTools.send("Fetch.disable") }
+        }
     }
 
     /// The person's strong passwords in the panel (design §15): an empty new-password field offers one; taking

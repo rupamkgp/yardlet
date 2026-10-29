@@ -3,10 +3,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Settings → Passwords (docs/BROWSER_VAULT_DESIGN.md §8.1, §9, §14): the switch that gives tasks
-/// `browser_fill_credential`, the current two-factor codes as an authenticator app lists them, the saved
-/// items with their sites, kinds, agent use and last use, adding one, importing a browser's CSV export
-/// or an authenticator app's export QR code, and emptying the vault. Rows follow Settings → General and
-/// Connectors.
+/// `browser_fill_credential`, the current two-factor codes as an authenticator app lists them, the codes
+/// with no site to link to theirs, the saved items with their sites, kinds, agent use and last use, adding
+/// one, importing a browser's CSV export or an authenticator app's export QR code, and emptying the vault.
+/// Rows follow Settings → General and Connectors.
 struct VaultSettingsView: View {
     @ObservedObject var vault: VaultCenter
     @State private var editing: Editing?
@@ -17,6 +17,9 @@ struct VaultSettingsView: View {
     @State private var failure: String?
     /// The items' code secrets, read from the keychain while the page shows codes.
     @State private var codeSecrets: [UUID: OneTimeCodeSecret] = [:]
+    /// The site in each code-with-no-site row: the vault's suggestion, or what the person typed.
+    @State private var linkSites: [UUID: String] = [:]
+    @State private var linkFailure: String?
 
     private struct Editing: Identifiable {
         let id = UUID()
@@ -35,6 +38,7 @@ struct VaultSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             switchCard
             if !codeItems.isEmpty { codeList }
+            if !vault.unlinkedCodes.isEmpty { unlinkedList }
             VStack(alignment: .trailing, spacing: 8) {
                 itemList
                 HStack(spacing: 8) {
@@ -160,6 +164,88 @@ struct VaultSettingsView: View {
             codeSecrets = Dictionary(uniqueKeysWithValues: codeItems.compactMap { item in
                 vault.secret(of: item.id)?.oneTimeCode.map { (item.id, $0) }
             })
+        }
+    }
+
+    /// The codes with no site (design §14.3), each with the site to link it to: suggested from the vault's items
+    /// and log, checked or changed by the person, and saved only when they link it here or all at once.
+    private var unlinkedList: some View {
+        let codes = vault.unlinkedCodes
+        let ready = codes.filter { siteToLink($0) != nil }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(L10n.string("Two-factor codes with no site"))
+                    .font(.callout.weight(.semibold))
+                Spacer(minLength: 8)
+                Button(L10n.string("Link All")) { link(ready) }
+                    .controlSize(.small)
+                    .disabled(ready.isEmpty || !vault.isAllowedBuild)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(codes.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { Divider().padding(.leading, SettingsCenterView.dividerLeading) }
+                    HStack(spacing: 12) {
+                        VaultSettingsIcon(systemName: "number")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name)
+                                .font(.callout.weight(.medium))
+                                .lineLimit(1)
+                            if !item.username.isEmpty {
+                                Text(item.username)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        TextField(L10n.string("Site"), text: Binding(get: { linkSites[item.id] ?? "" },
+                                                                     set: { linkSites[item.id] = $0 }),
+                                  prompt: Text(verbatim: "example.com"))
+                            .textFieldStyle(.roundedBorder)
+                            .labelsHidden()
+                            .frame(width: 180)
+                            .onSubmit { link([item]) }
+                            .accessibilityLabel(L10n.format("Site for “%@”", item.name))
+                        Button(L10n.string("Link")) { link([item]) }
+                            .disabled(siteToLink(item) == nil)
+                    }
+                    .controlSize(.small)
+                    .padding(.vertical, 10)
+                    .accessibilityElement(children: .contain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
+            .parityCard()
+            .disabled(!vault.isAllowedBuild)
+            if let linkFailure {
+                Text(linkFailure)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task(id: codes.map(\.id)) {
+            let suggested = vault.suggestedSites(for: codes.filter { linkSites[$0.id] == nil })
+            for (id, site) in suggested { linkSites[id] = site }
+        }
+    }
+
+    /// The site a row would save, as the item sheet keeps sites; nil for an empty or unusable one.
+    private func siteToLink(_ item: VaultItem) -> String? {
+        VaultSite.normalize(linkSites[item.id] ?? "", suffixes: vault.suffixes)
+    }
+
+    private func link(_ codes: [VaultItem]) {
+        linkFailure = nil
+        for item in codes {
+            guard let site = siteToLink(item) else { continue }
+            if vault.link(item.id, to: site) == nil {
+                linkFailure = L10n.string("Yardlet could not read this sign-in from the keychain.")
+            } else {
+                linkSites[item.id] = nil
+            }
         }
     }
 

@@ -135,11 +135,13 @@ enum VaultSite {
     }
 
     /// Whether a name, such as an authenticator app's issuer, names the site: the name or its first word
-    /// is the site's own label (`Vercel` for `vercel.com`, `Amazon Web Services` for `amazon.com`), apart
-    /// from case, spaces and punctuation. The public suffix is not compared (`vercel.co` is named too), so
-    /// this only suggests an item; the person choosing it there is what saves the site.
-    static func isNamed(_ site: String, by name: String) -> Bool {
-        guard !site.contains("://"), let label = site.split(separator: ".").first else { return false }
+    /// is the own label of the site's registrable domain (`Vercel` for `vercel.com`, `Amazon Web Services`
+    /// for `signin.aws.amazon.com`), apart from case, spaces and punctuation. The public suffix is not
+    /// compared (`vercel.co` is named too), so a name alone only suggests a site; the person choosing it, or
+    /// a saved sign-in of the same account there, is what saves it.
+    static func isNamed(_ site: String, by name: String, suffixes: PublicSuffixList = .bundled) -> Bool {
+        guard !site.contains("://"), !isAddress(site),
+              let label = (suffixes.registrableDomain(of: site) ?? site).split(separator: ".").first else { return false }
         let own = label.lowercased().filter { $0.isLetter || $0.isNumber }
         let words = name.lowercased().split { !$0.isLetter && !$0.isNumber }
         return !own.isEmpty && (words.first.map(String.init) == own || words.joined() == own)
