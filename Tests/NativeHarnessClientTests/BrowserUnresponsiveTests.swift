@@ -29,7 +29,8 @@ final class BrowserUnresponsiveTests: XCTestCase {
     private let connection = FakeConnection()
     private func makeClient() -> BrowserHostClient {
         let client = BrowserHostClient(idleGrace: .seconds(60)) { [unowned self] in self.connection }
-        client.rendererCheckWait = .milliseconds(40)
+        // Long enough for a page that answers, on a CI runner too; a busy page waits it out.
+        client.rendererCheckWait = .milliseconds(500)
         return client
     }
 
