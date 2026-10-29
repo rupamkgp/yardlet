@@ -209,6 +209,8 @@ struct TaskSidebar: View {
     let onNewTask: () -> Void
     /// Opens the scheduled tasks in the task list's place.
     var onShowSchedules: (() -> Void)? = nil
+    /// Opens the personal agents in the task list's place.
+    var onShowPersonalAgents: (() -> Void)? = nil
     let onActivate: (WindowItem) -> Void
     let onNewTaskInProject: (URL) -> Void
     var onAddProject: (() -> Void)? = nil
@@ -278,6 +280,17 @@ struct TaskSidebar: View {
                 .padding(.horizontal, SidebarMetrics.rowInset)
                 .padding(.top, 2)
                 .accessibilitySortPriority(ParityAccessibility.sidebarPrimary - 0.5)
+            }
+
+            if let onShowPersonalAgents {
+                Button(action: onShowPersonalAgents) {
+                    SidebarActionRow(systemName: "person.crop.circle", title: L10n.string("Personal agents"))
+                }
+                .buttonStyle(.borderless)
+                .parityPointer()
+                .padding(.horizontal, SidebarMetrics.rowInset)
+                .padding(.top, 2)
+                .accessibilitySortPriority(ParityAccessibility.sidebarPrimary - 0.75)
             }
 
             SidebarSearchField(placeholder: L10n.string("Search tasks"), text: $searchText)
@@ -1169,7 +1182,7 @@ struct SidebarRowLeading<Mark: View>: View {
     static var guideX: CGFloat { SidebarMetrics.gutterWidth / 2 }
 }
 
-/// A row that acts above or below a list of tasks (New task, Scheduled tasks, Back, Import): its
+/// A row that acts above or below a list of tasks (New task, Scheduled tasks, Personal agents, Back, Import): its
 /// symbol in the rows' gutter and its words where task titles start, in the rows' size, inset from
 /// the sidebar's edges as the rows are, so every row's symbol and words share one column
 /// (2026-10-22 alignment audit). New task keeps its fill.

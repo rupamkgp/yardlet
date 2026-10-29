@@ -63,6 +63,15 @@ final class DotsServiceTests: XCTestCase {
         let download = try XCTUnwrap(fixture.requests.first { $0.url?.host == "files.oaiusercontent.com" })
         XCTAssertNil(download.value(forHTTPHeaderField: "Authorization"))
         XCTAssertNil(download.value(forHTTPHeaderField: "ChatGPT-Account-Id"))
+        var pictured = agent
+        pictured.avatar = .init(location: "https://files.oaiusercontent.com/avatar", version: "v1")
+        let picture = try await service.avatar(for: pictured)
+        XCTAssertEqual(picture, Data("PNG".utf8))
+        let avatar = try XCTUnwrap(fixture.requests.first { $0.url?.path == "/avatar" })
+        XCTAssertNil(avatar.value(forHTTPHeaderField: "Authorization"), "A signed picture is read without the account token")
+        pictured.avatar = .init(location: "https://example.com/avatar", version: "v1")
+        do { _ = try await service.avatar(for: pictured); XCTFail("Only provider hosts serve pictures") }
+        catch { XCTAssertEqual(error as? PersonalAgentFailure, .attachmentUnavailable) }
         XCTAssertTrue(try DotsAttachmentLocation("/estuary/content?id=file").authenticated)
         for raw in ["http://files.oaiusercontent.com/file", "https://chatgpt.com.evil.test/backend-api/files/a",
                     "https://chatgpt.com/backend-api/tbo", "https://127.0.0.1/file", "file:///etc/passwd",
@@ -108,7 +117,9 @@ private final class DotsHTTPRecorder: @unchecked Sendable {
                 request.httpBody = data
             }
             recorded.append(request)
-            if request.url?.host == "files.oaiusercontent.com" { return (200, Data("Preview text".utf8)) }
+            if request.url?.host == "files.oaiusercontent.com" {
+                return (200, Data((request.url?.path == "/avatar" ? "PNG" : "Preview text").utf8))
+            }
             if request.url?.path.hasSuffix("/files/file") == true {
                 return (200, Data(#"{"name":"report.txt","download_url":"https://files.oaiusercontent.com/file"}"#.utf8))
             }
@@ -132,7 +143,8 @@ private final class DotsHTTPProtocol: URLProtocol, @unchecked Sendable {
         guard let fixture = Self.current else { client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return }
         let (status, data) = fixture.respond(request)
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil,
-                                       headerFields: ["Content-Type": "application/json", "Content-Length": String(data.count)])!
+                                       headerFields: ["Content-Type": request.url?.path == "/avatar" ? "image/png" : "application/json",
+                                                      "Content-Length": String(data.count)])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)

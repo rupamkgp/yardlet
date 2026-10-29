@@ -25,6 +25,25 @@ final class PersonalAgentTests: XCTestCase {
         XCTAssertEqual(merged.count, 2)
         XCTAssertTrue(merged[1].isDeleted)
         XCTAssertEqual(merged[0].id, "m1")
+
+        // A profile's picture is its HTTPS snapshot, versioned by content; asset pointers are not URLs.
+        let profiles = try value(#"{"items":[{"id":"dot","aeon_kind":"orbit","messaging_room_id":"room","display_name":"Atlas","avatar_url":"https://files.oaiusercontent.com/avatar?sig=example","avatar_manifest":{"snapshot":{"asset_pointer":"sediment://file_a","content_sha256":"abc"}}},{"id":"dot-2","aeon_kind":"orbit","messaging_room_id":"room-2","avatar_url":"sediment://file_b"}]}"#)
+        let agents = try DotsProjection.agents(catalog: profiles, primary: .object([:]), accountID: "account", userID: "person")
+        XCTAssertEqual(agents[0].avatar?.version, "abc")
+        XCTAssertNil(agents[1].avatar)
+        XCTAssertFalse(String(describing: agents[0]).contains("sig="), "A signed picture URL never reaches a description")
+
+        // Activity keeps the provider's order and its unknowns; it is not the thread list.
+        let activity = try DotsProjection.activity(value(#"{"data":[{"thread_id":"a","title":"Weekly report","status":"completed","outcome":"succeeded","updated_at":1793200300},{"thread_id":"b","title":"Call notes","status":"completed","outcome":"interrupted","updated_at":1793200900},{"thread_id":"c","status":"in_progress","updated_at":1793200000},{"thread_id":"d","status":null,"updated_at":1793200600}],"next_cursor":"next"}"#))
+        XCTAssertEqual(activity.items.map(\.id), ["c", "d", "a", "b"])
+        XCTAssertEqual(activity.items[1].status, .unknown)
+        XCTAssertEqual(activity.cursor, "next")
+
+        // Attached is the dot's permission to use a computer; only a provider status says it is reachable.
+        let computers = try DotsProjection.computers(value(#"{"thread_id":"root","computers":[{"kind":"cloud","environment_id":"e1","is_attached":true},{"kind":"user","environment_id":"e2","display_name":"Studio","is_attached":true,"status":"offline"},{"kind":"user","environment_id":"e3","is_attached":false,"status":"connected"},{"kind":"user","environment_id":"e4","is_attached":true,"status":"connected"}]}"#), rootThreadID: "root")
+        XCTAssertEqual(computers.map(\.availability), [.unknown, .offline, .disconnected, .connected])
+        XCTAssertEqual(computers.map(\.isCloud), [true, false, false, false])
+        XCTAssertThrowsError(try DotsProjection.computers(value(#"{"thread_id":"another","computers":[]}"#), rootThreadID: "root"))
     }
 
     func testLeavingAndReturningRetainsReadingPositionWithoutStartingAConversation() async throws {
@@ -43,6 +62,60 @@ final class PersonalAgentTests: XCTestCase {
         await center.connect(sourceKey: "saved-account") { next }
         XCTAssertEqual(center.conversation?.anchor, "m1")
         XCTAssertEqual(center.conversation?.messages.count, 1)
+        // A detail that cannot be read fails alone; the conversation and the other parts stay.
+        try await waitUntil { center.details?.computers == .failed(.accessDenied) && center.details?.activity == .loaded([]) }
+        XCTAssertNil(center.failure)
+        XCTAssertEqual(center.conversation?.messages.count, 1)
+
+        // A later page of an Activity read that a refresh replaced is dropped, not merged into the new list.
+        let running = PersonalAgentActivity(id: "a", title: "Report", status: .running, outcome: .unknown,
+                                            updatedAt: nil, preview: nil)
+        let earlier = PersonalAgentActivity(id: "b", title: "Notes", status: .completed, outcome: .succeeded,
+                                            updatedAt: nil, preview: nil)
+        let finished = PersonalAgentActivity(id: "a", title: "Report", status: .completed, outcome: .succeeded,
+                                             updatedAt: nil, preview: nil)
+        await next.setActivity(["": .init(items: [running], cursor: "more"), "more": .init(items: [earlier], cursor: nil)])
+        center.refreshDetails()
+        try await waitUntil { center.details?.activity == .loaded([running]) && center.details?.activityCursor == "more" }
+        await next.holdActivity(cursor: "more")
+        let more = Task { await center.loadMoreActivity() }
+        try await waitUntil { await next.hasPendingActivity() }
+        await next.setActivity(["": .init(items: [finished], cursor: nil)])
+        center.refreshDetails()
+        try await waitUntil { center.details?.activity == .loaded([finished]) }
+        await next.releaseActivity()
+        await more.value
+        XCTAssertEqual(center.details?.activity, .loaded([finished]))
+        XCTAssertNil(center.details?.activityCursor)
+
+        // While a refresh waits for its first page, the old list's next page is not asked for.
+        await next.setActivity(["": .init(items: [running], cursor: "more"), "more": .init(items: [earlier], cursor: nil)])
+        center.refreshDetails()
+        try await waitUntil { center.details?.activityCursor == "more" }
+        await next.holdActivity(cursor: "")
+        await next.setActivity(["": .init(items: [finished], cursor: "after"), "more": .init(items: [earlier], cursor: nil)])
+        center.refreshDetails()
+        try await waitUntil { await next.hasPendingActivity() }
+        XCTAssertNil(center.details?.activityCursor)
+        await center.loadMoreActivity()
+        XCTAssertEqual(center.details?.activity, .loaded([running]), "The shown list stays while it refreshes")
+        await next.releaseActivity()
+        try await waitUntil { center.details?.activity == .loaded([finished]) }
+        XCTAssertEqual(center.details?.activityCursor, "after")
+
+        // The other parts of an earlier refresh that answer last do not replace the newer reply either.
+        let off = PersonalAgentSchedule(id: "s", title: "Weekly report", isEnabled: false)
+        let on = PersonalAgentSchedule(id: "s", title: "Weekly report", isEnabled: true)
+        await next.setSchedules([off])
+        await next.holdNextSchedules()
+        center.refreshDetails()
+        try await waitUntil { await next.hasPendingSchedules() }
+        await next.setSchedules([on])
+        center.refreshDetails()
+        try await waitUntil { center.details?.schedules == .loaded([on]) }
+        await next.releaseSchedules()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(center.details?.schedules, .loaded([on]))
         await center.disconnect()
     }
 
@@ -305,6 +378,39 @@ private actor FixturePersonalAgentReader: PersonalAgentClient {
     func download(_ attachment: PersonalAgentAttachment, for agent: PersonalAgent) async throws -> PersonalAgentDownload {
         throw PersonalAgentFailure.attachmentUnavailable
     }
+    func avatar(for agent: PersonalAgent) async throws -> Data { throw PersonalAgentFailure.attachmentUnavailable }
+    private var activityPages: [String: PersonalAgentActivityPage] = [:]
+    private var heldActivityCursor: String?
+    private var pendingActivity: CheckedContinuation<Void, Never>?
+    func activity(for agent: PersonalAgent, cursor: String?) async throws -> PersonalAgentActivityPage {
+        let key = cursor ?? ""
+        if heldActivityCursor == key {
+            heldActivityCursor = nil
+            await withCheckedContinuation { pendingActivity = $0 }
+        }
+        return activityPages[key] ?? .init(items: [], cursor: nil)
+    }
+    func setActivity(_ pages: [String: PersonalAgentActivityPage]) { activityPages = pages }
+    func holdActivity(cursor: String) { heldActivityCursor = cursor }
+    func hasPendingActivity() -> Bool { pendingActivity != nil }
+    func releaseActivity() { pendingActivity?.resume(); pendingActivity = nil }
+    private var scheduleValues: [PersonalAgentSchedule] = []
+    private var holdsNextSchedules = false
+    private var pendingSchedules: CheckedContinuation<Void, Never>?
+    func schedules(for agent: PersonalAgent) async throws -> [PersonalAgentSchedule] {
+        let values = scheduleValues
+        if holdsNextSchedules {
+            holdsNextSchedules = false
+            await withCheckedContinuation { pendingSchedules = $0 }
+        }
+        return values
+    }
+    func setSchedules(_ values: [PersonalAgentSchedule]) { scheduleValues = values }
+    func holdNextSchedules() { holdsNextSchedules = true }
+    func hasPendingSchedules() -> Bool { pendingSchedules != nil }
+    func releaseSchedules() { pendingSchedules?.resume(); pendingSchedules = nil }
+    /// An optional part that fails, which must stay in its own part.
+    func computers(for agent: PersonalAgent) async throws -> [PersonalAgentComputer] { throw PersonalAgentFailure.accessDenied }
     func stop() { stopped = true }
     func didStop() -> Bool { stopped }
     func hasPendingRead() -> Bool { pending != nil }

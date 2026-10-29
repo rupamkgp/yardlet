@@ -102,7 +102,53 @@ actor DotsService: PersonalAgentClient {
         }
         let metadata = try await read("/messaging/rooms/" + component(agent.id.roomID) + "/files/" + component(fileID))
         guard let raw = metadata["download_url"]?.stringValue else { throw PersonalAgentFailure.attachmentUnavailable }
-        let location = try DotsAttachmentLocation(raw)
+        let data = try await fetch(DotsAttachmentLocation(raw), limit: 25 * 1024 * 1024)
+        try await verify(agent)
+        return .init(data: data, name: metadata["name"]?.stringValue ?? attachment.name)
+    }
+
+    func avatar(for agent: PersonalAgent) async throws -> Data {
+        try await verify(agent)
+        guard let avatar = agent.avatar else { throw PersonalAgentFailure.attachmentUnavailable }
+        let data = try await fetch(DotsAttachmentLocation(avatar.location), limit: 4 * 1024 * 1024, imageOnly: true)
+        try await verify(agent)
+        return data
+    }
+
+    func activity(for agent: PersonalAgent, cursor: String?) async throws -> PersonalAgentActivityPage {
+        try await verify(agent)
+        var query = [URLQueryItem(name: "limit", value: "5")]
+        if let cursor { query.append(.init(name: "cursor", value: cursor)) }
+        let page = try DotsProjection.activity(try await read("/tbo/" + component(agent.id.agentID) + "/activity", query: query))
+        return page.cursor == cursor ? .init(items: page.items, cursor: nil) : page
+    }
+
+    func schedules(for agent: PersonalAgent) async throws -> [PersonalAgentSchedule] {
+        try await verify(agent)
+        var schedules: [PersonalAgentSchedule] = [], cursor: String?, seen = Set<String>()
+        repeat {
+            var query = [URLQueryItem(name: "limit", value: "100")]
+            if let cursor { query.append(.init(name: "cursor", value: cursor)) }
+            let page = try await read("/tbo/" + component(agent.id.agentID) + "/automations", query: query)
+            schedules += try DotsProjection.schedules(page)
+            cursor = page["cursor"]?.stringValue
+            if let cursor, !seen.insert(cursor).inserted { throw PersonalAgentFailure.invalidResponse }
+            guard schedules.count <= 1_000 else { throw PersonalAgentFailure.invalidResponse }
+        } while cursor != nil
+        return schedules
+    }
+
+    func computers(for agent: PersonalAgent) async throws -> [PersonalAgentComputer] {
+        try await verify(agent)
+        guard let root = agent.rootThreadID, !root.isEmpty else { return [] }
+        let value = try await read("/tbo/" + component(agent.id.agentID) + "/computers",
+                                   query: [.init(name: "expected_thread_id", value: root)])
+        return try DotsProjection.computers(value, rootThreadID: root)
+    }
+
+    /// One bounded read of a file or picture. Only the provider API path gets the account credential;
+    /// signed storage gets none, and a redirect is refused by the session's delegate.
+    private func fetch(_ location: DotsAttachmentLocation, limit: Int, imageOnly: Bool = false) async throws -> Data {
         var request = URLRequest(url: location.url)
         request.setValue("Yardlet/PersonalAgents", forHTTPHeaderField: "User-Agent")
         if location.authenticated {
@@ -113,14 +159,16 @@ actor DotsService: PersonalAgentClient {
         do {
             let (bytes, response) = try await session.bytes(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  response.expectedContentLength <= 25 * 1024 * 1024 else { throw PersonalAgentFailure.attachmentUnavailable }
+                  response.expectedContentLength <= limit,
+                  !imageOnly || http.mimeType?.hasPrefix("image/") == true else {
+                throw PersonalAgentFailure.attachmentUnavailable
+            }
             var data = Data()
             for try await byte in bytes {
-                guard data.count < 25 * 1024 * 1024 else { throw PersonalAgentFailure.attachmentUnavailable }
+                guard data.count < limit else { throw PersonalAgentFailure.attachmentUnavailable }
                 data.append(byte)
             }
-            try await verify(agent)
-            return .init(data: data, name: metadata["name"]?.stringValue ?? attachment.name)
+            return data
         } catch let error as PersonalAgentFailure { throw error }
         catch { throw PersonalAgentFailure.network }
     }

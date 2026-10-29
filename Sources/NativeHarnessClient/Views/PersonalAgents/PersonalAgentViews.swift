@@ -1,43 +1,30 @@
+import AppKit
 import SwiftUI
-
-struct ShellSectionPicker: View {
-    @Binding var selection: ShellSection
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(ShellSection.allCases) { section in
-                Button { selection = section } label: {
-                    Text(section.title)
-                        .font(.system(size: 12, weight: selection == section ? .semibold : .regular))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(selection == section ? ParityTheme.selectedFill : .clear,
-                                    in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selection == section ? .isSelected : [])
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.bottom, 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(L10n.string("Sidebar section"))
-    }
-}
 
 struct PersonalAgentsSidebar: View {
     @Bindable var center: PersonalAgentCenter
     let accounts: [AccountChoice]
     @Binding var accountID: String
     let accountMenu: SidebarAccountMenuContext
+    /// Back to the task list, where Home, Scheduled tasks and Personal agents are, as Scheduled tasks goes back.
+    let onBack: () -> Void
     let onAccounts: () -> Void
     let onRefresh: () -> Void
+    @Environment(\.yardletInterfaceScale) private var scale
 
     var body: some View {
         VStack(spacing: 0) {
+            Button(action: onBack) {
+                SidebarActionRow(systemName: "chevron.left", title: L10n.string("Personal agents"),
+                                 symbolWeight: .semibold, titleWeight: .medium, height: 32)
+            }
+            .buttonStyle(.borderless)
+            .parityPointer()
+            .padding(.horizontal, SidebarMetrics.rowInset)
+            .help(L10n.string("Back to tasks"))
+            .accessibilityLabel(L10n.string("Back to tasks"))
+            .accessibilitySortPriority(ParityAccessibility.sidebarPrimary)
+
             HStack(spacing: 6) {
                 Menu {
                     ForEach(accounts) { account in
@@ -66,29 +53,30 @@ struct PersonalAgentsSidebar: View {
                         .accessibilityLabel(L10n.string("Refresh personal agents"))
                 }
             }
-            .padding(.horizontal, 14).padding(.bottom, 12)
+            .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 6)
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
+                LazyVStack(alignment: .leading, spacing: SidebarMetrics.rowSpacing) {
                     ForEach(center.agents) { agent in
                         Button { Task { await center.select(agent.id) } } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: "circle.dotted").font(.system(size: 22))
-                                    .foregroundStyle(ParityTheme.accent)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(agent.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                                    Text(agent.isPaused ? L10n.string("Paused") : "Dots")
-                                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                PersonalAgentAvatarView(name: agent.name, data: center.avatar(for: agent), size: 22)
+                                Text(agent.name).font(.system(size: 13 * scale)).lineLimit(1)
+                                Spacer(minLength: 4)
+                                if agent.isPaused {
+                                    Text(L10n.string("Paused")).font(.system(size: 11 * scale)).foregroundStyle(.secondary)
                                 }
-                                Spacer(minLength: 0)
                             }
-                            .padding(.horizontal, 10).padding(.vertical, 9)
+                            .padding(.horizontal, 8)
+                            .frame(height: 32 * scale)
                             .background(center.selectedID == agent.id ? ParityTheme.selectedFill : .clear,
-                                        in: RoundedRectangle(cornerRadius: 7))
+                                        in: SidebarMetrics.rowShape())
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .parityPointer()
                         .accessibilityLabel(agent.name)
+                        .accessibilityValue(agent.isPaused ? L10n.string("Paused") : "")
                         .accessibilityAddTraits(center.selectedID == agent.id ? .isSelected : [])
                     }
                     if center.hasLoaded, center.agents.isEmpty, center.failure == nil {
@@ -96,34 +84,112 @@ struct PersonalAgentsSidebar: View {
                             .font(.system(size: 12)).foregroundStyle(.secondary).padding(10)
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, SidebarMetrics.rowInset)
             }
             Rectangle().fill(ParityTheme.separator).frame(height: 1)
             SidebarAccountButton(context: accountMenu).padding(.horizontal, 4).padding(.vertical, 5)
         }
         .background(ParityTheme.sidebar)
+        .onExitCommand(perform: onBack)
+    }
+}
+
+/// A dot's profile picture, the provider's static snapshot, or its initial while there is none. The
+/// bytes are bounded by the transport; a picture larger than any avatar is not drawn.
+struct PersonalAgentAvatarView: View {
+    let name: String
+    let data: Data?
+    let size: CGFloat
+    @State private var image: NSImage?
+
+    static let maximumPixels = 2_048
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image).resizable().interpolation(.high).scaledToFill()
+            } else {
+                Circle().fill(ParityTheme.selectedFill)
+                Text(name.first.map { String($0).uppercased() } ?? "·")
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .accessibilityHidden(true)
+        .task(id: data) { image = data.flatMap(Self.decode) }
+    }
+
+    static func decode(_ data: Data) -> NSImage? {
+        guard let image = NSImage(data: data), let rep = image.representations.first,
+              (1...maximumPixels).contains(rep.pixelsWide), (1...maximumPixels).contains(rep.pixelsHigh) else { return nil }
+        return image
     }
 }
 
 struct PersonalAgentsContent: View {
     @Bindable var center: PersonalAgentCenter
+    /// The account the dots belong to, as the account menu names it.
+    var accountTitle: String? = nil
     let onRetry: () -> Void
     let onAccounts: () -> Void
+    @State private var preview: PersonalAgentPreviewFile?
+    @State private var attachmentFailure: PersonalAgentFailure?
+    @State private var loadingAttachment = false
+    @State private var width: CGFloat = 0
+    /// The person hid the details beside a conversation wide enough for them.
+    @State private var hidesDetails = false
+    /// The person raised the details over a conversation too narrow to keep them beside it.
+    @State private var raisesDetails = false
+
+    /// The details sit beside the conversation only where both keep their width, as the session rail does.
+    private var detailsFit: Bool {
+        width >= SessionRailPlacement.minimumAloneWidth + PersonalAgentDetailsPanel.width
+    }
+    private var showsDetailsBeside: Bool { detailsFit && !hidesDetails }
+    private var showsDetailsRaised: Bool { !detailsFit && raisesDetails }
 
     var body: some View {
         Group {
             if let agent = center.selected, let conversation = center.conversation {
-                PersonalAgentConversationView(agent: agent, conversation: conversation,
-                    reconnecting: center.isReconnecting,
-                    connectionFailure: center.failure,
-                    send: { Task { await center.send() } },
-                    download: { try await center.download($0, for: agent.id) },
-                    refresh: {
-                        if center.failure != nil { onRetry() }
-                        else { Task { await center.refreshConversation() } }
-                    },
-                    loadOlder: { Task { await center.refreshConversation(older: true) } })
-                    .id(agent.id)
+                HStack(spacing: 0) {
+                    PersonalAgentConversationView(agent: agent, conversation: conversation,
+                        avatar: center.avatar(for: agent),
+                        reconnecting: center.isReconnecting,
+                        connectionFailure: center.failure,
+                        showsDetails: showsDetailsBeside || showsDetailsRaised,
+                        isLoadingAttachment: loadingAttachment,
+                        attachmentFailure: attachmentFailure,
+                        send: { Task { await center.send() } },
+                        open: open,
+                        refresh: {
+                            if center.failure != nil { onRetry() }
+                            else {
+                                Task { await center.refreshConversation() }
+                                center.refreshDetails()
+                            }
+                        },
+                        loadOlder: { Task { await center.refreshConversation(older: true) } },
+                        toggleDetails: toggleDetails)
+                        .id(agent.id)
+                    if showsDetailsBeside {
+                        Rectangle().fill(ParityTheme.separator).frame(width: 1)
+                        details(agent: agent, conversation: conversation)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    // Below the conversation's header, whose button still hides them.
+                    if showsDetailsRaised {
+                        details(agent: agent, conversation: conversation, close: toggleDetails)
+                            .overlay(alignment: .leading) { Rectangle().fill(ParityTheme.separator).frame(width: 1) }
+                            .overlay(alignment: .top) { Rectangle().fill(ParityTheme.separator).frame(height: 1) }
+                            .shadow(color: .black.opacity(0.12), radius: 12, x: -2)
+                            .padding(.top, PersonalAgentConversationView.headerHeight)
+                            .onExitCommand(perform: toggleDetails)
+                            .transition(.move(edge: .trailing))
+                    }
+                }
             } else {
                 VStack(spacing: 14) {
                     Image(systemName: "circle.dotted").font(.system(size: 38)).foregroundStyle(.secondary)
@@ -151,52 +217,100 @@ struct PersonalAgentsContent: View {
             }
         }
         .background(ParityTheme.canvas)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .onChange(of: detailsFit) { _, _ in raisesDetails = false }
+        .sheet(item: $preview) { file in
+            PersonalAgentAttachmentPreview(file: file) { preview = nil }
+        }
+    }
+
+    private func details(agent: PersonalAgent, conversation: PersonalAgentConversation,
+                         close: (() -> Void)? = nil) -> some View {
+        PersonalAgentDetailsPanel(agent: agent, avatar: center.avatar(for: agent), accountTitle: accountTitle,
+            details: center.details, attachments: PersonalAgentDetailsPanel.attachments(in: conversation.visibleMessages),
+            isLoadingAttachment: loadingAttachment, open: open,
+            retry: { center.refreshDetails() },
+            loadMoreActivity: { Task { await center.loadMoreActivity() } },
+            close: close)
+    }
+
+    private func toggleDetails() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if detailsFit { hidesDetails.toggle() } else { raisesDetails.toggle() }
+        }
+    }
+
+    /// Reads a file attachment and shows it in a native preview; saving it stays the person's action.
+    private func open(_ attachment: PersonalAgentAttachment) {
+        guard let agent = center.selected, !loadingAttachment else { return }
+        loadingAttachment = true
+        attachmentFailure = nil
+        Task {
+            defer { loadingAttachment = false }
+            do { preview = try PersonalAgentPreviewFile(download: await center.download(attachment, for: agent.id)) }
+            catch { attachmentFailure = error as? PersonalAgentFailure ?? .attachmentUnavailable }
+        }
     }
 }
 
 struct PersonalAgentConversationView: View {
     let agent: PersonalAgent
     @Bindable var conversation: PersonalAgentConversation
+    var avatar: Data?
     var reconnecting = false
     var connectionFailure: PersonalAgentFailure?
+    var showsDetails = false
+    var isLoadingAttachment = false
+    var attachmentFailure: PersonalAgentFailure?
     let send: () -> Void
-    let download: (PersonalAgentAttachment) async throws -> PersonalAgentDownload
+    let open: (PersonalAgentAttachment) -> Void
     let refresh: () -> Void
     let loadOlder: () -> Void
+    var toggleDetails: () -> Void = {}
     @Environment(\.yardletInterfaceScale) private var scale
-    @State private var preview: PersonalAgentPreviewFile?
-    @State private var attachmentFailure: PersonalAgentFailure?
-    @State private var loadingAttachment = false
+
+    static let headerHeight: CGFloat = 46
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "circle.dotted").font(.system(size: 22)).foregroundStyle(ParityTheme.accent)
-                Text(agent.name).font(.system(size: 17 * scale, weight: .semibold)).lineLimit(1)
+            HStack(spacing: 9) {
+                PersonalAgentAvatarView(name: agent.name, data: avatar, size: 24)
+                Text(agent.name).font(.system(size: 14 * scale, weight: .semibold)).lineLimit(1)
                 if reconnecting { Text(L10n.string("Reconnecting")).font(.caption).foregroundStyle(.secondary) }
                 else if agent.isPaused { Text(L10n.string("Paused")).font(.caption).foregroundStyle(.secondary) }
-                Spacer()
-                Button(action: refresh) { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless).disabled(conversation.isLoading)
+                Spacer(minLength: 8)
+                Button(action: refresh) { Image(systemName: "arrow.clockwise").frame(width: 26, height: 26) }
+                    .buttonStyle(.borderless).parityPointer().disabled(conversation.isLoading)
                     .help(L10n.string("Refresh")).accessibilityLabel(L10n.string("Refresh conversation"))
+                Button(action: toggleDetails) {
+                    Image(systemName: "sidebar.right").frame(width: 26, height: 26)
+                        .foregroundStyle(showsDetails ? Color.primary : Color.secondary)
+                }
+                .buttonStyle(.borderless).parityPointer()
+                .help(L10n.string(showsDetails ? "Hide dot details" : "Show dot details"))
+                .accessibilityLabel(L10n.string(showsDetails ? "Hide dot details" : "Show dot details"))
             }
-            .padding(.horizontal, 28).padding(.vertical, 16)
+            .padding(.horizontal, 20).frame(height: Self.headerHeight)
             if let failure = conversation.failure ?? connectionFailure {
                 HStack { Text(failure.message); Spacer(); Button(L10n.string("Try again"), action: refresh) }
-                    .font(.caption).padding(.horizontal, 28).padding(.bottom, 10)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: ParityTheme.contentWidth)
+                    .padding(.horizontal, ParityTheme.conversationInset).padding(.bottom, 8)
             }
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    if conversation.before != nil {
-                        Button(L10n.string("Load earlier messages"), action: loadOlder)
-                            .buttonStyle(.borderless).disabled(conversation.isLoading)
-                            .frame(maxWidth: .infinity)
+                LazyVStack(alignment: .leading, spacing: ConversationLayout.turnSpacing) {
+                    if conversation.before != nil || conversation.olderFailure != nil {
+                        olderMessages
                     }
-                    if conversation.isLoading { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
-                    ForEach(conversation.visibleMessages) { message in
-                        messageRow(message).id(message.id)
+                    if !conversation.loaded, conversation.isLoading {
+                        ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.vertical, 30)
                     }
-                    if conversation.loaded, conversation.visibleMessages.isEmpty {
+                    let messages = conversation.visibleMessages
+                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                        messageRow(message, startsRun: index == 0 || messages[index - 1].author != message.author)
+                            .id(message.id)
+                    }
+                    if conversation.loaded, messages.isEmpty {
                         Text(L10n.string("No messages yet")).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity).padding(.vertical, 30)
                     }
@@ -204,66 +318,128 @@ struct PersonalAgentConversationView: View {
                 .scrollTargetLayout()
                 .frame(maxWidth: ParityTheme.contentWidth)
                 .padding(.horizontal, ParityTheme.conversationInset)
-                .padding(.vertical, 20)
+                .padding(.top, 8)
+                .padding(.bottom, ConversationLayout.bottomPadding)
                 .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
             .scrollPosition(id: $conversation.anchor)
-            if loadingAttachment { ProgressView().controlSize(.small).padding(8) }
-            if let attachmentFailure {
-                Text(attachmentFailure.message).font(.caption).foregroundStyle(.secondary).padding(8)
+            if isLoadingAttachment || attachmentFailure != nil {
+                HStack(spacing: 6) {
+                    if isLoadingAttachment { ProgressView().controlSize(.small) }
+                    if let attachmentFailure { Text(attachmentFailure.message) }
+                }
+                .font(.caption).foregroundStyle(.secondary).padding(.bottom, 4)
             }
             PersonalAgentComposer(draft: conversation.draft, send: send)
                 .frame(maxWidth: ParityTheme.contentWidth)
-                .padding(.horizontal, ParityTheme.conversationInset).padding(.bottom, 16)
+                .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 16)
+                .frame(maxWidth: .infinity)
         }
         .background(ParityTheme.canvas)
-        .sheet(item: $preview) { file in
-            PersonalAgentAttachmentPreview(file: file) { preview = nil }
-        }
     }
 
-    private func messageRow(_ message: PersonalAgentMessage) -> some View {
-        let own = message.author == .person
-        return HStack(alignment: .top, spacing: 0) {
-            if own { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text(author(message.author)).font(.system(size: 11, weight: .medium))
-                    if let time = message.createdAt { Text(time, style: .time).font(.system(size: 10)) }
-                }
-                .foregroundStyle(.secondary)
-                if message.isDeleted {
-                    Text(L10n.string("Message deleted")).foregroundStyle(.secondary).italic()
-                } else {
-                    TranscriptMarkdownText(text: message.text)
-                        .font(ParityTheme.conversationFont(scale: scale))
-                    ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-                        if attachment.type == "file", attachment.fileID != nil {
-                            Button {
-                                loadingAttachment = true
-                                attachmentFailure = nil
-                                Task {
-                                    defer { loadingAttachment = false }
-                                    do { preview = try PersonalAgentPreviewFile(download: await download(attachment)) }
-                                    catch { attachmentFailure = error as? PersonalAgentFailure ?? .attachmentUnavailable }
-                                }
-                            } label: { Label(attachment.name, systemImage: "paperclip") }
-                                .buttonStyle(.borderless).disabled(loadingAttachment)
+    /// The top of the loaded history: earlier pages load when it comes into view, once each time, and
+    /// stay where the person was reading; a failure waits for the person to try again.
+    private var olderMessages: some View {
+        HStack(spacing: 8) {
+            if conversation.isLoading, conversation.loaded {
+                ProgressView().controlSize(.small)
+                Text(L10n.string("Loading earlier messages…"))
+            } else if let failure = conversation.olderFailure {
+                Text(L10n.string("Earlier messages could not be loaded."))
+                    .help(failure.message)
+                Button(L10n.string("Try again"), action: readEarlier).buttonStyle(.borderless).parityPointer()
+            } else {
+                Button(L10n.string("Load earlier messages"), action: readEarlier).buttonStyle(.borderless).parityPointer()
+            }
+        }
+        .font(.system(size: 12 * scale))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+        .onAppear { if conversation.olderFailure == nil { readEarlier() } }
+    }
+
+    private func readEarlier() {
+        guard !conversation.isLoading else { return }
+        // Prepending keeps the message read first in its place.
+        conversation.anchor = conversation.visibleMessages.first?.id
+        loadOlder()
+    }
+
+    @ViewBuilder
+    private func messageRow(_ message: PersonalAgentMessage, startsRun: Bool) -> some View {
+        if message.author == .person {
+            VStack(alignment: .trailing, spacing: 6) {
+                SentUserMessage(copyText: message.isDeleted ? "" : message.text, images: [],
+                                minimumLeadingSpace: ConversationLayout.sentMessageLeadingSpace) {
+                    Group {
+                        if message.isDeleted {
+                            Text(L10n.string("Message deleted")).italic().foregroundStyle(.secondary)
                         } else {
-                            Label(attachment.name, systemImage: "paperclip").foregroundStyle(.secondary)
-                                .help(L10n.string("This attachment cannot be opened here yet."))
+                            Text(message.text).textSelection(.enabled)
+                        }
+                    }
+                    .font(ParityTheme.conversationFont(scale: scale))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(ConversationLayout.sentBubblePadding)
+                    .background(ParityTheme.selectedFill,
+                                in: RoundedRectangle(cornerRadius: ConversationLayout.sentBubbleCornerRadius))
+                    .frame(maxWidth: ConversationLayout.sentBubbleMaximumWidth, alignment: .trailing)
+                }
+                attachments(of: message)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .help(message.createdAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "")
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(L10n.string("You"))
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if startsRun {
+                    HStack(spacing: 7) {
+                        PersonalAgentAvatarView(name: author(message.author),
+                                                data: message.author == .agent ? avatar : nil, size: 20)
+                        Text(author(message.author)).font(.system(size: 12.5 * scale, weight: .semibold))
+                        if let time = message.createdAt {
+                            Text(time.formatted(date: Calendar.current.isDateInToday(time) ? .omitted : .abbreviated,
+                                                time: .shortened))
+                                .font(.system(size: 11.5 * scale)).foregroundStyle(.secondary)
                         }
                     }
                 }
+                if message.isDeleted {
+                    Text(L10n.string("Message deleted")).foregroundStyle(.secondary).italic()
+                } else if !message.text.isEmpty {
+                    TranscriptMarkdownText(text: message.text)
+                        .font(ParityTheme.conversationFont(scale: scale))
+                        .textSelection(.enabled)
+                }
+                attachments(of: message)
             }
-            .textSelection(.enabled)
-            .padding(own ? 12 : 0)
-            .frame(maxWidth: own ? 472 : .infinity, alignment: .leading)
-            .background(own ? ParityTheme.selectedFill : .clear, in: RoundedRectangle(cornerRadius: 10))
-            if !own { Spacer(minLength: 16) }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
         }
-        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func attachments(of message: PersonalAgentMessage) -> some View {
+        if !message.isDeleted, !message.attachments.isEmpty {
+            VStack(alignment: message.author == .person ? .trailing : .leading, spacing: 4) {
+                ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
+                    if attachment.type == "file", attachment.fileID != nil {
+                        Button { open(attachment) } label: {
+                            Label(attachment.name, systemImage: "paperclip").lineLimit(1).truncationMode(.middle)
+                        }
+                        .buttonStyle(.borderless).parityPointer().disabled(isLoadingAttachment)
+                    } else {
+                        Label(attachment.name, systemImage: "paperclip").foregroundStyle(.secondary)
+                            .help(L10n.string("This attachment cannot be opened here yet."))
+                    }
+                }
+            }
+            .font(.system(size: 12.5 * scale))
+        }
     }
 
     private func author(_ value: PersonalAgentMessage.Author) -> String {
@@ -272,6 +448,220 @@ struct PersonalAgentConversationView: View {
         case .agent: agent.name
         case let .other(name): name
         case .unknown: L10n.string("Unknown sender")
+        }
+    }
+}
+
+/// What the stock app shows beside a dot's conversation, as far as Yardlet reads it: the dot, its
+/// Activity, its schedules, the computers its root thread can use, and the files in the conversation
+/// loaded here. Every part reads only; none starts work, connects a computer or changes the dot.
+struct PersonalAgentDetailsPanel: View {
+    static let width: CGFloat = SessionRailPlacement.width
+
+    let agent: PersonalAgent
+    let avatar: Data?
+    let accountTitle: String?
+    let details: PersonalAgentDetails?
+    let attachments: [PersonalAgentAttachment]
+    let isLoadingAttachment: Bool
+    let open: (PersonalAgentAttachment) -> Void
+    let retry: () -> Void
+    let loadMoreActivity: () -> Void
+    /// Hides the details raised over a narrow conversation.
+    var close: (() -> Void)? = nil
+    @Environment(\.yardletInterfaceScale) private var scale
+
+    /// The openable files of the loaded messages, newest first, each once.
+    static func attachments(in messages: [PersonalAgentMessage]) -> [PersonalAgentAttachment] {
+        var seen = Set<String>()
+        return messages.reversed().filter { !$0.isDeleted }.flatMap(\.attachments).filter { attachment in
+            guard attachment.type == "file", let id = attachment.fileID else { return false }
+            return seen.insert(id).inserted
+        }
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 22) {
+                profile
+                section(L10n.string("Activity")) { activity }
+                section(L10n.string("Scheduled")) { schedules }
+                if agent.rootThreadID != nil {
+                    section(L10n.string("Computers")) { computers }
+                }
+                section(L10n.string("Conversation attachments")) { conversationFiles }
+            }
+            .font(.system(size: 12 * scale))
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
+            .frame(width: Self.width, alignment: .leading)
+        }
+        .scrollIndicators(.automatic)
+        .frame(width: Self.width)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(ParityTheme.canvas)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.string("Dot details"))
+    }
+
+    private var profile: some View {
+        HStack(spacing: 12) {
+            PersonalAgentAvatarView(name: agent.name, data: avatar, size: 48)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(agent.name).font(.system(size: 14 * scale, weight: .semibold)).lineLimit(1)
+                if let accountTitle {
+                    Text(accountTitle).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                if agent.isPaused { Text(L10n.string("Paused")).foregroundStyle(.secondary) }
+            }
+            Spacer(minLength: 0)
+            if let close {
+                Button(action: close) { Image(systemName: "xmark").frame(width: 24, height: 24) }
+                    .buttonStyle(.borderless).parityPointer()
+                    .help(L10n.string("Hide dot details"))
+                    .accessibilityLabel(L10n.string("Hide dot details"))
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 12 * scale, weight: .semibold))
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+
+    @ViewBuilder
+    private func state<Value: Equatable, Rows: View>(_ part: PersonalAgentDetails.Part<Value>?, empty: String,
+                                                     isEmpty: (Value) -> Bool,
+                                                     @ViewBuilder rows: (Value) -> Rows) -> some View {
+        switch part ?? .loading {
+        case .loading:
+            ProgressView().controlSize(.small)
+        case let .failed(failure):
+            HStack(spacing: 6) {
+                Text(L10n.string("Could not load this.")).foregroundStyle(.secondary).help(failure.message)
+                Button(L10n.string("Try again"), action: retry).buttonStyle(.borderless).parityPointer()
+            }
+        case let .loaded(value):
+            if isEmpty(value) { Text(empty).foregroundStyle(.secondary) } else { rows(value) }
+        }
+    }
+
+    private var activity: some View {
+        state(details?.activity, empty: L10n.string("No activity yet"), isEmpty: \.isEmpty) { items in
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(items) { item in
+                    SessionRailRow(systemName: Self.symbol(item), title: item.title) {
+                        if let date = item.updatedAt {
+                            Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))
+                                .font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                        }
+                    }
+                    .help(item.preview ?? item.title)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityValue(Self.statusText(item))
+                }
+                if details?.activityCursor != nil {
+                    Button(L10n.string("Show more"), action: loadMoreActivity)
+                        .buttonStyle(.plain).foregroundStyle(.secondary).font(.caption).parityPointer()
+                        .disabled(details?.isLoadingMoreActivity == true)
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    private var schedules: some View {
+        state(details?.schedules, empty: L10n.string("No scheduled tasks."), isEmpty: \.isEmpty) { items in
+            SessionRailLimitedList(items: items, limit: 5) { item in
+                SessionRailRow(systemName: "clock", title: item.title ?? L10n.string("Scheduled task")) {
+                    if item.isEnabled == false {
+                        Text(L10n.string("Off")).font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var computers: some View {
+        state(details?.computers, empty: L10n.string("No computers"), isEmpty: \.isEmpty) { items in
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(items) { computer in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: computer.isCloud ? "cloud" : "desktopcomputer")
+                            .foregroundStyle(.secondary).frame(width: 16).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(computer.name).lineLimit(1).truncationMode(.middle)
+                            if let status = Self.statusText(computer) {
+                                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                    .frame(minHeight: 24)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
+    private var conversationFiles: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if attachments.isEmpty {
+                Text(L10n.string("No files in the loaded messages")).foregroundStyle(.secondary)
+            } else {
+                SessionRailLimitedList(items: attachments.map(IdentifiedAttachment.init), limit: 6) { item in
+                    Button { open(item.attachment) } label: {
+                        SessionRailRow(systemName: SessionRailOutputsCard.symbol(URL(filePath: item.attachment.name.isEmpty ? "file" : item.attachment.name)),
+                                       title: item.attachment.name)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).parityPointer().disabled(isLoadingAttachment)
+                }
+            }
+            Text(L10n.string("Only files in the messages loaded here."))
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+        }
+    }
+
+    private struct IdentifiedAttachment: Identifiable {
+        let attachment: PersonalAgentAttachment
+        var id: String { attachment.fileID ?? attachment.name }
+    }
+
+    static func symbol(_ item: PersonalAgentActivity) -> String {
+        switch (item.status, item.outcome) {
+        case (.running, _): "circle.dotted"
+        case (_, .succeeded): "checkmark.circle"
+        case (_, .failed): "xmark.circle"
+        case (_, .interrupted): "pause.circle"
+        default: "circle"
+        }
+    }
+
+    static func statusText(_ item: PersonalAgentActivity) -> String {
+        switch (item.status, item.outcome) {
+        case (.running, _): L10n.string("Running")
+        case (_, .succeeded): L10n.string("Completed")
+        case (_, .failed): L10n.string("Failed")
+        case (_, .interrupted): L10n.string("Interrupted")
+        default: ""
+        }
+    }
+
+    /// The provider's availability when it gives one; otherwise only whether the dot may use the computer.
+    static func statusText(_ computer: PersonalAgentComputer) -> String? {
+        switch computer.availability {
+        case .connected: L10n.string("Connected")
+        case .disconnected: L10n.string("Not connected")
+        case .offline: L10n.string("Offline")
+        case .unknown: computer.isAttached ? L10n.string("Allowed for this dot") : nil
         }
     }
 }
@@ -322,17 +712,18 @@ private struct PersonalAgentComposer: View {
                         Spacer()
                         if draft.isSending { ProgressView().controlSize(.small) }
                         if draft.pending == nil {
-                            Button(action: submit) { Image(systemName: "arrow.up").frame(width: 20, height: 20) }
-                                .buttonStyle(.borderless)
+                            ParityIconButton(systemName: "arrow.up", help: L10n.string("Send"), isProminent: true,
+                                             action: submit)
                                 .accessibilityLabel(L10n.string("Send message"))
                                 .disabled(draft.isSending || draft.storageFailed || draft.editor.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
-                        else { Color.clear.frame(width: 20, height: 20) }
+                        else { Color.clear.frame(width: 28, height: 28) }
                     }
-                    .padding(.horizontal, 12).padding(.bottom, 10)
+                    .padding(.leading, 10).padding(.trailing, 9).padding(.bottom, 9)
                 }
                 // A pending result is resolved with the original request and text.
                 .disabled(draft.isSending || draft.pending != nil)
+                .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
         }
         .alert(L10n.string("Return to editing?"), isPresented: $confirmsEditing) {
             Button(L10n.string("Cancel"), role: .cancel) { }

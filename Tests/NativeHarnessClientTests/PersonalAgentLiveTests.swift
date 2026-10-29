@@ -77,6 +77,19 @@ final class PersonalAgentLiveTests: XCTestCase {
                 XCTAssertFalse(previous.messages.contains { $0.id == before })
                 XCTAssertEqual(Set(previous.messages.map(\.id)).count, previous.messages.count)
             }
+            // The dot's picture and details read as the window reads them; nothing is printed or saved.
+            if agent.avatar != nil {
+                let picture = try await reader.avatar(for: agent)
+                let decoded = await MainActor.run { PersonalAgentAvatarView.decode(picture) != nil }
+                XCTAssertTrue(decoded, "The profile picture is a bounded image")
+            }
+            let activity = try await reader.activity(for: agent, cursor: nil)
+            XCTAssertEqual(Set(activity.items.map(\.id)).count, activity.items.count)
+            let schedules = try await reader.schedules(for: agent)
+            XCTAssertEqual(Set(schedules.map(\.id)).count, schedules.count)
+            if agent.rootThreadID != nil {
+                _ = try await reader.computers(for: agent)
+            }
             let stream = await reader.updates(for: agent)
             let timeout = Task {
                 try? await Task.sleep(for: .seconds(15))

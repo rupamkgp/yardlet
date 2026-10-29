@@ -16,8 +16,27 @@ final class PersonalAgentConversation {
     var isLoading = false
     @ObservationIgnored var loadID: UUID?
     var failure: PersonalAgentFailure?
+    /// Why the last read of earlier messages failed; the conversation stays as it was.
+    var olderFailure: PersonalAgentFailure?
 
     init(draft: PersonalAgentDraft = PersonalAgentDraft()) { self.draft = draft }
+}
+
+/// What the selected dot's details show beside its conversation. Each part loads and fails on its
+/// own, so an optional read never blocks the messages; a changed account clears them with the rest.
+@MainActor @Observable
+final class PersonalAgentDetails {
+    enum Part<Value: Equatable>: Equatable {
+        case loading, loaded(Value), failed(PersonalAgentFailure)
+        var value: Value? { if case let .loaded(value) = self { value } else { nil } }
+    }
+    var activity: Part<[PersonalAgentActivity]> = .loading
+    var activityCursor: String?
+    var isLoadingMoreActivity = false
+    /// Which refresh is current: a reply to an earlier one, or a later Activity page of it, is dropped.
+    @ObservationIgnored var refreshEpoch = 0
+    var schedules: Part<[PersonalAgentSchedule]> = .loading
+    var computers: Part<[PersonalAgentComputer]> = .loading
 }
 
 /// Window-owned reading state. Switching the shell does not modify the selected
@@ -38,9 +57,25 @@ final class PersonalAgentCenter {
     @ObservationIgnored private var pendingRefresh = false
     @ObservationIgnored private let drafts: PersonalAgentDrafts
     private var conversations: [PersonalAgentIdentity: PersonalAgentConversation] = [:]
+    private var detailsByAgent: [PersonalAgentIdentity: PersonalAgentDetails] = [:]
+    /// Profile pictures read in this window, by dot and picture version; memory only.
+    private var avatarData: [AvatarKey: Data] = [:]
+    @ObservationIgnored private var unavailableAvatars: Set<AvatarKey> = []
+    @ObservationIgnored private var avatarTask: Task<Void, Never>?
+
+    private struct AvatarKey: Hashable {
+        let identity: PersonalAgentIdentity
+        let version: String
+    }
 
     var selected: PersonalAgent? { agents.first { $0.id == selectedID } }
     var conversation: PersonalAgentConversation? { selectedID.flatMap { conversations[$0] } }
+    var details: PersonalAgentDetails? { selectedID.flatMap { detailsByAgent[$0] } }
+
+    /// The picture read for `agent`'s current profile, if any; the view decodes and bounds it.
+    func avatar(for agent: PersonalAgent) -> Data? {
+        agent.avatar.flatMap { avatarData[AvatarKey(identity: agent.id, version: $0.version)] }
+    }
 
     init(drafts: PersonalAgentDrafts = PersonalAgentDrafts()) { self.drafts = drafts }
 
@@ -71,6 +106,9 @@ final class PersonalAgentCenter {
             if !values.contains(where: { $0.id == selectedID }) {
                 selectedID = values.first(where: \.isPrimary)?.id ?? values.first?.id
             }
+            // A new connection rereads the profiles, whose signed picture locations may be new.
+            unavailableAvatars = []
+            loadAvatars(values, from: reader, generation: current)
             await showSelected()
         } catch {
             guard current == generation, !Task.isCancelled else { return }
@@ -92,6 +130,8 @@ final class PersonalAgentCenter {
         if conversations[agent.id] == nil {
             conversations[agent.id] = PersonalAgentConversation(draft: drafts.draft(source: draftSourceKey, identity: agent.id))
         }
+        // Each connection reads the details again: an earlier connection's reads were dropped with it.
+        refreshDetails()
         await refreshConversation()
         guard selectedID == agent.id, current == generation, !Task.isCancelled else { return }
         events?.cancel()
@@ -124,7 +164,7 @@ final class PersonalAgentCenter {
         defer {
             if state.loadID == loadID { state.isLoading = false; state.loadID = nil }
         }
-        state.failure = nil
+        if older { state.olderFailure = nil } else { state.failure = nil }
         do {
             let page = try await reader.messages(for: agent, before: before)
             guard current == generation, !Task.isCancelled else { return }
@@ -164,13 +204,97 @@ final class PersonalAgentCenter {
         } catch {
             guard current == generation, !Task.isCancelled else { return }
             let failure = error as? PersonalAgentFailure ?? .network
-            state.failure = failure
+            if older { state.olderFailure = failure } else { state.failure = failure }
             if failure == .accountChanged || failure == .signInRequired { accept(failure) }
         }
         state.isLoading = false
         if pendingRefresh, current == generation {
             pendingRefresh = false
             await refreshConversation()
+        }
+    }
+
+    /// Reads the selected dot's Activity, schedules and computers again, each on its own.
+    func refreshDetails() {
+        guard let agent = selected, let reader = client else { return }
+        let current = generation
+        let details = detailsByAgent[agent.id] ?? PersonalAgentDetails()
+        detailsByAgent[agent.id] = details
+        details.refreshEpoch += 1
+        let epoch = details.refreshEpoch
+        // The shown list stays; its next page is the old read's, so "Show more" waits for the new first page.
+        details.activityCursor = nil
+        Task {
+            do {
+                let page = try await reader.activity(for: agent, cursor: nil)
+                guard current == generation, epoch == details.refreshEpoch else { return }
+                details.activity = .loaded(page.items)
+                details.activityCursor = page.cursor
+            } catch {
+                if current == generation, epoch == details.refreshEpoch { details.activity = .failed(detailFailure(error)) }
+            }
+        }
+        Task {
+            do {
+                let values = try await reader.schedules(for: agent)
+                if current == generation, epoch == details.refreshEpoch { details.schedules = .loaded(values) }
+            } catch {
+                if current == generation, epoch == details.refreshEpoch { details.schedules = .failed(detailFailure(error)) }
+            }
+        }
+        Task {
+            do {
+                let values = try await reader.computers(for: agent)
+                if current == generation, epoch == details.refreshEpoch { details.computers = .loaded(values) }
+            } catch {
+                if current == generation, epoch == details.refreshEpoch { details.computers = .failed(detailFailure(error)) }
+            }
+        }
+    }
+
+    func loadMoreActivity() async {
+        guard let agent = selected, let reader = client, let details = detailsByAgent[agent.id],
+              let cursor = details.activityCursor, !details.isLoadingMoreActivity, details.activity.value != nil else { return }
+        let current = generation
+        let epoch = details.refreshEpoch
+        details.isLoadingMoreActivity = true
+        defer { details.isLoadingMoreActivity = false }
+        do {
+            let page = try await reader.activity(for: agent, cursor: cursor)
+            // A refresh since then replaced the list this page continued.
+            guard current == generation, epoch == details.refreshEpoch, let shown = details.activity.value else { return }
+            let known = Set(shown.map(\.id))
+            details.activity = .loaded(DotsProjection.sortedActivity(shown + page.items.filter { !known.contains($0.id) }))
+            details.activityCursor = page.cursor
+        } catch {
+            if current == generation { _ = detailFailure(error) }
+        }
+    }
+
+    /// A part's own failure; a changed account or sign-in also ends the whole view, as any read does.
+    private func detailFailure(_ error: Error) -> PersonalAgentFailure {
+        let failure = error as? PersonalAgentFailure ?? .network
+        if failure == .accountChanged || failure == .signInRequired { accept(failure) }
+        return failure
+    }
+
+    private func loadAvatars(_ values: [PersonalAgent], from reader: any PersonalAgentClient, generation current: Int) {
+        avatarTask?.cancel()
+        let wanted = values.compactMap { agent in agent.avatar.map { (agent, AvatarKey(identity: agent.id, version: $0.version)) } }
+        avatarTask = Task { [weak self] in
+            for (agent, key) in wanted {
+                guard let self, self.generation == current, !Task.isCancelled else { return }
+                guard self.avatarData[key] == nil, !self.unavailableAvatars.contains(key) else { continue }
+                do {
+                    let data = try await reader.avatar(for: agent)
+                    guard self.generation == current, !Task.isCancelled else { return }
+                    self.avatarData[key] = data
+                } catch {
+                    // A picture that cannot be read leaves the dot's initial; the messages carry on.
+                    guard self.generation == current else { return }
+                    self.unavailableAvatars.insert(key)
+                }
+            }
         }
     }
 
@@ -223,6 +347,8 @@ final class PersonalAgentCenter {
         generation += 1
         events?.cancel()
         events = nil
+        avatarTask?.cancel()
+        avatarTask = nil
         pendingRefresh = false
         isLoading = false
         isReconnecting = false
@@ -247,6 +373,9 @@ final class PersonalAgentCenter {
         agents = []
         selectedID = nil
         conversations = [:]
+        detailsByAgent = [:]
+        avatarData = [:]
+        unavailableAvatars = []
         hasLoaded = false
         failure = nil
     }
@@ -257,6 +386,9 @@ final class PersonalAgentCenter {
             agents = []
             selectedID = nil
             conversations = [:]
+            detailsByAgent = [:]
+            avatarData = [:]
+            unavailableAvatars = []
         }
         failure = value
     }

@@ -121,8 +121,14 @@ struct MainWindow: View {
     /// The person on this Mac, read once for the account button.
     @State private var accountIdentity = SidebarAccountIdentity.current()
 
-    init(model: AppModel) {
+    /// What the personal agents are read through in place of the chosen account's Dots, for a rendered
+    /// window; its drafts then stay in memory.
+    private let personalAgentReader: (() -> any PersonalAgentClient)?
+
+    init(model: AppModel, personalAgentReader: (() -> any PersonalAgentClient)? = nil) {
         self.model = model
+        self.personalAgentReader = personalAgentReader
+        if personalAgentReader != nil { _personalAgents = State(initialValue: PersonalAgentCenter()) }
     }
 
     private var visibleGroups: [WorkspaceGroup] {
@@ -358,6 +364,22 @@ struct MainWindow: View {
         closeSchedules()
         model.splits.showNewTask()
         homeKeyboardFocus.move(to: .chat)
+    }
+
+    // MARK: - Personal agents
+
+    /// The sidebar's "Personal agents": the agents in the task list's place, the chosen one's conversation
+    /// beside it. The tasks keep what they showed for the way back.
+    private func showPersonalAgents() {
+        withAnimation(ParityMotion.easeInOut(reduceMotion: reduceMotion)) {
+            isSidebarVisible = true
+            sidebarSection = .personalAgents
+        }
+    }
+
+    private func closePersonalAgents() {
+        withAnimation(ParityMotion.easeInOut(reduceMotion: reduceMotion)) { sidebarSection = .tasks }
+        focusCurrentContent()
     }
 
     // MARK: - Scheduled tasks
@@ -1652,9 +1674,9 @@ struct MainWindow: View {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                         VStack(spacing: 0) {
                             sidebarTitleBar
-                            ShellSectionPicker(selection: $sidebarSection)
                             PersonalAgentsSidebar(center: personalAgents, accounts: personalAccounts,
                                 accountID: $personalAccountID, accountMenu: accountMenu,
+                                onBack: closePersonalAgents,
                                 onAccounts: { presentSettings(.harnesses) },
                                 onRefresh: reconnectPersonalAgents)
                         }
@@ -1663,7 +1685,6 @@ struct MainWindow: View {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                         VStack(spacing: 0) {
                             sidebarTitleBar
-                            ShellSectionPicker(selection: $sidebarSection)
                             ScheduledTasksSidebar(model: model, state: schedulesWindow, onBack: closeSchedules,
                                                   actions: scheduleActions)
                         }
@@ -1672,7 +1693,6 @@ struct MainWindow: View {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                     VStack(spacing: 0) {
                     sidebarTitleBar
-                    ShellSectionPicker(selection: $sidebarSection)
                     ArchivedTaskList(
                         archived: model.store.archivedSessions,
                         errorMessage: model.archivedTaskError,
@@ -1689,7 +1709,6 @@ struct MainWindow: View {
                     SidebarColumn(state: sidebarWidth, windowWidth: knownWindowWidth) {
                     VStack(spacing: 0) {
                     sidebarTitleBar
-                    ShellSectionPicker(selection: $sidebarSection)
                     TaskSidebar(
                         layout: sidebarLayout,
                         allGroups: allVisibleGroups,
@@ -1699,6 +1718,7 @@ struct MainWindow: View {
                         searchText: $searchText,
                         onNewTask: showNewTask,
                         onShowSchedules: showSchedules,
+                        onShowPersonalAgents: showPersonalAgents,
                         onActivate: activateRow,
                         onNewTaskInProject: { workspaceURL in
                             let project = projects.ensureProject(forRoot: workspaceURL)
@@ -1765,7 +1785,9 @@ struct MainWindow: View {
                     if sidebarSection == .personalAgents {
                         VStack(spacing: 0) {
                             titleBar(for: nil)
-                            PersonalAgentsContent(center: personalAgents, onRetry: reconnectPersonalAgents,
+                            PersonalAgentsContent(center: personalAgents,
+                                                  accountTitle: personalAccounts.first { $0.id == personalAccountID }?.title,
+                                                  onRetry: reconnectPersonalAgents,
                                                   onAccounts: { presentSettings(.harnesses) })
                         }
                     } else if model.isRestoringIndex {
@@ -1874,6 +1896,9 @@ struct MainWindow: View {
 
     private func connectPersonalAgents() async {
         guard sidebarSection == .personalAgents, !Task.isCancelled else { return }
+        if let personalAgentReader {
+            return await personalAgents.connect(sourceKey: personalLoadKey, makeClient: personalAgentReader)
+        }
         guard let runtime = model.runtimeSelections.selectedURL(for: .codex) else {
             await personalAgents.disconnect()
             guard !Task.isCancelled else { return }

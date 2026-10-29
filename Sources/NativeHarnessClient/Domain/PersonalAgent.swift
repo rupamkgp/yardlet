@@ -1,14 +1,10 @@
 import Foundation
 
+/// What a window's sidebar and content show: the coding tasks, or the personal agents opened from the
+/// task list's row below Scheduled tasks.
 enum ShellSection: String, CaseIterable, Identifiable {
     case tasks, personalAgents
     var id: Self { self }
-    var title: String {
-        switch self {
-        case .tasks: L10n.string("Tasks")
-        case .personalAgents: L10n.string("Personal agents")
-        }
-    }
 }
 
 /// A cloud agent is not a coding task. Its account, profile and messaging room
@@ -26,6 +22,53 @@ struct PersonalAgent: Identifiable, Equatable, Sendable {
     let rootThreadID: String?
     let isPaused: Bool
     let isPrimary: Bool
+    var avatar: PersonalAgentAvatar? = nil
+}
+
+/// A dot's static picture as its profile names it. The location is a signed provider URL: only the
+/// transport reads it, and it never appears in a description, a log or a saved file.
+struct PersonalAgentAvatar: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    let location: String
+    /// What tells one picture from the next: its snapshot's content hash when the profile has one.
+    let version: String
+
+    var description: String { "PersonalAgentAvatar(\(version))" }
+    var debugDescription: String { description }
+}
+
+/// A dot's task in its Activity: running first, then by when it last changed.
+struct PersonalAgentActivity: Identifiable, Equatable, Sendable {
+    enum Status: Equatable, Sendable { case running, completed, unknown }
+    enum Outcome: Equatable, Sendable { case succeeded, failed, interrupted, unknown }
+    let id: String
+    let title: String
+    let status: Status
+    let outcome: Outcome
+    let updatedAt: Date?
+    let preview: String?
+}
+
+struct PersonalAgentActivityPage: Equatable, Sendable {
+    let items: [PersonalAgentActivity]
+    let cursor: String?
+}
+
+/// One of a dot's schedules, as far as its list names it.
+struct PersonalAgentSchedule: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String?
+    let isEnabled: Bool?
+}
+
+/// A computer the dot's root thread can work on. Being attached is the dot's permission to use it;
+/// whether it is reachable is a separate provider status, unknown when the provider gives none.
+struct PersonalAgentComputer: Identifiable, Equatable, Sendable {
+    enum Availability: Equatable, Sendable { case connected, disconnected, offline, unknown }
+    let id: String
+    let name: String
+    let isCloud: Bool
+    let isAttached: Bool
+    let availability: Availability
 }
 
 struct PersonalAgentMessage: Identifiable, Equatable, Sendable {
@@ -101,6 +144,11 @@ protocol PersonalAgentClient: Actor {
     func updates(for agent: PersonalAgent) async -> AsyncStream<PersonalAgentUpdate>
     func send(_ submission: PersonalAgentSubmission, to agent: PersonalAgent) async throws -> PersonalAgentMessage
     func download(_ attachment: PersonalAgentAttachment, for agent: PersonalAgent) async throws -> PersonalAgentDownload
+    /// The bytes of the dot's profile picture, bounded; never read with an account credential on storage hosts.
+    func avatar(for agent: PersonalAgent) async throws -> Data
+    func activity(for agent: PersonalAgent, cursor: String?) async throws -> PersonalAgentActivityPage
+    func schedules(for agent: PersonalAgent) async throws -> [PersonalAgentSchedule]
+    func computers(for agent: PersonalAgent) async throws -> [PersonalAgentComputer]
     func stop() async
 }
 
@@ -116,7 +164,92 @@ enum DotsProjection {
             return PersonalAgent(id: .init(accountID: accountID, userID: userID, agentID: id, roomID: room),
                 name: item["display_name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? "Dots",
                 rootThreadID: item["active_root_thread_id"]?.stringValue,
-                isPaused: item["is_paused"] == .bool(true), isPrimary: id == selected)
+                isPaused: item["is_paused"] == .bool(true), isPrimary: id == selected, avatar: avatar(item))
+        }
+    }
+
+    /// The profile's static snapshot. `avatar_file_id` and the snapshot's `sediment://` pointer are
+    /// provider asset pointers, not URLs; only an HTTPS `avatar_url` is a picture to read.
+    static func avatar(_ profile: JSONValue) -> PersonalAgentAvatar? {
+        guard let raw = profile["avatar_url"]?.stringValue, URL(string: raw)?.scheme == "https" else { return nil }
+        let snapshot = profile["avatar_manifest"]?["snapshot"]
+        let version = snapshot?["content_sha256"]?.stringValue ?? snapshot?["asset_pointer"]?.stringValue
+            ?? profile["updated_at"]?.stringValue ?? ""
+        return .init(location: raw, version: version)
+    }
+
+    static func activity(_ page: JSONValue) throws -> PersonalAgentActivityPage {
+        guard case let .array(items)? = page["data"] else { throw PersonalAgentFailure.invalidResponse }
+        let values = items.compactMap { item -> PersonalAgentActivity? in
+            guard let id = item["thread_id"]?.stringValue, !id.isEmpty else { return nil }
+            let status: PersonalAgentActivity.Status = switch item["status"]?.stringValue ?? "" {
+            case "in_progress": .running
+            case "completed": .completed
+            default: .unknown
+            }
+            let outcome: PersonalAgentActivity.Outcome = switch item["outcome"]?.stringValue ?? "" {
+            case "succeeded": .succeeded
+            case "failed": .failed
+            case "interrupted": .interrupted
+            default: .unknown
+            }
+            return .init(id: id, title: item["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+                            ?? L10n.string("Untitled task"),
+                         status: status, outcome: outcome, updatedAt: epoch(item["updated_at"] ?? item["created_at"]),
+                         preview: item["preview"]?["text"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 })
+        }
+        return .init(items: sortedActivity(values), cursor: page["next_cursor"]?.stringValue)
+    }
+
+    /// The provider's order: running tasks first, interrupted ones after the rest, then the newest change.
+    static func sortedActivity(_ items: [PersonalAgentActivity]) -> [PersonalAgentActivity] {
+        func rank(_ item: PersonalAgentActivity) -> Int {
+            item.status == .running ? 0 : item.outcome == .interrupted ? 2 : 1
+        }
+        return items.enumerated().sorted { a, b in
+            let (ra, rb) = (rank(a.element), rank(b.element))
+            if ra != rb { return ra < rb }
+            let (da, db) = (a.element.updatedAt ?? .distantPast, b.element.updatedAt ?? .distantPast)
+            return da != db ? da > db : a.offset < b.offset
+        }.map(\.element)
+    }
+
+    static func schedules(_ page: JSONValue) throws -> [PersonalAgentSchedule] {
+        guard case let .array(items)? = page["items"] else { throw PersonalAgentFailure.invalidResponse }
+        return items.compactMap { item in
+            guard let id = item["id"]?.stringValue, !id.isEmpty else { return nil }
+            let enabled: Bool? = if case let .bool(value)? = item["is_enabled"] { value } else { nil }
+            return .init(id: id, title: item["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }, isEnabled: enabled)
+        }
+    }
+
+    /// The computers bound to the root thread the request named; a reply for another thread is not this dot's.
+    static func computers(_ value: JSONValue, rootThreadID: String) throws -> [PersonalAgentComputer] {
+        guard value["thread_id"]?.stringValue == rootThreadID, case let .array(items)? = value["computers"] else {
+            throw PersonalAgentFailure.invalidResponse
+        }
+        return items.enumerated().map { index, item in
+            let kind = item["kind"]?.stringValue ?? ""
+            let attached = item["is_attached"] == .bool(true)
+            let availability: PersonalAgentComputer.Availability = switch item["status"]?.stringValue ?? "" {
+            case "offline": .offline
+            case "connected": attached ? .connected : .disconnected
+            default: .unknown
+            }
+            let name = item["display_name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+            // The provider's own client treats `user` as a person's computer and every other kind as its cloud.
+            let isCloud = kind != "user"
+            return .init(id: item["environment_id"]?.stringValue ?? "\(index)-\(kind)",
+                         name: name ?? (isCloud ? L10n.string("Cloud computer") : L10n.string("Computer")),
+                         isCloud: isCloud, isAttached: attached, availability: availability)
+        }
+    }
+
+    private static func epoch(_ value: JSONValue?) -> Date? {
+        switch value {
+        case let .integer(seconds)?: Date(timeIntervalSince1970: Double(seconds))
+        case let .number(seconds)?: Date(timeIntervalSince1970: seconds)
+        default: nil
         }
     }
 

@@ -1,8 +1,10 @@
 # Personal agents
 
-The sidebar has two sections: **Tasks** for coding sessions, and **Personal agents**
-for existing cloud agents. Switching sections retains each conversation's reading
-position and leaves the selected coding task, draft and panels unchanged.
+**Personal agents**, below **Scheduled tasks** in the sidebar, replaces the task
+list with your existing cloud agents, as Scheduled tasks does; the row at its top
+returns to the tasks, where Home, Scheduled tasks and Personal agents are. Opening
+it retains each conversation's reading position and leaves the selected coding
+task, draft and panels unchanged.
 
 The first provider is ChatGPT dots. Choose an existing Codex account in the account
 menu above the agent list. Its runtime-owned ChatGPT login is used for Dots;
@@ -11,18 +13,44 @@ account, user, profile, messaging room and root coding thread are separate ident
 
 ## Reading
 
-The native conversation shows text and attachments. **Load earlier messages**
-reads another page without sending a read receipt. File attachments open in a
-native preview, with an explicit save action. Other attachment types are named
-but cannot be opened here yet. Uploading attachments, reacting, answering
-approvals, pausing an agent and changing its settings are not implemented.
+The native conversation shows text and attachments, with the dot's picture: the
+static snapshot its profile names, not its animated form. The picture is read
+without the account credential from the provider's signed storage, bounded in size,
+kept in memory only and dropped when the account changes; until it arrives, or if
+it cannot be read, the dot's initial stands in.
+
+The conversation opens on the latest page of the room. Reaching its top reads the
+next earlier page once, keeping the message you were reading in place; a failure
+waits for **Try again**, and **Load earlier messages** reads another page by hand.
+Yardlet does not download the whole history in advance, and reading sends no read
+receipt. File attachments open in a native preview, with an explicit save action.
+Other attachment types are named but cannot be opened here yet. Uploading
+attachments, reacting, answering approvals, pausing an agent and changing its
+settings are not implemented.
+
+## Dot details
+
+Beside the conversation, where the window has room, the dot's details show its
+picture, name, account and whether it is paused; its **Activity**; its
+**Scheduled** tasks; the **Computers** its root thread can use; and the
+**Conversation attachments** of the messages loaded so far. In a narrower window
+the conversation keeps its width and the details button in its header raises them
+over it, below the header; their close button, the same header button or Escape
+hides them again. Each part loads and fails on its own, so a part that cannot be read never
+holds up the conversation; a changed account clears them all.
+
+These parts only read. Activity is the dot's own task list, empty until it has
+tasks; it is not the list of its execution threads. A computer being attached
+means the dot may use it; it is shown as connected or offline only when the
+provider says so. The attachments are the files in the loaded messages, not every
+output the dot has produced. Nothing here starts work, connects a computer, runs a
+schedule or changes the dot.
 
 While the personal-agent section is open, a native WebSocket subscription
 invalidates the displayed conversation when its room changes. Reconnection reads
 the displayed range again, including edits, deletions and any missing pages.
-Switching back to
-Tasks or closing the window stops the window's connection; existing cloud work
-continues independently.
+Going back to the tasks or closing the window stops the window's connection;
+existing cloud work continues independently.
 
 The reading cache is in memory only. It is scoped to the chosen runtime/account
 connection. A changed login clears the old view and asks the person to reconnect.
