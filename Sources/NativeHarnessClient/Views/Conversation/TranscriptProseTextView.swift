@@ -126,8 +126,9 @@ final class TranscriptProseContainerView: ConversationFindCenteringView, NSTextV
 
     // MARK: - Content
 
-    /// Builds again only the blocks that changed and replaces the text from the first of them on, so a
-    /// streaming message lays out again only its end. Returns whether the text changed.
+    /// Builds again only the blocks that changed and replaces the text from the first paragraph that
+    /// changed on, so a streaming message lays out and draws again only its end: a list is one block,
+    /// and its items before the one being written stay as they were. Returns whether the text changed.
     @discardableResult
     func update(blocks: [TranscriptProseBlock], style: TranscriptProseStyle) -> Bool {
         if style != self.style {
@@ -150,9 +151,12 @@ final class TranscriptProseContainerView: ConversationFindCenteringView, NSTextV
         }
         if blocks.count < built.count { firstChange = min(firstChange ?? blocks.count, blocks.count) }
         guard let start = firstChange, let storage = textView.textStorage else { return false }
-        let offset = built.prefix(start).reduce(0) { $0 + $1.piece.text.length }
+        var offset = built.prefix(start).reduce(0) { $0 + $1.piece.text.length }
         let replacement = NSMutableAttributedString()
         for item in next[start...] { replacement.append(item.piece.text) }
+        let kept = Self.unchangedParagraphsLength(of: storage, from: offset, in: replacement)
+        replacement.deleteCharacters(in: NSRange(location: 0, length: kept))
+        offset += kept
         let edit = {
             storage.replaceCharacters(in: NSRange(location: offset, length: storage.length - offset), with: replacement)
         }
@@ -185,6 +189,24 @@ final class TranscriptProseContainerView: ConversationFindCenteringView, NSTextV
         needsLayout = true
         textView.window?.invalidateCursorRects(for: textView)
         return true
+    }
+
+    /// How much `replacement` starts with of what `storage` holds from `offset` on, in whole paragraphs
+    /// alike in their words and attributes. TextKit keeps those paragraphs' layout and drawing.
+    private static func unchangedParagraphsLength(of storage: NSTextStorage, from offset: Int,
+                                                  in replacement: NSAttributedString) -> Int {
+        let old = storage.string as NSString, new = replacement.string as NSString
+        var kept = 0
+        while kept < new.length {
+            let paragraph = new.paragraphRange(for: NSRange(location: kept, length: 0))
+            let earlier = NSRange(location: offset + kept, length: paragraph.length)
+            guard NSMaxRange(earlier) <= old.length,
+                  old.paragraphRange(for: NSRange(location: earlier.location, length: 0)) == earlier,
+                  storage.attributedSubstring(from: earlier).isEqual(to: replacement.attributedSubstring(from: paragraph))
+            else { break }
+            kept = NSMaxRange(paragraph)
+        }
+        return kept
     }
 
     // MARK: - Size

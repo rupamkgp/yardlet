@@ -7,7 +7,7 @@ import XCTest
 /// Codex thread's, goes to that message alone (`ConversationTurn.streamedTextChange(from:)`,
 /// `ConversationStreamedText`): the message reads its latest words, what the person opened in the
 /// turn stays open, and anything else that changes with it, or the message finishing, draws the turn
-/// whole again.
+/// whole again. In the message, a fragment lays out again only the paragraph it changed.
 @MainActor
 final class StreamedTextTests: XCTestCase {
     private let user = TranscriptEntry(content: .user(text: "Fix the failing tests"))
@@ -160,6 +160,49 @@ final class StreamedTextTests: XCTestCase {
         XCTAssertEqual(TranscriptProseRenderingTests.proseTextViews(in: host.hosting)
             .first { $0.string.hasPrefix("Checking") }?.string, final)
         XCTAssertEqual(summaryValue(), L10n.string("Expanded"))
+    }
+
+    /// Words streamed into a list's last item lay out and draw again only that item: the list is one
+    /// block, and the items before it keep their layout. The text still reads as the message built
+    /// afresh does, after an item is added and when an earlier item changes.
+    func testAStreamedListItemLaysOutAgainOnlyItself() throws {
+        func blocks(_ source: String) -> [TranscriptProseBlock] {
+            TranscriptMarkdownDocument(source).blocks.enumerated().map { TranscriptProseBlock(block: $1, path: [$0]) }
+        }
+        func fragments(_ view: TranscriptProseContainerView) throws -> [NSTextLayoutFragment] {
+            let layout = try XCTUnwrap(view.textView.textLayoutManager)
+            var fragments: [NSTextLayoutFragment] = []
+            layout.enumerateTextLayoutFragments(from: layout.documentRange.location, options: [.ensuresLayout]) {
+                fragments.append($0)
+                return true
+            }
+            return fragments
+        }
+        let view = TranscriptProseContainerView()
+        var source = "What changed:\n\n" + (0..<6).map { "- Item \($0): words that wrap across the line in a narrow message." }
+            .joined(separator: "\n")
+        view.update(blocks: blocks(source), style: TranscriptProseStyle())
+        _ = view.size(forWidth: 400)
+        let before = try fragments(view)
+
+        source += " More words"
+        view.update(blocks: blocks(source), style: TranscriptProseStyle())
+        _ = view.size(forWidth: 400)
+        let after = try fragments(view)
+        XCTAssertEqual(after.count, 7)
+        XCTAssertEqual(before.count, after.count)
+        for (earlier, now) in zip(before, after).dropLast() {
+            XCTAssertTrue(earlier === now, "A paragraph before the item being written was laid out again")
+        }
+        XCTAssertFalse(before.last === after.last, "The item being written kept its old layout")
+
+        for next in [source + "\n- Item 6: the next item", source.replacingOccurrences(of: "Item 2:", with: "Item two:")] {
+            view.update(blocks: blocks(next), style: TranscriptProseStyle())
+            let fresh = TranscriptProseContainerView()
+            fresh.update(blocks: blocks(next), style: TranscriptProseStyle())
+            let text = try XCTUnwrap(view.textView.textStorage), freshText = try XCTUnwrap(fresh.textView.textStorage)
+            XCTAssertTrue(text.isEqual(to: freshText), "The text differs from the message built afresh")
+        }
     }
 
     /// What copying all of `text` gives, on a pasteboard of the test's own.
