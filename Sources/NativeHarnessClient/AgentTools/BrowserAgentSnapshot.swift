@@ -36,6 +36,8 @@ enum BrowserAgentSnapshot {
         var text: String
         var refs: [String: Ref]
         var isTruncated: Bool
+        /// The number the next element without a reference gets.
+        var nextNumber = 1
     }
 
     /// Containers that only group other content; without a name they add a level and no meaning.
@@ -64,14 +66,18 @@ enum BrowserAgentSnapshot {
 
     /// The first frame is the page's main frame; the others hang under the iframes that hold them. The elements in
     /// `hidden` (a field the password manager filled, an element showing such a value) read as `<redacted>`, with
-    /// nothing of what is in them; `scrub` takes values out of each name and value before a long one is cut.
+    /// nothing of what is in them; `scrub` takes values out of each name and value before a long one is cut. An element
+    /// in `named` keeps the reference an earlier snapshot gave it, as Playwright's references stay with their elements;
+    /// the others are numbered on from `nextNumber`, so no number names two elements.
     static func render(frames: [Frame], maximumLength: Int = 60_000, hidden: Set<Ref> = [],
-                       scrub: @escaping (String) -> String = { $0 }) -> Result {
+                       scrub: @escaping (String) -> String = { $0 }, named: [Ref: String] = [:], nextNumber: Int = 1) -> Result {
         guard let main = frames.first else {
-            return Result(text: "(The page has no readable content.)", refs: [:], isTruncated: false)
+            return Result(text: "(The page has no readable content.)", refs: [:], isTruncated: false, nextNumber: nextNumber)
         }
         var renderer = Renderer(frames: frames, maximumLength: maximumLength,
                                 pageOrigin: rootURL(of: main.nodes).flatMap(origin(of:)), hidden: hidden, scrub: scrub)
+        renderer.named = named
+        renderer.nextNumber = nextNumber
         renderer.lines = renderer.visitFrame(0, depth: 0)
         var text = renderer.lines.joined(separator: "\n")
         if renderer.isTruncated {
@@ -79,7 +85,7 @@ enum BrowserAgentSnapshot {
                 + "with browser_evaluate."
         }
         return Result(text: text.isEmpty ? "(The page has no readable content.)" : text,
-                      refs: renderer.refs, isTruncated: renderer.isTruncated)
+                      refs: renderer.refs, isTruncated: renderer.isTruncated, nextNumber: renderer.nextNumber)
     }
 
     private struct Renderer {
@@ -92,6 +98,8 @@ enum BrowserAgentSnapshot {
         let scrub: (String) -> String
         var lines: [String] = []
         var refs: [String: Ref] = [:]
+        var named: [Ref: String] = [:]
+        var nextNumber = 1
         var length = 0
         var isTruncated = false
         /// Frames already placed, so a frame the page holds twice is read once.
@@ -114,6 +122,20 @@ enum BrowserAgentSnapshot {
             }
             self.maximumLength = maximumLength
             self.pageOrigin = pageOrigin
+        }
+
+        /// The element's reference: the one it had, else the next number.
+        mutating func reference(for element: Ref) -> String {
+            let ref: String
+            if let known = named[element] {
+                ref = known
+            } else {
+                ref = "@e\(nextNumber)"
+                nextNumber += 1
+                named[element] = ref
+            }
+            refs[ref] = element
+            return ref
         }
 
         mutating func visitFrame(_ index: Int, depth: Int) -> [String] {
@@ -140,8 +162,7 @@ enum BrowserAgentSnapshot {
                 let actionable = actionableRoles.contains(role) || properties["focusable"] == "true"
                     || properties["editable"] != nil
                 guard actionable else { return emit(["\(indent(depth))- text: <redacted>"]) }
-                let ref = "@e\(refs.count + 1)"
-                refs[ref] = Ref(node: backend, session: frames[frame].session)
+                let ref = reference(for: Ref(node: backend, session: frames[frame].session))
                 // A field's label is no secret; a name made of its contents could be.
                 let label = name.isEmpty || BrowserAgentSnapshot.isNamedByContents(node) ? "" : " " + BrowserAgentSnapshot.quoted(name)
                 return emit(["\(indent(depth))- \(role)\(label) [ref=\(ref)]: \"<redacted>\""])
@@ -184,9 +205,7 @@ enum BrowserAgentSnapshot {
                 line += " [origin=\(origin)]"
             }
             if actionable, let backend {
-                let ref = "@e\(refs.count + 1)"
-                refs[ref] = Ref(node: backend, session: frames[frame].session)
-                line += " [ref=\(ref)]"
+                line += " [ref=\(reference(for: Ref(node: backend, session: frames[frame].session)))]"
             }
             let value = BrowserAgentSnapshot.redactingMasked(BrowserAgentSnapshot.clean(scrub(node["value"]?["value"]?.stringValue
                 ?? node["value"]?["value"]?.integerValue.map(String.init) ?? "")))

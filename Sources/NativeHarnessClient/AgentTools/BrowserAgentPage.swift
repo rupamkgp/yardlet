@@ -45,6 +45,9 @@ final class BrowserAgentPage {
     var workspaceRoots: [URL] = []
     /// Whether the tab's page responds (`BrowserTab.unresponsive`); tests leave it responding.
     var unresponsive: () -> BrowserTabUnresponsiveness? = { nil }
+    /// After a call to the tab timed out, whether its renderer answered the check after it (`BrowserTab.rendererAnswered`);
+    /// nil when nothing was checked, as in tests.
+    var rendererAnswered: () async -> Bool? = { nil }
     /// How the tab's renderer ended, until the page loads again (`BrowserTab.crash`).
     var crash: () -> BrowserTabCrash? = { nil }
     /// Why the host could not open the tab, which then has no page (`BrowserTab.openFailure`).
@@ -89,6 +92,13 @@ final class BrowserAgentPage {
 
     /// `@e3` → its element (a backend DOM node, and the session of its frame), from the latest snapshot.
     private(set) var refs: [String: BrowserAgentSnapshot.Ref] = [:]
+    /// The reference each element of the document got in a snapshot, which it keeps in the later ones; a new document
+    /// starts over.
+    private var refNames: [BrowserAgentSnapshot.Ref: String] = [:]
+    /// The number the tab's next new reference gets: a number never names two elements of the tab.
+    private(set) var nextRefNumber = 1
+    /// The latest snapshot's references ended with a navigation of the page (`clearRefs`).
+    private(set) var refsEndedByNavigation = false
     /// Where each frame from another site sits, from the latest snapshot: its iframe, in the session of the frame
     /// that holds it.
     private(set) var frameOwners: [String: BrowserAgentSnapshot.Ref] = [:]
@@ -118,16 +128,38 @@ final class BrowserAgentPage {
 
     // MARK: References
 
+    /// The references the document's elements already have, for the next snapshot to keep (`BrowserAgentSnapshot.render`):
+    /// none once the main frame went to another document.
+    func referenceNames() -> (named: [BrowserAgentSnapshot.Ref: String], next: Int) {
+        if navigatedSinceSnapshot { refNames = [:] }
+        return (refNames, nextRefNumber)
+    }
+
     func replaceRefs(_ refs: [String: BrowserAgentSnapshot.Ref], frameOwners: [String: BrowserAgentSnapshot.Ref] = [:],
-                     eventMark: Int) {
+                     eventMark: Int, nextNumber: Int? = nil) {
+        if navigatedSinceSnapshot { refNames = [:] }
         self.refs = refs
+        for (name, element) in refs { refNames[element] = name }
+        if let nextNumber { nextRefNumber = max(nextRefNumber, nextNumber) }
         self.frameOwners = frameOwners
         snapshotEventMark = eventMark
         snapshotCount += 1
+        refsEndedByNavigation = false
     }
 
+    /// The page navigated: its references end, and its next snapshot numbers its elements anew.
     func clearRefs() {
         refs = [:]
+        refNames = [:]
+        if snapshotCount > 0 { refsEndedByNavigation = true }
+    }
+
+    /// The address the main frame went to since `mark` in the event log, if it went to another document.
+    func mainFrameNavigation(since mark: Int) -> String? {
+        let log = cdp.eventLog
+        guard log.count > mark else { return nil }
+        return log[mark...].last { $0.method == "Page.frameNavigated" && $0.params["frame"]?["parentId"] == nil }
+            .map { $0.params["frame"]?["url"]?.stringValue ?? "" }
     }
 
     /// True when the main frame navigated since the latest snapshot.

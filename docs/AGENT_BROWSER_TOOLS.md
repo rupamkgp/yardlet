@@ -23,8 +23,15 @@ host's structure is in [BROWSER_HOST](BROWSER_HOST.md).
 All of them act on the calling task's tabs. Page tools pick a tab with the optional argument `tabId` (a string, an id
 that `browser_tab_list` or `browser_tab_new` gave), and use the agent's active tab without it. That is usually the front
 tab (the `tabId` of the Claude app 3.1623.3 Browser pane tools: "Omit for the fronted tab; get ids from tabs_context");
-while the person uses a tab in the panel, it is the tab the agent chose or opened ("The tab the person uses" below). Another task's tab id is an error
-saying "this task has no such tab". Input is CDP trusted input (`Input.dispatchMouseEvent`, `dispatchKeyEvent` and
+while the person uses a tab in the panel, it is the tab the agent chose or opened ("The tab the person uses" below). Every
+`tabId` goes through one rule first (`BrowserAgentTabDirectory.resolve`): an open tab of the task is itself; the id of a
+tab that another took the place of as the same panel tab (its page did not respond or could not open and it was opened
+again, or the browser host ended and the task's tabs opened again) reaches that tab, and the result begins "Tab ‹old› is
+now tab ‹new›: ‹why›, and it was opened again in its place as the same tab of the task's browser panel. Calls that name
+tab ‹old› go to tab ‹new›.", in a batch too. Any other id is an error that says how the tab went (`browser_tab_close`
+closed it, the person closed it in the panel, its page closed itself, Yardlet closed it, it went to another task, or no
+tab of this task had that id since Yardlet started; `BrowserHostClient.departure(of:)`) and lists the task's tabs now
+with their origins and the active one; no other tab is picked for it. Another task's tab id is such an error. Input is CDP trusted input (`Input.dispatchMouseEvent`, `dispatchKeyEvent` and
 `insertText`), so the page gets `isTrusted: true` events. Failures come back as `isError: true` results, as the MCP
 protocol specifies.
 
@@ -49,12 +56,12 @@ one. A call to a tool the task does not have answers with the task's tools that 
 | `browser_press_key` | `key` | Names such as `Enter`, `Shift+Tab` and `Meta+a` (US layout). macOS Chromium handles editing keys only as commands, so it also sends `commands` (`selectAll`, `deleteBackward` and so on) |
 | `browser_scroll` | `deltaX` and `deltaY` (+ `x` and `y`, or `ref`), or `ref` alone | A wheel event, or brings the element into view. Returns the new scroll position |
 | `browser_select_option` | `ref`, `values` | Picks by value or visible label in a `<select>` and sends `input` and `change`. When there is no match, an error with the list of options |
-| `browser_wait_for` | `text`, `textGone`, `time`, `timeout` | Checks the body text every 200 ms (10 seconds by default, at most 60 seconds). `time` is at most 30 seconds |
+| `browser_wait_for` | `text`, `textGone`, `time`, `timeout` | Checks every 200 ms (10 seconds by default, at most 60 seconds) whether the text is a part of the visible text (`innerText`) of the page and of its frames from the same origin that have a box, ignoring case and runs of whitespace, as Playwright's text matching reads it; a frame from another origin is not read. When the time runs out, the error names what it waited for and the rule, the page's address, title and whether it has loaded, and the page's text now: the first 1,000 characters for `text`, the 150 characters on each side of where it still is for `textGone` (scrubbed of the vault's values before the cut, and left out on a page that holds a password or code). When the text is in a frame from another origin (the first 10 frame sessions are read once), it says so and that `browser_snapshot` reads it. `time` is at most 30 seconds. `browser_handoff`'s `text` matches the same way |
 | `browser_screenshot` | `ref`, `fullPage`, `format` | Image content (png or jpeg). One image pixel per CSS pixel, whatever the display scale. `fullPage` captures the whole page in one shot, but cuts it so that no side is over 16,384 device pixels and captures the top; then the result text gives the page's height ([BROWSER_HOST](BROWSER_HOST.md) section 3, "Full-page screenshots") |
 | `browser_console_messages` | `onlyErrors` | `Runtime.consoleAPICalled`, `exceptionThrown` and `Log.entryAdded`. The latest 200 |
-| `browser_evaluate` | `function`, `ref` | Runs one function and returns the result as JSON. With a reference, the element is the argument. An expression that is not a function returns its value as is. Cuts at 50,000 characters |
+| `browser_evaluate` | `function`, `ref` | Runs one function and returns the result as JSON. With a reference, the element is the argument. An expression that is not a function returns its value as is. A promise it returns is awaited for up to 15 seconds; past that, when the renderer answers the check after it ("Pages that do not respond" below), the error says the function did not finish while the page answers other calls, so its renderer is not stuck. Cuts at 50,000 characters |
 | `browser_handle_dialog` | `accept`, `promptText` | Answers the open JS dialog (alert, confirm, prompt or leave-page confirmation). When there is no JS dialog and Chromium's passkey dialog or sign-in window is open over a tab of this task, accept false closes only that window (a passkey request gets `NotAllowedError` and can move on to another sign-in method). accept true is an error (only the person can finish a passkey). It does not close the windows of another task's tabs, or windows whose tab is not known (printing) |
-| `browser_file_upload` | `paths` | Gives files inside the task's folders to the open file chooser, each as a private copy read from the checked path (a folder or a place to save goes as its path). Empty cancels |
+| `browser_file_upload` | `paths` | Gives files inside the task's folders to the open file chooser, each as a private copy read from the checked path (a folder or a place to save goes as its path). Empty cancels. The chooser a click opens reaches Yardlet a moment after the click's result, so with none open yet it waits up to 2 seconds for one (in a batch, the upload right after the click) |
 | `browser_resize` | `preset` (mobile, tablet or desktop), `width` and `height` (1 to 9999), `colorScheme` (light or dark) | 2026-10-26, the same arguments and rules as `resize_window` of the Claude app's Browser pane. Emulates that size for the tab's page (`Emulation.setDeviceMetricsOverride`; narrower than 768 is a phone: deviceScaleFactor 2, 5 touch points, and the user agent and client hints of Chrome on an Android 14 Pixel 8). desktop clears the emulation, and `colorScheme` is the `prefers-color-scheme` of `Emulation.setEmulatedMedia`. It holds per tab, across reloads and navigations; the tab is drawn at that size, and the panel shows a larger one scaled down. The size and color scheme the agent set are cleared when that turn ends (a size the person picked in the panel menu stays, and when the agent changes it, the result says so) |
 | `browser_handoff` | `reason` (required), `text`, `timeout` (seconds, 600 by default) | 2026-10-26. Hands the tab to the person and waits: opens the task's right-hand panel on that tab and shows a bar ("The agent handed this tab to you", the reason, "Decline" and "I'm done") and a macOS notification. Returns on the person's answer, on `text` appearing on the page, at the end of the turn, when the tab closes, or at the timeout (within the harness limit `SessionToolPolicy.waitCeiling`). After the timeout the tab stays handed over, and the next call gets an answer given meanwhile. Cannot go in a batch |
 | `browser_batch` | `actions: [{name, input}]` | Runs the tools above and the tab tools in order (at most 50, not `browser_handoff`). Each action picks its tab with the `tabId` in its own `input`. Stops at the first failure and reports how many remain. No batch inside a batch |
@@ -63,8 +70,14 @@ one. A call to a tool the task does not have answers with the task's tools that 
 | `browser_tab_select` | `tabId` | Makes it the agent's active tab. When the person is not using another tab in the panel, it also becomes the front tab: if the panel shows a browser tab, it shows that tab; if the panel shows another tab (Review and so on) or is hidden, the screen stays as it is and the tab becomes the one ⌘4 returns to. While the person uses another tab, the panel stays and the result is "Tab ‹id› is now your active tab: tools without a tabId act on it. The browser panel stays on tab ‹id›, which the person is using (‹last input›)." |
 | `browser_tab_close` | `tabId` | Closes it and reports the new active tab. Its panel tab goes too, and if it was the tab on screen, the panel shows the new active tab. When no panel tab is left, the panel closes (before 2026-10-23 it closed at the last browser tab even when other panel tabs remained; the Claude app's `tabs_close`) |
 
-- **References:** They follow the latest snapshot. A new snapshot, `browser_navigate`, and a main frame navigation from
-  a link in the page or the like (`Page.frameNavigated`) end the references. A reference in another site's frame
+- **References:** They follow the latest snapshot, whose header says "Snapshot ‹n› of tab ‹id›". An element keeps its
+  reference in later snapshots while it is on the page (its backend node and frame session), as Playwright's references
+  stay with their elements, and a new element gets a number no snapshot of the tab gave before, so an old reference
+  never names another element. A reference whose element is not in the latest snapshot stops working, and its error
+  says an earlier snapshot gave it; one no snapshot gave says which numbers were given. `browser_navigate` and a main
+  frame navigation from a link in the page or the like (`Page.frameNavigated`) end the references and start the
+  numbering of the new document's elements; a tool during which the page navigated says so at the end of its result
+  ("The page went to ‹address› during this ‹tool›, so the references of snapshot ‹n› of tab ‹id› no longer apply"). A reference in another site's frame
   (2026-10-26) remembers that frame's session together with the backend node (node numbers of different renderers can
   overlap). DOM calls go to that session, coordinates add the top-left corners of the content boxes (`DOM.getBoxModel`)
   of the iframes that hold it, and input goes to the tab's session. When that frame navigates or goes away (an error
@@ -119,11 +132,16 @@ one. A call to a tool the task does not have answers with the task's tools that 
   popup, [BROWSER_HOST](BROWSER_HOST.md) section 3, "New windows"). The end of the next tool result gets
   "The page opened … in a new tab (tabId "…")". When the task already has 9 tabs, it reports that the page opened in
   that tab.
-- **Pages that do not respond (2026-10-23):** When a call the renderer answers gets no answer in time, or Chromium finds
-  that the renderer could not handle input for 15 seconds, the end of the result of a tool that used that tab (failed
+- **Pages that do not respond (2026-10-23):** When a call the renderer answers gets no answer in time and neither does a
+  call it answers at once sent right after (`Runtime.evaluate` of `0`, 5 seconds; `BrowserTab.rendererAnswered()`), or
+  Chromium finds that the renderer could not handle input for 15 seconds, the end of the result of a tool that used that tab (failed
   results too) gets "This tab's page is not responding: …" with which signal it was, that the host and the tab are open
   and that tabs the panel does not show answer too, and that `browser_navigate` opens a page again in its place and
-  `browser_tab_close` closes the tab (facts and tool names only, no instructions). `browser_navigate` to a tab that does
+  `browser_tab_close` closes the tab (facts and tool names only, no instructions). A call can be late while the renderer
+  answers that check (a promise `browser_evaluate` awaits, a request it waits on): then the page is not taken as not
+  responding (no "Page Unresponsive" bar, and `browser_navigate` keeps the tab), and the error says the call did not
+  finish within its time with that fact. A call to a frame from another site that runs out says only that.
+  `browser_navigate` to a tab that does
   not respond opens the tab again as the same panel tab and gives the new tabId on the first line of the result
   ([BROWSER_HOST](BROWSER_HOST.md) section 3, "Not responding").
 - **Pages whose renderer ended (2026-10-24):** The end of the result of a tool that used that tab gets only facts and
@@ -141,7 +159,9 @@ one. A call to a tool the task does not have answers with the task's tools that 
 - **After a restart:** When Yardlet restarts, the task's panel tabs remain, but their pages are not open yet. The first
   time the agent calls a browser tool in that task, the tabs saved in the panel reopen together as the same panel tabs
   (keys), and the one used last among them is the active tab (a blank tab opens when the panel shows it).
-  `browser_tab_list` also reopens those tabs first, so the ids in its list work as they are in the other tools.
+  `browser_tab_list` also reopens those tabs first, so the ids in its list work as they are in the other tools. When
+  the browser host ends while Yardlet runs, a tool that names one of the tabs' old ids reopens them the same way and
+  reaches that tab under its new id (the `tabId` rule at the top of this section).
 - **Tab names and order:** The names put the Yardlet `browser_` prefix on the four actions of the Claude app's Browser
   pane (`tabs_context`, `tabs_create`, `tabs_select` and `tabs_close`). They mean the same as
   `browser.tabs.list/new/get/selected` and `tab.close` of the Codex app 26.1016 (`browser-client` in the Node REPL).

@@ -77,8 +77,9 @@ package enum AgentToolCatalog {
         Browser tools act on this task's own tabs in Yardlet's built-in Chromium browser, which the \
         user can watch in the task's browser panel: on the active tab, or on the tab a tool's tabId \
         names. browser_tab_new opens another tab, in the background unless foreground is set. Call \
-        browser_snapshot to read the page and get element references such as @e3; references stay \
-        valid until the next snapshot or navigation. \
+        browser_snapshot to read the page, find an element or text on it, and get element references \
+        such as @e3; an element keeps its reference while it stays on the page, and a navigation ends \
+        them. \
         spawn_task flags out-of-scope work for a separate task: the user sees a chip in this \
         conversation and decides whether to start it. The session tools read the person's other \
         Yardlet tasks, message one, start a task, or run a subagent on a harness. The \
@@ -100,7 +101,7 @@ package enum AgentToolCatalog {
 
     private static let refProperty: ToolJSON = .object([
         "type": .string("string"),
-        "description": .string("Element reference from the latest browser_snapshot, such as @e3.")
+        "description": .string("Element reference from the tab's latest browser_snapshot, such as @e3.")
     ])
 
     /// A page tool's input: its own properties and the optional tab.
@@ -144,9 +145,11 @@ package enum AgentToolCatalog {
         AgentToolDefinition(
             name: snapshot,
             title: "Page snapshot",
-            description: "Read the page as an accessibility tree in text. Elements you can act on carry "
-                + "references such as @e3 for the other browser tools. A new snapshot or a navigation "
-                + "replaces the references.",
+            description: "Read the page as an accessibility tree in text, its frames included: this is how to find an "
+                + "element or text on the page. Elements you can act on carry references such as @e3 for the other "
+                + "browser tools. An element keeps its reference in later snapshots while it stays on the page; a "
+                + "reference whose element is not in the latest snapshot stops working, and a navigation of the page "
+                + "ends them all.",
             inputSchema: pageInput([:]),
             readOnly: true
         ),
@@ -223,10 +226,13 @@ package enum AgentToolCatalog {
             name: waitFor,
             title: "Wait for",
             description: "Wait until text appears on the page, until text disappears, or for a number of "
-                + "seconds (at most 30).",
+                + "seconds (at most 30). Text matches a part of the visible text (innerText) of the page and of its "
+                + "frames from the same origin, ignoring case and runs of spaces, checked every 200 ms; a frame from "
+                + "another origin is not read (browser_snapshot reads it). When the time runs out, the result says what "
+                + "the page shows.",
             inputSchema: pageInput([
-                "text": property("string", "Text to wait for."),
-                "textGone": property("string", "Text to wait to disappear."),
+                "text": property("string", "Text to wait for, as a part of the page's visible text."),
+                "textGone": property("string", "Text to wait to disappear from the page's visible text."),
                 "time": property("number", "Seconds to wait when no text is given."),
                 "timeout": property("number", "Seconds to wait for text before failing. Defaults to 10, at most 60.")
             ]),
@@ -257,7 +263,7 @@ package enum AgentToolCatalog {
             title: "Evaluate JavaScript",
             description: "Run one JavaScript function in the page and return its result as JSON, such as "
                 + "\"() => document.title\". With a reference, the element is the function's argument: "
-                + "\"(element) => element.textContent\".",
+                + "\"(element) => element.textContent\". A promise it returns is awaited for up to 15 seconds.",
             inputSchema: pageInput([
                 "function": property("string", "A JavaScript function expression."),
                 "ref": refProperty
@@ -279,7 +285,8 @@ package enum AgentToolCatalog {
             name: fileUpload,
             title: "Upload files",
             description: "Answer the page's open file chooser with files from this task's project folders, or cancel "
-                + "it by giving no paths. Click the page's file input first to open the chooser.",
+                + "it by giving no paths. A click on the page's file input opens the chooser, and its result says so; "
+                + "when none is open yet, this waits up to 2 seconds for one.",
             inputSchema: pageInput([
                 "paths": .object([
                     "type": .string("array"),
@@ -327,7 +334,8 @@ package enum AgentToolCatalog {
             name: batch,
             title: "Batch",
             description: "Run several browser tools in order and stop at the first failure. Each action names "
-                + "a browser tool and its input, which may name its own tabId.",
+                + "a browser tool and its input, which may name its own tabId. An action that makes the page navigate "
+                + "ends the references of its snapshots, and its result says so.",
             inputSchema: object([
                 "actions": .object([
                     "type": .string("array"),

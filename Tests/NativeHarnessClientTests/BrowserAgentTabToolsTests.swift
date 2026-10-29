@@ -32,6 +32,7 @@ final class BrowserAgentTabToolsTests: XCTestCase {
     override func setUp() async throws {
         let connection = connection
         client = BrowserHostClient(idleGrace: .seconds(60)) { connection }
+        client.rendererCheckWait = .milliseconds(50)
         let client = client!
         tools = BrowserAgentTools(usesMacEditingCommands: true, tabs: BrowserAgentTabs { client })
     }
@@ -95,16 +96,36 @@ final class BrowserAgentTabToolsTests: XCTestCase {
         XCTAssertTrue(text(foreground).contains("It is the active tab"))
         XCTAssertTrue(client.tab(forSession: task) === client.tabs(forSession: task).last)
 
-        let closed = await run(AgentToolCatalog.tabClose, ["tabId": .string(String(client.tabs(forSession: task)[2].id))])
+        let closedID = String(client.tabs(forSession: task)[2].id)
+        let closed = await run(AgentToolCatalog.tabClose, ["tabId": .string(closedID)])
         XCTAssertTrue(text(closed).contains("Tab \(second) is now the active tab"), text(closed))
 
+        // A tab that is gone says how it went and lists the task's tabs; no other tab is picked for it.
+        let firstID = String(client.tabs(forSession: task)[0].id)
+        let tabsNow = "This task's tabs now: \(firstID) (https://example.com), \(second) (about:blank, active)."
         let missing = await run(AgentToolCatalog.tabSelect, ["tabId": .string("999")])
         XCTAssertTrue(missing.isError)
-        XCTAssertTrue(text(missing).contains("browser_tab_list"))
+        XCTAssertEqual(text(missing), "This task has no tab 999, and no tab of this task has had that id since Yardlet started. "
+                       + tabsNow)
+        let gone = await run(AgentToolCatalog.snapshot, ["tabId": .string(closedID)])
+        XCTAssertEqual(text(gone), "Tab \(closedID) is closed: browser_tab_close closed it. " + tabsNow)
         let otherTasksTab = try client.openTab(forSession: UUID(), url: "about:blank", viewport: .offscreenDefault)
         let foreign = await run(AgentToolCatalog.tabClose, ["tabId": .string(String(otherTasksTab.id))])
         XCTAssertTrue(foreign.isError, "another task's tab is not this task's to close")
+        XCTAssertTrue(text(foreign).hasPrefix("This task has no tab \(otherTasksTab.id)"), text(foreign))
         XCTAssertFalse(otherTasksTab.isClosed)
+
+        // The browser host ends: a tool that names a tab's old id opens the task's tabs again and reaches that tab
+        // under its new id, saying so.
+        connection.eventHandler?(.terminated(reason: "crashed"))
+        XCTAssertTrue(client.tabs(forSession: task).isEmpty)
+        let reopened = await run(AgentToolCatalog.tabSelect, ["tabId": .string(firstID)])
+        XCTAssertFalse(reopened.isError, text(reopened))
+        let now = try XCTUnwrap(client.tabs(forSession: task).first)
+        XCTAssertNotEqual(String(now.id), firstID)
+        XCTAssertTrue(text(reopened).hasPrefix("Tab \(firstID) is now tab \(now.id): the browser host ended, and it was opened "
+                                               + "again in its place as the same tab of the task's browser panel."), text(reopened))
+        XCTAssertTrue(text(reopened).contains("Tab \(now.id) is now the active tab"), text(reopened))
     }
 
     func testAPageToolActsOnTheTabItNames() async throws {

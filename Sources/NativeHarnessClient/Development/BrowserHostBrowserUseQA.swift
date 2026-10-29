@@ -182,6 +182,16 @@ final class BrowserHostBrowserUseQA {
             check("frames: the snapshot reads “\(name)”", snapshot.text.contains("\"\(name)\""),
                   snapshot.text.split(separator: "\n").filter { $0.contains(name) }.joined(separator: " | "))
         }
+        // browser_wait_for reads the page and its frames from the same origin, ignoring case and runs of spaces; a
+        // frame from another origin it does not read, and its result says where the text is.
+        let sameOrigin = await call(AgentToolCatalog.waitFor, ["text": .string("same-origin   BUTTON"), "timeout": .integer(5)])
+        check("frames: browser_wait_for finds text in a frame from the same origin, ignoring case and spaces",
+              !sameOrigin.isError, sameOrigin.text)
+        let crossOrigin = await call(AgentToolCatalog.waitFor, ["text": .string("Cross-site button"), "timeout": .integer(1)])
+        check("frames: browser_wait_for that runs out says the text is in a frame from another origin",
+              crossOrigin.isError && crossOrigin.text.contains("“Cross-site button” is in a frame from ")
+                && crossOrigin.text.contains("The page is at ") && crossOrigin.text.contains("Its text now"),
+              crossOrigin.text)
         for (name, counter) in [("Same-origin button", "same"), ("Cross-site button", "cross"), ("Nested button", "nested"),
                                 ("Shadow button", "shadow"), ("Closed shadow button", "closed")] {
             guard let ref = Self.ref(in: snapshot.text, role: "button", name: name) else {

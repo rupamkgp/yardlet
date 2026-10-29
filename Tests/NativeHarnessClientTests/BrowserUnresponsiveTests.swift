@@ -12,9 +12,11 @@ final class BrowserUnresponsiveTests: XCTestCase {
         var sent: [BrowserHostCommand] = []
         /// Answers DevTools calls with an empty result, as an idle page does; a busy page answers none.
         var answers = false
+        /// Calls an answering page still leaves unanswered, as a promise that never settles leaves `awaitPromise`.
+        var withholds: (String) -> Bool = { _ in false }
         func send(_ command: BrowserHostCommand) {
             sent.append(command)
-            guard answers, case .devTools(let tab, let message) = command,
+            guard answers, case .devTools(let tab, let message) = command, !withholds(message),
                   let object = try? JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any],
                   let id = object["id"] as? Int else { return }
             DispatchQueue.main.async { [weak self] in
@@ -26,7 +28,9 @@ final class BrowserUnresponsiveTests: XCTestCase {
 
     private let connection = FakeConnection()
     private func makeClient() -> BrowserHostClient {
-        BrowserHostClient(idleGrace: .seconds(60)) { [unowned self] in self.connection }
+        let client = BrowserHostClient(idleGrace: .seconds(60)) { [unowned self] in self.connection }
+        client.rendererCheckWait = .milliseconds(40)
+        return client
     }
 
     /// Both signals mark the page and what clears it; Wait waits and Reload replaces the tab under the
@@ -52,15 +56,27 @@ final class BrowserUnresponsiveTests: XCTestCase {
         connection.eventHandler?(.responsiveness(tab: stuck.id, isResponsive: true))
         XCTAssertNil(stuck.unresponsive)
 
-        // A call the browser answers itself says nothing of the page; one its renderer answers does,
-        // until an answer comes.
+        // A call the browser answers itself says nothing of the page; one its renderer answers does, when the call
+        // the renderer answers at once right after goes unanswered too, until an answer comes.
         _ = try? await stuck.devTools.send("Page.navigate", ["url": .string("https://b.test/x")], timeout: .milliseconds(30))
         XCTAssertNil(stuck.unresponsive)
+        let renderer = await stuck.rendererAnswered()
+        XCTAssertNil(renderer, "nothing was checked")
         _ = try? await stuck.devTools.send("Runtime.evaluate", ["expression": .string("1")], timeout: .milliseconds(30))
+        let busy = await stuck.rendererAnswered()
+        XCTAssertEqual(busy, false)
         XCTAssertEqual(stuck.unresponsive, .unanswered(method: "Runtime.evaluate"))
         connection.answers = true
         _ = try await stuck.devTools.send("DOM.getDocument", [:], timeout: .seconds(2))
         XCTAssertNil(stuck.unresponsive, "the page answers again")
+        // A call that awaits the page's promise is late while the renderer answers the check: the page responds.
+        connection.withholds = { $0.contains(#""awaitPromise":true"#) }
+        _ = try? await stuck.devTools.send("Runtime.evaluate", ["expression": .string("new Promise(() => {})"),
+                                                                "awaitPromise": .bool(true)], timeout: .milliseconds(30))
+        let late = await stuck.rendererAnswered()
+        XCTAssertEqual(late, true)
+        XCTAssertNil(stuck.unresponsive, "a late promise is no page that does not respond")
+        connection.withholds = { _ in false }
         connection.answers = false
 
         // A renderer that ended crashed (a failed CHECK traps); it is no longer a page that does not
@@ -119,8 +135,9 @@ final class BrowserUnresponsiveTests: XCTestCase {
                                    sessionID: task)
         let tab = try XCTUnwrap(client.tab(forSession: task))
         XCTAssertTrue(busy.isError)
-        XCTAssertTrue(text(busy).contains("This tab's page is not responding: its renderer did not answer Page.enable in time"),
-                      text(busy))
+        XCTAssertTrue(text(busy).contains("This tab's page is not responding: its renderer did not answer Page.enable in time, "
+                                          + "nor a call it answers at once right after."), text(busy))
+        XCTAssertFalse(text(busy).contains("main thread"), "only what was checked")
         XCTAssertTrue(text(busy).contains("browser_navigate opens a page again in its place; browser_tab_close closes the tab."))
         XCTAssertFalse(text(busy).localizedCaseInsensitiveContains("should"), "facts and tools, no instructions")
         let listing = text(await tools.run(tool: AgentToolCatalog.tabList, arguments: .object([:]), sessionID: task))
@@ -139,6 +156,25 @@ final class BrowserUnresponsiveTests: XCTestCase {
         let after = text(await tools.run(tool: AgentToolCatalog.tabList, arguments: .object([:]), sessionID: task))
         XCTAssertTrue(after.contains(#""responding":true"#), after)
         XCTAssertFalse(after.contains("Not responding"))
+
+        // The old id reaches the tab opened in its place, in a batch too, and the result says so.
+        let old = String(tab.id)
+        let viaOld = text(await tools.run(tool: AgentToolCatalog.batch, arguments: .object(["actions": .array([
+            .object(["name": .string(AgentToolCatalog.evaluate), "input": .object(["function": .string("() => 1"), "tabId": .string(old)])])
+        ])]), sessionID: task))
+        XCTAssertTrue(viaOld.contains("1. browser_evaluate: Tab \(old) is now tab \(replacement.id): its page was not responding, "
+                                      + "and it was opened again in its place"), viaOld)
+
+        // A function whose promise does not settle is late on a page that answers everything else: no page that does
+        // not respond, and the result says what was found.
+        connection.withholds = { $0.contains(#""awaitPromise":true"#) }
+        let pending = text(await tools.run(tool: AgentToolCatalog.evaluate, arguments: .object([
+            "function": .string("() => new Promise(() => {})")]), sessionID: task))
+        connection.withholds = { _ in false }
+        XCTAssertTrue(pending.contains("The function did not finish within 0.1 seconds. The page answered another call right "
+                                       + "after, so its renderer is not stuck"), pending)
+        XCTAssertFalse(pending.contains("not responding"), pending)
+        XCTAssertNil(replacement.unresponsive)
 
         // Its renderer ends: the same facts, the error code and the same tools.
         connection.eventHandler?(.pageCrashed(tab: replacement.id, reason: "SIGTRAP", status: "crashed", code: 5))

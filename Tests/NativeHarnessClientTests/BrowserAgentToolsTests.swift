@@ -39,7 +39,8 @@ final class ScriptedCDP: BrowserAgentCDP {
         if method == "Runtime.getProperties" { return .object(["result": .array([])]) }
         if method == "Runtime.evaluate", let expression = params["expression"]?.stringValue {
             if expression.contains("location.href") {
-                return Self.value(.array([.string(pageURL), .string(pageTitle)]))
+                return Self.value(.array([.string(pageURL), .string(pageTitle)]
+                    + (expression.contains("readyState") ? [.string("complete")] : [])))
             }
             if expression == "devicePixelRatio" { return Self.value(.number(pixelRatio)) }
             if expression.contains("innerText") {
@@ -87,10 +88,16 @@ final class BrowserAgentToolsTests: XCTestCase {
         let page = page!
         tools = BrowserAgentTools(usesMacEditingCommands: true, pages: { _ in page })
         tools.pollInterval = .milliseconds(5)
+        tools.fileChooserWait = .milliseconds(20)
     }
 
     private func run(_ tool: String, _ arguments: [String: JSONValue] = [:]) async -> AgentToolResult {
         await tools.run(tool: tool, arguments: .object(arguments), sessionID: UUID())
+    }
+
+    /// The references a snapshot gave, in the order it shows them.
+    private static func refs(in text: String) -> [String] {
+        text.matches(of: #/\[ref=(@e\d+)\]/#).map { String($0.1) }
     }
 
     /// The page from the snapshot test: a heading, a text field, a button, a paragraph, a link.
@@ -329,10 +336,15 @@ final class BrowserAgentToolsTests: XCTestCase {
 
         let noChooser = await run(AgentToolCatalog.fileUpload, ["paths": .array([.string("b.txt")])])
         XCTAssertTrue(noChooser.isError)
+        XCTAssertTrue(noChooser.text.contains("No file chooser is open in tab 4"), noChooser.text)
 
         page.receive(.fileDialog(tab: 4, dialog: BrowserFileDialog(id: 5, mode: .open, title: "Upload", defaultPath: "", extensions: [])))
         let notice = await run(AgentToolCatalog.consoleMessages)
         XCTAssertTrue(notice.text.contains("A file chooser “Upload” is open"), notice.text)
+        // A failed tool says what the page waits on too.
+        let noDialog = await run(AgentToolCatalog.handleDialog, ["accept": .bool(true)])
+        XCTAssertTrue(noDialog.isError)
+        XCTAssertTrue(noDialog.text.contains("A file chooser “Upload” is open"), noDialog.text)
         for refused in [outside.path(percentEncoded: false), "escape.txt", "../\(outside.lastPathComponent)", "docs", "missing.txt"] {
             let result = await run(AgentToolCatalog.fileUpload, ["paths": .array([.string(refused)])])
             XCTAssertTrue(result.isError, refused)
@@ -363,7 +375,13 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertThrowsError(try BrowserAgentWorkspaceFile.privateCopy(of: fifo, roots: [root], in: uploads),
                              "A pipe is refused without waiting for a writer")
 
-        page.receive(.fileDialog(tab: 4, dialog: BrowserFileDialog(id: 6, mode: .openMultiple, title: "", defaultPath: "", extensions: [])))
+        // The chooser a click opens reaches Yardlet a moment after the click's result; the upload right after waits for it.
+        tools.fileChooserWait = .seconds(10)
+        let page = page!
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            page.receive(.fileDialog(tab: 4, dialog: BrowserFileDialog(id: 6, mode: .openMultiple, title: "", defaultPath: "", extensions: [])))
+        }
         let cancelled = await run(AgentToolCatalog.fileUpload, [:])
         XCTAssertEqual(cancelled.text, "Cancelled the file chooser.")
         XCTAssertEqual(hostCommands.last, .fileDialogResult(tab: 4, dialog: 6, paths: nil))
@@ -379,6 +397,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertEqual(result.text, """
             Page URL: https://example.com/
             Page title: Example Domain
+            Snapshot 1 of tab 4
 
             - heading "Welcome" [level=1] [ref=@e1]
             - textbox "Name" [required] [ref=@e2]: "Ada"
@@ -446,7 +465,29 @@ final class BrowserAgentToolsTests: XCTestCase {
         _ = await loadSnapshot()
         let unknown = await run(AgentToolCatalog.click, ["ref": .string("@e99")])
         XCTAssertTrue(unknown.isError)
-        XCTAssertTrue(unknown.text.contains("not in the latest snapshot"), unknown.text)
+        XCTAssertTrue(unknown.text.contains("No snapshot of tab 4 gave @e99: they gave @e1 to @e4 so far"), unknown.text)
+
+        // An element keeps its reference in the next snapshot; one that left the page takes its own with it, and a new
+        // one gets a number no snapshot gave before.
+        let tree = cdp.responders["Accessibility.getFullAXTree"]!
+        cdp.responders["Accessibility.getFullAXTree"] = { params in
+            // The link goes, and a button takes its place in the tree.
+            let nodes = (try tree(params)["nodes"]?.arrayValue ?? []).map { node -> JSONValue in
+                guard node["nodeId"]?.stringValue == "9" else { return node }
+                return .object(["nodeId": .string("9"), "ignored": .bool(false), "parentId": .string("1"),
+                                "role": .object(["type": .string("role"), "value": .string("button")]),
+                                "name": .object(["type": .string("computedString"), "value": .string("More")]),
+                                "childIds": .array([]), "properties": .array([]), "backendDOMNodeId": .integer(16)])
+            }
+            return .object(["nodes": .array(nodes)])
+        }
+        let second = await run(AgentToolCatalog.snapshot)
+        XCTAssertTrue(second.text.contains("Snapshot 2 of tab 4"), second.text)
+        XCTAssertTrue(second.text.contains("button \"Send\" [ref=@e3]"), second.text)
+        XCTAssertTrue(second.text.contains("button \"More\" [ref=@e5]"), second.text)
+        let left = await run(AgentToolCatalog.click, ["ref": .string("@e4")])
+        XCTAssertTrue(left.text.contains("@e4 is not in snapshot 2 of tab 4, the latest: an earlier snapshot gave it"), left.text)
+        cdp.responders["Accessibility.getFullAXTree"] = tree
 
         cdp.responders["DOM.scrollIntoViewIfNeeded"] = { _ in throw ScriptedCDP.missingNode("DOM.scrollIntoViewIfNeeded") }
         let stale = await run(AgentToolCatalog.click, ["ref": .string("@e3")])
@@ -457,7 +498,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         cdp.responders["Page.navigate"] = { _ in .object(["frameId": .string("F")]) }
         _ = await run(AgentToolCatalog.navigate, ["url": .string("https://example.com/#top")])
         let afterNavigation = await run(AgentToolCatalog.click, ["ref": .string("@e3")])
-        XCTAssertTrue(afterNavigation.text.contains("not in the latest snapshot"), afterNavigation.text)
+        XCTAssertTrue(afterNavigation.text.contains("@e3 is stale: the page navigated after snapshot 2 of tab 4"), afterNavigation.text)
     }
 
     /// A link the agent clicked navigates without the navigate tool. The old document can stay
@@ -476,8 +517,20 @@ final class BrowserAgentToolsTests: XCTestCase {
         cdp.sent = []
         let afterNavigation = await run(AgentToolCatalog.click, ["ref": .string("@e3")])
         XCTAssertTrue(afterNavigation.isError)
-        XCTAssertTrue(afterNavigation.text.contains("@e3 is stale: the page navigated"), afterNavigation.text)
+        XCTAssertTrue(afterNavigation.text.contains("@e3 is stale: the page went to https://example.com/second after snapshot 1"),
+                      afterNavigation.text)
         XCTAssertFalse(cdp.methods.contains("Input.dispatchMouseEvent"), "Nothing is clicked at the old position")
+
+        // The new document's elements get numbers no snapshot of the tab gave before. A click that makes the page
+        // navigate says that the references ended, as a batch's later actions need them.
+        let renewed = await loadSnapshot()
+        XCTAssertTrue(renewed.text.contains("button \"Send\" [ref=@e7]"), renewed.text)
+        cdp.eventsAfter["Input.dispatchMouseEvent"] = [("Page.frameNavigated",
+            .object(["frame": .object(["id": .string("main"), "url": .string("https://example.com/third")])]))]
+        let submitted = await run(AgentToolCatalog.click, ["ref": .string("@e7")])
+        XCTAssertFalse(submitted.isError, submitted.text)
+        XCTAssertTrue(submitted.text.contains("The page went to https://example.com/third during this browser_click, so the "
+            + "references of snapshot 2 of tab 4 no longer apply"), submitted.text)
     }
 
     // MARK: - Input
@@ -617,10 +670,23 @@ final class BrowserAgentToolsTests: XCTestCase {
         let appeared = await run(AgentToolCatalog.waitFor, ["text": .string("Saved")])
         XCTAssertEqual(appeared.text, "\"Saved\" appeared.")
 
+        // A part of the visible text, ignoring case and runs of spaces, as Playwright's text matching reads it.
+        cdp.bodyTexts = ["ORDER\n  saved\u{00A0}today"]
+        let loosely = await run(AgentToolCatalog.waitFor, ["text": .string("Order saved today")])
+        XCTAssertEqual(loosely.text, "\"Order saved today\" appeared.")
+
+        // A wait that runs out says what the page shows, so the same wait is not tried again blind.
         cdp.bodyTexts = ["Loading"]
         let timedOut = await run(AgentToolCatalog.waitFor, ["text": .string("Saved"), "timeout": .number(0.05)])
         XCTAssertTrue(timedOut.isError)
-        XCTAssertTrue(timedOut.text.contains("it did not"), timedOut.text)
+        XCTAssertTrue(timedOut.text.contains("for “Saved” to appear in the visible text of the page and of its frames from the "
+            + "same origin, ignoring case and runs of spaces; it did not."), timedOut.text)
+        XCTAssertTrue(timedOut.text.contains("The page is at https://example.com/ (“Example Domain”) and has loaded."), timedOut.text)
+        XCTAssertTrue(timedOut.text.contains("Its text now: “Loading”"), timedOut.text)
+        cdp.bodyTexts = ["Uploading 3 files, spinner shown"]
+        let stillThere = await run(AgentToolCatalog.waitFor, ["textGone": .string("SPINNER"), "timeout": .number(0.05)])
+        XCTAssertTrue(stillThere.text.contains("It is still in the page's text: “Uploading 3 files, spinner shown”"), stillThere.text)
+        cdp.bodyTexts = [""]
 
         let gone = await run(AgentToolCatalog.waitFor, ["textGone": .string("Spinner")])
         XCTAssertEqual(gone.text, "\"Spinner\" is gone.")
@@ -818,7 +884,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertEqual(echoed.text.components(separatedBy: "[saved value]").count, 4,
                        "The value as written, in base64 and in hex: \(echoed.text)")
         XCTAssertFalse(BrowserAgentTools.fillFunction.contains("data: v"), "The input event does not carry the value")
-        XCTAssertTrue(echoed.text.contains("textbox \"Password\" [ref=@e1]: \"<redacted>\""), echoed.text)
+        XCTAssertTrue(echoed.text.contains("textbox \"Password\" [ref=\(Self.refs(in: echoed.text)[0])]: \"<redacted>\""), echoed.text)
         // A code over one-digit boxes matches no scrubbed string: the boxes the fill went into are left out by node.
         secretNodes = Array(11...16)
         let boxes = await run(AgentToolCatalog.snapshot)
@@ -864,9 +930,9 @@ final class BrowserAgentToolsTests: XCTestCase {
         let afterMove = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertFalse(afterMove.isError, afterMove.text)
         // A fill whose call fails after the values were sent keeps the document closed.
-        _ = await run(AgentToolCatalog.snapshot)
+        let fourth = await run(AgentToolCatalog.snapshot)
         failFill = true
-        let failed = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2")])
+        let failed = await run(VaultToolCatalog.fillCredential, ["ref": .string(Self.refs(in: fourth.text)[1])])
         XCTAssertTrue(failed.isError, failed.text)
         let afterFailure = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
         XCTAssertTrue(afterFailure.isError, afterFailure.text)
@@ -877,15 +943,15 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertEqual(asked.count, 1, "Only the fill after browser_evaluate on doc-4 asked: \(asked)")
         navigate(to: "doc-5")
         _ = await run(AgentToolCatalog.evaluate, ["function": .string("() => 1")])
-        _ = await run(AgentToolCatalog.snapshot)
+        let fifth = Self.refs(in: await run(AgentToolCatalog.snapshot).text)[1]
         confirms = false
-        let scripted = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2")])
+        let scripted = await run(VaultToolCatalog.fillCredential, ["ref": .string(fifth)])
         XCTAssertTrue(scripted.isError && scripted.text.contains("ran your own scripts"), scripted.text)
         XCTAssertEqual(asked.last, L10n.format("fill “%@” on %@ for “%@”, on a page where it ran its own scripts",
                                                "Example", "www.example.com", L10n.string("A task")))
         confirms = true
 
-        let elsewhere = await run(VaultToolCatalog.fillCredential, ["ref": .string("@e2"), "item": .string("Other")])
+        let elsewhere = await run(VaultToolCatalog.fillCredential, ["ref": .string(fifth), "item": .string("Other")])
         XCTAssertTrue(elsewhere.isError)
 
         // A field in a frame from another site is not the page's own, whatever its site.
@@ -1056,7 +1122,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertTrue(result.isError)
         XCTAssertEqual(result.content.count, 3)
         XCTAssertTrue(result.text.hasPrefix("1. browser_navigate: Loaded https://example.com/"), result.text)
-        XCTAssertTrue(result.text.contains("2. browser_click failed: There is no snapshot yet"), result.text)
+        XCTAssertTrue(result.text.contains("2. browser_click failed: There is no snapshot of tab 4 yet"), result.text)
         XCTAssertTrue(result.text.hasSuffix("Stopped at action 2; 1 later action was not run."), result.text)
         XCTAssertFalse(cdp.methods.contains("Accessibility.getFullAXTree"), "Nothing after the failure runs")
     }
@@ -1097,7 +1163,7 @@ final class BrowserAgentToolsTests: XCTestCase {
         cdp.responders["Accessibility.getFullAXTree"] = { _ in throw BrowserDevToolsError.timedOut("Accessibility.getFullAXTree") }
         let timedOut = await run(AgentToolCatalog.snapshot)
         XCTAssertTrue(timedOut.isError)
-        XCTAssertEqual(timedOut.text, "The browser did not answer Accessibility.getFullAXTree in time.")
+        XCTAssertEqual(timedOut.text, "The browser did not answer Accessibility.getFullAXTree within 15 seconds.")
     }
 
     func testAToolSaysWhenThePageOpenedANewTab() async {

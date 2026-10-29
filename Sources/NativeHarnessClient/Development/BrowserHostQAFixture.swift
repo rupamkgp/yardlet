@@ -547,6 +547,27 @@ private final class BrowserHostQARunner {
               "evaluate \(Int(stuckMs)) ms: \(stuckText.prefix(260)); listed \(listed)")
         check("unresponsive: browser_navigate opens the page again in its place", reopened && stuckRendererGone,
               "\(movedText.prefix(220)); renderers stuck \(describeLoad(loadStuck)) → after \(describeLoad(loadAfter))")
+
+        // The old id reaches the tab opened in its place, saying so.
+        let replacementID = replacement.map { String($0.id) } ?? "none"
+        let viaOld = text(await agentTools.run(tool: AgentToolCatalog.evaluate, arguments: .object([
+            "function": .string("() => location.pathname"), "tabId": .string(tabID)]), sessionID: session))
+        check("unresponsive: the old tab id reaches the tab opened in its place",
+              viaOld.hasPrefix("Tab \(tabID) is now tab \(replacementID): its page was not responding") && viaOld.contains("/second"),
+              String(viaOld.prefix(260)))
+        // A function whose promise does not settle is late on a page that answers everything else: no page that does not
+        // respond, for the agent or the panel.
+        let pendingStarted = DispatchTime.now().uptimeNanoseconds
+        let pending = text(await agentTools.run(tool: AgentToolCatalog.evaluate, arguments: .object([
+            "function": .string("() => new Promise(() => {})"), "tabId": .string(replacementID)]), sessionID: session))
+        let pendingMs = Self.milliseconds(since: pendingStarted)
+        let pendingListing = text(await agentTools.run(tool: AgentToolCatalog.tabList, arguments: .object([:]), sessionID: session))
+        check("unresponsive: a promise that does not settle is late, not a page that does not respond",
+              pending.contains("The function did not finish within 15 seconds. The page answered another call right after")
+                && !pending.contains("not responding") && replacement?.unresponsive == nil && !pendingListing.contains("Not responding"),
+              "\(Int(pendingMs)) ms: \(pending.prefix(260)); listed \(!pendingListing.contains("Not responding"))")
+        results["late"] = .object(["evaluateMs": .number(pendingMs), "evaluateResult": .string(pending),
+                                   "oldIdResult": .string(viaOld)])
         if let replacement { replacement.close() }
 
         // The person's tab: a click starts a long script, the next input waits, and the hang monitor says so.

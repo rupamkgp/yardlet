@@ -51,6 +51,8 @@ final class BrowserHostClient {
     private var remembered: [UUID: BrowserRememberedTabs] = [:]
     /// Addresses of each session's recently closed tabs, newest last.
     private var closedAddresses: [UUID: [String]] = [:]
+    /// How each session tab that went went (`departure(of:)`).
+    private var departures: [BrowserTabID: (session: UUID, departure: BrowserTabDeparture)] = [:]
     /// Whether an address or a title carries a value the vault filled lately (`VaultScrubList.carries`). A tab keeps
     /// such a page out of what it remembers: the page its task saves and opens again, a closed tab's, and the one
     /// opened again after the host ended.
@@ -230,6 +232,19 @@ final class BrowserHostClient {
         tabs(forSession: session).first { $0.key == key }
     }
 
+    /// How a session's tab went, and from which session, for a tool that names it afterwards: a tab opened again in
+    /// its place is found by the side-panel tab it was (`tab(key:forSession:)`). Nil for an id no session tab had
+    /// since Yardlet started, and for an open tab.
+    func departure(of id: BrowserTabID) -> (session: UUID, departure: BrowserTabDeparture)? {
+        departures[id]
+    }
+
+    private func noteDeparture(of tab: BrowserTab, from session: UUID, _ departure: BrowserTabDeparture) {
+        departures[tab.id] = (session, departure)
+        // Ids only grow, so the oldest go first.
+        if departures.count > 2_000 { departures = departures.filter { $0.key > nextTabID - 1_000 } }
+    }
+
     /// Fronts a session tab.
     func select(_ tab: BrowserTab) {
         guard let session = tab.session, tabs[tab.id] === tab, frontedTabs[session] != tab.id else { return }
@@ -396,6 +411,7 @@ final class BrowserHostClient {
         let index = order.firstIndex(of: tab.id) ?? order.count
         let wasFront = frontedTabs[session] == tab.id
         // Gone without the session hearing it as closed: the same key opens again below.
+        noteDeparture(of: tab, from: session, .reopened(key: tab.key, cause: tab.openFailure != nil ? .couldNotOpen : .notResponding))
         tabs.removeValue(forKey: tab.id)
         connection?.send(.close(tab: tab.id))
         tab.markClosed()
@@ -435,6 +451,10 @@ final class BrowserHostClient {
     /// hang monitor timeout).
     nonisolated static let unresponsiveWait: Duration = .seconds(15)
 
+    /// How long the renderer has to answer the check after a late call (`BrowserTab.devToolsTimedOut`): it answers
+    /// at once unless its main thread is busy. Tests shorten it.
+    var rendererCheckWait: Duration = .seconds(5)
+
     /// The page of a session tab did not answer a DevTools call that needs its renderer.
     fileprivate func pageDidNotAnswer(_ tab: BrowserTab) {
         if let session = tab.session { notifySession(session) }
@@ -467,6 +487,7 @@ final class BrowserHostClient {
         sessionOrder[source] = order.isEmpty ? nil : order
         if agentFronts[source] == tab.id { agentFronts[source] = nil }
         if agentUsedTabs[source] == tab.id { agentUsedTabs[source] = nil }
+        noteDeparture(of: tab, from: source, .moved)
         tab.session = target
         onTabsMoved?(source, target)
         remembered[target] = nil
@@ -581,8 +602,9 @@ final class BrowserHostClient {
         try open(url: url, viewport: viewport, session: nil, key: UUID(), after: nil)
     }
 
-    func closeTab(_ tab: BrowserTab) {
-        close(tab)
+    /// Closes the tab; `departure` is how a tool that names it afterwards hears it went (`departure(of:)`).
+    func closeTab(_ tab: BrowserTab, as departure: BrowserTabDeparture = .closed) {
+        close(tab, as: departure)
     }
 
     /// Closes a tab as a person closes it, as Chrome does: a page that asks before it is left asks first
@@ -592,7 +614,7 @@ final class BrowserHostClient {
     /// attached, which every Yardlet tab is (`ShouldIgnoreUnresponsiveRenderer`).
     func requestClose(_ tab: BrowserTab) {
         guard tabs[tab.id] === tab, !tab.isClosing else { return }
-        guard let connection else { return close(tab) }
+        guard let connection else { return close(tab, as: .closedByPerson) }
         tab.isClosing = true
         tab.closeRequests += 1
         let request = tab.closeRequests
@@ -602,7 +624,7 @@ final class BrowserHostClient {
             // Only this close's wait: after the person stayed and closed again, the next close has its own.
             guard let self, let tab, self.tabs[tab.id] === tab, tab.isClosing, tab.closeRequests == request,
                   tab.closeQuestion == nil else { return }
-            self.close(tab)
+            self.close(tab, as: .closedByPerson)
         }
     }
 
@@ -770,9 +792,10 @@ final class BrowserHostClient {
         return tab
     }
 
-    private func close(_ tab: BrowserTab) {
+    private func close(_ tab: BrowserTab, as departure: BrowserTabDeparture = .closed) {
         let waited = personWait(of: tab) != nil
         guard tabs.removeValue(forKey: tab.id) != nil else { return }
+        if let session = tab.session { noteDeparture(of: tab, from: session, departure) }
         defer { if waited { onPersonWaitsChange?() } }
         tab.isClosing = false
         // The host holds a waiting dialog's callback until it is answered, also once its tab is gone.
@@ -1019,6 +1042,9 @@ final class BrowserHostClient {
             retentionTask = nil
             let sessions = Array(sessionOrder.keys)
             for session in sessions { remember(session) }
+            for tab in tabs.values {
+                if let session = tab.session { noteDeparture(of: tab, from: session, .reopened(key: tab.key, cause: .hostEnded)) }
+            }
             let orphaned = tabs.values
             tabs.removeAll()
             sessionOrder.removeAll()
@@ -1105,8 +1131,10 @@ final class BrowserHostClient {
             // The page closed itself; a tab Yardlet closed is already gone. A host asked to end closes
             // every tab first: those are lost with it, as in a crash, and `.terminated` keeps them.
             guard !isHostEnding, let tab = tabs[id] else { return }
+            // The person's close the page let through (`requestClose`), or the page's own `window.close()`.
+            let departure: BrowserTabDeparture = tab.isClosing ? .closedByPerson : .closedByPage
             tab.receive(event)
-            close(tab)
+            close(tab, as: departure)
         default:
             if let id = event.tab { tabs[id]?.receive(event) }
         }
@@ -1192,8 +1220,8 @@ final class BrowserTab {
     private(set) var canGoBack = false
     private(set) var canGoForward = false
     /// The tab's page does not respond: Chromium says its renderer has not handled input for 15
-    /// seconds, or it has not answered a DevTools call its renderer answers. Nil once it answers, its
-    /// renderer ended, or within 15 seconds of Wait.
+    /// seconds, or it has answered neither a DevTools call its renderer answers nor the check after it
+    /// (`devToolsTimedOut`). Nil once it answers, its renderer ended, or within 15 seconds of Wait.
     var unresponsive: BrowserTabUnresponsiveness? {
         if hangReported, waitedUntil.map({ ContinuousClock.now >= $0 }) ?? true { return .hangMonitor }
         return unanswered.map { .unanswered(method: $0) }
@@ -1201,6 +1229,8 @@ final class BrowserTab {
     fileprivate var hangReported = false
     fileprivate var waitedUntil: ContinuousClock.Instant?
     private var unanswered: String?
+    /// The check whether the renderer still answers, after a call it answers went unanswered: true when it answered.
+    private var rendererCheck: Task<Bool, Never>?
     /// The tab's renderer ended (it crashed, ran out of memory or was killed); nil once the tab loads
     /// again, which starts another renderer.
     private(set) var crash: BrowserTabCrash?
@@ -1333,10 +1363,39 @@ final class BrowserTab {
         if hangReported { waitedUntil = deadline }
     }
 
+    /// A late call alone does not show that the page is stuck: one that awaits the page's promise (`browser_evaluate`)
+    /// or a frame to draw can be late while the renderer answers everything else. A call the renderer answers at once
+    /// tells, and the page reads as not responding only when that one goes unanswered too. While it runs, it decides.
     private func devToolsTimedOut(_ method: String) {
-        guard !isClosed, unanswered == nil, Self.needsRenderer(method) else { return }
-        unanswered = method
-        client?.pageDidNotAnswer(self)
+        guard !isClosed, unanswered == nil, rendererCheck == nil, Self.needsRenderer(method) else { return }
+        let wait = client?.rendererCheckWait ?? .seconds(5)
+        rendererCheck = Task { @MainActor [weak self] in
+            let answered: Bool
+            do {
+                _ = try await self?.devTools.send("Runtime.evaluate", ["expression": .string("0")], timeout: wait)
+                answered = true
+            } catch BrowserDevToolsError.timedOut {
+                answered = false
+            } catch {
+                // The tab closed or the host went: nothing is known of the page.
+                answered = true
+            }
+            guard let self else { return answered }
+            self.rendererCheck = nil
+            if !answered, !self.isClosed, self.unanswered == nil {
+                self.unanswered = method
+                self.client?.pageDidNotAnswer(self)
+            }
+            return answered
+        }
+    }
+
+    /// After a call to the tab timed out: whether the renderer answered the check it started (`devToolsTimedOut`), once
+    /// that ends; false when the page was already not responding, nil when nothing was checked (a call the renderer does
+    /// not answer, such as `Page.navigate`, or a closed tab).
+    func rendererAnswered() async -> Bool? {
+        if let rendererCheck { return await rendererCheck.value }
+        return unanswered == nil ? nil : false
     }
 
     private func devToolsAnswered(_ method: String) {
@@ -1863,8 +1922,33 @@ enum BrowserTabUnresponsiveness: Equatable, Sendable {
     /// Chromium's hang monitor: the renderer has not handled input for 15 seconds (the host reads it
     /// every second, and holds the hang monitor's callback to end the renderer where Chromium gives one).
     case hangMonitor
-    /// The page did not answer `method`, a DevTools call its renderer answers, in time.
+    /// The page did not answer `method`, a DevTools call its renderer answers, in time, nor the call it answers at once
+    /// that checked it right after.
     case unanswered(method: String)
+}
+
+/// How a session's tab went (`BrowserHostClient.departure(of:)`).
+enum BrowserTabDeparture: Equatable, Sendable {
+    enum Cause: Equatable, Sendable {
+        /// Its page did not respond, and it was opened again in its place (`BrowserHostClient.replace`).
+        case notResponding
+        /// The host could not open it, and it was opened again in its place (`BrowserHostClient.replace`).
+        case couldNotOpen
+        /// The browser host ended, and the session's tabs open again as they were (`restoreTabs`).
+        case hostEnded
+    }
+    /// Another tab took or takes its place as the same side-panel tab, `key`.
+    case reopened(key: UUID, cause: Cause)
+    /// The agent closed it (`browser_tab_close`).
+    case closedByAgent
+    /// The person closed it in the task's panel.
+    case closedByPerson
+    /// Its page closed itself (`window.close()`).
+    case closedByPage
+    /// Yardlet closed it: with the task's other tabs, or once the download it was opened for ended.
+    case closed
+    /// It went to another task with its page (`BrowserHostClient.move`).
+    case moved
 }
 
 /// The tab is no longer open.
