@@ -61,10 +61,10 @@ final class BrowserUnresponsiveTests: XCTestCase {
         // the renderer answers at once right after goes unanswered too, until an answer comes.
         _ = try? await stuck.devTools.send("Page.navigate", ["url": .string("https://b.test/x")], timeout: .milliseconds(30))
         XCTAssertNil(stuck.unresponsive)
-        let renderer = await stuck.rendererAnswered()
+        let renderer = await stuck.rendererAnswered(after: "Page.navigate")
         XCTAssertNil(renderer, "nothing was checked")
         _ = try? await stuck.devTools.send("Runtime.evaluate", ["expression": .string("1")], timeout: .milliseconds(30))
-        let busy = await stuck.rendererAnswered()
+        let busy = await stuck.rendererAnswered(after: "Runtime.evaluate")
         XCTAssertEqual(busy, false)
         XCTAssertEqual(stuck.unresponsive, .unanswered(method: "Runtime.evaluate"))
         connection.answers = true
@@ -74,7 +74,7 @@ final class BrowserUnresponsiveTests: XCTestCase {
         connection.withholds = { $0.contains(#""awaitPromise":true"#) }
         _ = try? await stuck.devTools.send("Runtime.evaluate", ["expression": .string("new Promise(() => {})"),
                                                                 "awaitPromise": .bool(true)], timeout: .milliseconds(30))
-        let late = await stuck.rendererAnswered()
+        let late = await stuck.rendererAnswered(after: "Runtime.evaluate")
         XCTAssertEqual(late, true)
         XCTAssertNil(stuck.unresponsive, "a late promise is no page that does not respond")
         connection.withholds = { _ in false }
@@ -169,9 +169,12 @@ final class BrowserUnresponsiveTests: XCTestCase {
         // A function whose promise does not settle is late on a page that answers everything else: no page that does
         // not respond, and the result says what was found.
         connection.withholds = { $0.contains(#""awaitPromise":true"#) }
-        let pending = text(await tools.run(tool: AgentToolCatalog.evaluate, arguments: .object([
-            "function": .string("() => new Promise(() => {})")]), sessionID: task))
+        let pendingResult = await tools.run(tool: AgentToolCatalog.evaluate, arguments: .object([
+            "function": .string("() => new Promise(() => {})")]), sessionID: task)
+        let pending = text(pendingResult)
         connection.withholds = { _ in false }
+        XCTAssertEqual(pendingResult.failure?.kind, .outcomeUnknown, "the function may still finish in the page")
+        XCTAssertEqual(pendingResult.failure?.retry, .afterChecking)
         XCTAssertTrue(pending.contains("The function did not finish within 0.1 seconds. The page answered another call right "
                                        + "after, so its renderer is not stuck"), pending)
         XCTAssertFalse(pending.contains("not responding"), pending)

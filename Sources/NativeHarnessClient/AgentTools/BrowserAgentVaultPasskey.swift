@@ -81,7 +81,7 @@ extension BrowserAgentTools {
         let grant: VaultFillGrant
         switch await vault.authorize(request) {
         case .success(let allowed): grant = allowed
-        case .failure(let refusal): throw BrowserAgentToolError(refusal.message)
+        case .failure(let refusal): throw BrowserAgentToolError(refusal.message, refusal.failure)
         }
         let host = VaultSite.host(of: origin)
         guard let passkey = grant.passkey, VaultPasskeyAuthenticator.host(host, mayUse: passkey.relyingPartyID) else {

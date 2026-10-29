@@ -174,6 +174,20 @@ enum ClaudeAIConnectorPreference {
     }
 }
 
+extension ToolJSON {
+    init(_ value: JSONValue) {
+        switch value {
+        case .object(let object): self = .object(object.mapValues(ToolJSON.init))
+        case .array(let array): self = .array(array.map(ToolJSON.init))
+        case .string(let string): self = .string(string)
+        case .integer(let integer): self = .integer(integer)
+        case .number(let number): self = .number(number)
+        case .bool(let bool): self = .bool(bool)
+        case .null: self = .null
+        }
+    }
+}
+
 extension JSONValue {
     init(_ value: ToolJSON) {
         switch value {

@@ -107,6 +107,9 @@ final class BrowserAgentTabToolsTests: XCTestCase {
         XCTAssertTrue(missing.isError)
         XCTAssertEqual(text(missing), "This task has no tab 999, and no tab of this task has had that id since Yardlet started. "
                        + tabsNow)
+        XCTAssertEqual(missing.failure, AgentToolFailure(.notFound, retry: .withChanges, details: [
+            "tabId": .string("999"), "tabs": .array([.string(firstID), .string(second)])
+        ]))
         let gone = await run(AgentToolCatalog.snapshot, ["tabId": .string(closedID)])
         XCTAssertEqual(text(gone), "Tab \(closedID) is closed: browser_tab_close closed it. " + tabsNow)
         let otherTasksTab = try client.openTab(forSession: UUID(), url: "about:blank", viewport: .offscreenDefault)

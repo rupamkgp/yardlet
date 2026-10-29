@@ -465,6 +465,8 @@ final class BrowserAgentToolsTests: XCTestCase {
         _ = await loadSnapshot()
         let unknown = await run(AgentToolCatalog.click, ["ref": .string("@e99")])
         XCTAssertTrue(unknown.isError)
+        XCTAssertEqual(unknown.failure?.kind, .notFound)
+        XCTAssertEqual(unknown.failure?.retry, .withChanges)
         XCTAssertTrue(unknown.text.contains("No snapshot of tab 4 gave @e99: they gave @e1 to @e4 so far"), unknown.text)
 
         // An element keeps its reference in the next snapshot; one that left the page takes its own with it, and a new
@@ -683,6 +685,8 @@ final class BrowserAgentToolsTests: XCTestCase {
             + "same origin, ignoring case and runs of spaces; it did not."), timedOut.text)
         XCTAssertTrue(timedOut.text.contains("The page is at https://example.com/ (“Example Domain”) and has loaded."), timedOut.text)
         XCTAssertTrue(timedOut.text.contains("Its text now: “Loading”"), timedOut.text)
+        XCTAssertEqual(timedOut.failure, AgentToolFailure(.timedOut, retry: .withChanges, details: ["seconds": .number(0.05), "loaded": .bool(true)]),
+                       "on a loaded page the same wait is no likelier to succeed")
         cdp.bodyTexts = ["Uploading 3 files, spinner shown"]
         let stillThere = await run(AgentToolCatalog.waitFor, ["textGone": .string("SPINNER"), "timeout": .number(0.05)])
         XCTAssertTrue(stillThere.text.contains("It is still in the page's text: “Uploading 3 files, spinner shown”"), stillThere.text)
@@ -858,6 +862,11 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertTrue(fill?["arguments"]?.arrayValue?.contains(.object(["value": .string("correct-horse-battery")])) == true)
         XCTAssertTrue(fill?["arguments"]?.arrayValue?.contains(.object(["value": .string("https://www.example.com")])) == true,
                       "The fill checks the document's origin as it fills")
+        // A failure's structured content, which a harness shows in place of the text, is scrubbed too.
+        let waited = await run(AgentToolCatalog.waitFor, ["text": .string("correct-horse-battery"), "timeout": .number(0.01)])
+        XCTAssertEqual(waited.failure?.kind, .timedOut)
+        XCTAssertFalse(String(describing: waited.structuredContent).contains("correct-horse-battery"), waited.text)
+        XCTAssertFalse(waited.text.contains("correct-horse-battery"), waited.text)
 
         func axNode(_ id: String, _ role: String, _ name: String, parent: String?, children: [String] = [],
                     value: String? = nil) -> JSONValue {
@@ -1120,7 +1129,8 @@ final class BrowserAgentToolsTests: XCTestCase {
             .object(["name": .string("browser_snapshot")])
         ])])
         XCTAssertTrue(result.isError)
-        XCTAssertEqual(result.content.count, 3)
+        XCTAssertEqual(result.failure?.kind, .notFound, "the failed action's failure is the batch's")
+        XCTAssertEqual(result.failure?.details["action"], .integer(2))
         XCTAssertTrue(result.text.hasPrefix("1. browser_navigate: Loaded https://example.com/"), result.text)
         XCTAssertTrue(result.text.contains("2. browser_click failed: There is no snapshot of tab 4 yet"), result.text)
         XCTAssertTrue(result.text.hasSuffix("Stopped at action 2; 1 later action was not run."), result.text)
@@ -1146,6 +1156,15 @@ final class BrowserAgentToolsTests: XCTestCase {
         XCTAssertTrue(nested.text.contains("cannot contain another batch"), nested.text)
         let unknown = await run(AgentToolCatalog.batch, ["actions": .array([.object(["name": .string("browser_fly")])])])
         XCTAssertTrue(unknown.isError)
+        XCTAssertEqual(unknown.failure?.kind, .unknownTool)
+        // Each action's input is checked against its tool's schema, as a call of its own is.
+        let unchecked = await run(AgentToolCatalog.batch, ["actions": .array([
+            .object(["name": .string("browser_wait_for"), "input": .object(["time": .number(0)])]),
+            .object(["name": .string("browser_evaluate"), "input": .object(["script": .string("() => 1")])])
+        ])])
+        XCTAssertEqual(unchecked.failure?.kind, .invalidArguments)
+        XCTAssertEqual(unchecked.failure?.details["action"], .integer(2))
+        XCTAssertTrue(unchecked.text.contains("browser_evaluate was not run: it needs function. It takes no script."), unchecked.text)
         let empty = await run(AgentToolCatalog.batch, ["actions": .array([])])
         XCTAssertTrue(empty.isError)
     }

@@ -68,12 +68,7 @@ struct VaultScrubList {
 
     func scrub(_ result: AgentToolResult, now: Date = Date()) -> AgentToolResult {
         guard entries.contains(where: { $0.until >= now }) else { return result }
-        var result = result
-        result.content = result.content.map { content in
-            if case .text(let text) = content { return .text(scrub(text, now: now)) }
-            return content
-        }
-        return result
+        return result.mappingText { scrub($0, now: now) }
     }
 
     /// Where `spelling` ends when it starts at `start` in `text`, each byte as itself, as `%XX` or `%25XX`,
@@ -576,11 +571,31 @@ enum VaultSetupText {
     }
 
     static func scrub(_ result: AgentToolResult) -> AgentToolResult {
-        var result = result
-        result.content = result.content.map { content in
-            if case .text(let text) = content { return .text(scrub(text)) }
-            return content
+        result.mappingText(scrub)
+    }
+}
+
+extension AgentToolResult {
+    /// The result with each of its texts changed: its text content, and every string of its structured content, which
+    /// a harness shows the model in place of the text (`AgentToolFailure`).
+    func mappingText(_ change: (String) -> String) -> AgentToolResult {
+        func map(_ value: ToolJSON) -> ToolJSON {
+            switch value {
+            case .string(let text): .string(change(text))
+            case .array(let items): .array(items.map(map))
+            case .object(let fields): .object(fields.mapValues(map))
+            default: value
+            }
         }
+        var result = self
+        result.content = content.map { item in
+            switch item {
+            case .text(let text): .text(change(text))
+            case .json(let value): .json(map(value))
+            case .image: item
+            }
+        }
+        result.structuredContent = structuredContent.map(map)
         return result
     }
 }
@@ -639,7 +654,7 @@ extension BrowserAgentTools {
         let grant: VaultFillGrant
         switch await vault.authorize(request) {
         case .success(let allowed): grant = allowed
-        case .failure(let refusal): throw BrowserAgentToolError(refusal.message)
+        case .failure(let refusal): throw BrowserAgentToolError(refusal.message, refusal.failure)
         }
         // The page may have moved on while the person was asked.
         guard (try? await mainFrame(of: page))?.loaderID == frame.loaderID else {
@@ -744,7 +759,7 @@ extension BrowserAgentTools {
         let confirmation: VaultUse.Confirmation
         switch await vault.authorizeNewPassword(request, username: username) {
         case .success(let confirmed): confirmation = confirmed
-        case .failure(let refusal): throw BrowserAgentToolError(refusal.message)
+        case .failure(let refusal): throw BrowserAgentToolError(refusal.message, refusal.failure)
         }
         // The page may have moved on while the person was asked.
         guard (try? await mainFrame(of: page))?.loaderID == frame.loaderID,

@@ -45,9 +45,9 @@ final class BrowserAgentPage {
     var workspaceRoots: [URL] = []
     /// Whether the tab's page responds (`BrowserTab.unresponsive`); tests leave it responding.
     var unresponsive: () -> BrowserTabUnresponsiveness? = { nil }
-    /// After a call to the tab timed out, whether its renderer answered the check after it (`BrowserTab.rendererAnswered`);
-    /// nil when nothing was checked, as in tests.
-    var rendererAnswered: () async -> Bool? = { nil }
+    /// After a call (its method) to the tab timed out, whether its renderer answered the check after it
+    /// (`BrowserTab.rendererAnswered`); nil when nothing was checked, as in tests.
+    var rendererAnswered: (String) async -> Bool? = { _ in nil }
     /// How the tab's renderer ended, until the page loads again (`BrowserTab.crash`).
     var crash: () -> BrowserTabCrash? = { nil }
     /// Why the host could not open the tab, which then has no page (`BrowserTab.openFailure`).

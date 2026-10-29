@@ -47,6 +47,17 @@ argument the tool takes. An argument the tool does not take, with nothing missin
 one. A call to a tool the task does not have answers with the task's tools that share the name's first word
 (`browser_`, `slack_`).
 
+The browser tools carry their failures the same way (`BrowserAgentToolError.failure`): a tab or element reference that
+names nothing now, and a missing dialog or file chooser, are `not_found` / `with_changes` (with `tabId` and the task's
+`tabs`, or `ref` and `latestSnapshot`); a text wait that ran out is `timed_out`, `later` while the page is still loading
+and `with_changes` once it has loaded; a DevTools call that ran out is `timed_out` (`later`, or `with_changes` when the
+renderer did not answer the check either), and `outcome_unknown` / `after_checking` for input or a function that may
+still finish in the page; a page that holds a password or code, a file outside the task's folders and a vault fill the
+vault refuses are `refused` (`no`, or `with_changes` where naming another file or item helps). Each action of a
+`browser_batch` is checked against its tool's schema as a call of its own is, and a failed action's failure is the
+batch's, with its `action` number and `tool`; a batch that holds a picture keeps to its content. The vault's scrub covers
+`structuredContent` too, since a harness shows it in place of the text.
+
 | Tool | Arguments | Behavior |
 |---|---|---|
 | `browser_navigate` | `url` | Resolves the address with the same rules as the panel's address field (`BrowserURLPolicy`: http, https, file, data and about; a bare host name gets https), runs `Page.navigate` and waits for `Page.loadEventFired` (30 seconds). An error when the host blocks it (`navigationBlocked`). A `file:` address (2026-10-27) is resolved the way Chromium reads it and then taken as its real path, with `..` and symbolic links resolved: inside the task's folders (the main folder and the other roots) it opens as is. Outside them, a task that runs without asking (Claude Code bypassing permissions, Codex full access, Antigravity bypass; the same judgment as the session tools' `sessionToolAsksPerson`) opens it as is, and any other permission asks with the task's approval card ("Open a file outside this task's folders?", with the path as the body). When the person declines, the call fails with "The person did not allow opening ‹path›.", and a path allowed once is not asked again in that task (`AppModel.allowsBrowserFile`). A `file:` address the person types in the panel's address field is unchanged |

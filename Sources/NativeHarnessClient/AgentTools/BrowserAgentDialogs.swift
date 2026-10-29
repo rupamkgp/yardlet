@@ -1,4 +1,5 @@
 import Foundation
+import YardletAgentTools
 
 /// A JavaScript dialog opened while a tool waited on the page. The page is paused until the
 /// agent answers it, so the tool reports the dialog instead of waiting out its time limit.
@@ -21,9 +22,14 @@ final class BrowserAgentOnce {
 /// after `..` and symbolic links are resolved, so an upload cannot reach the rest of the disk. The same
 /// reading tells which `file:` pages the agent opens are in those folders (`BrowserAgentTools`).
 enum BrowserAgentWorkspaceFile {
+    /// A file the task's folders do not hold is refused: one inside them goes.
+    private static func outsideFolders(retry: AgentToolFailure.Retry) -> AgentToolFailure {
+        AgentToolFailure(.refused, retry: retry)
+    }
+
     static func resolve(_ path: String, roots: [URL], mode: BrowserFileDialog.Mode) throws -> String {
         guard let primary = roots.first else {
-            throw BrowserAgentToolError("This task has no project folder, so no file can be uploaded.")
+            throw BrowserAgentToolError("This task has no project folder, so no file can be uploaded.", outsideFolders(retry: .no))
         }
         let requested = path.hasPrefix("/") ? URL(filePath: path) : primary.appending(path: path)
         let standardized = requested.standardizedFileURL
@@ -34,7 +40,7 @@ enum BrowserAgentWorkspaceFile {
             : standardized.resolvingSymlinksInPath()
         let resolvedRoots = roots.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
         guard resolvedRoots.contains(where: { contains($0, resolved) }) else {
-            throw BrowserAgentToolError("\(path) is outside this task's project folders.")
+            throw BrowserAgentToolError("\(path) is outside this task's project folders.", outsideFolders(retry: .withChanges))
         }
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: resolved.path(percentEncoded: false), isDirectory: &isDirectory)
@@ -64,7 +70,7 @@ enum BrowserAgentWorkspaceFile {
         guard let real = canonicalPath(path),
               roots.compactMap({ canonicalPath($0.path(percentEncoded: false)) })
                 .contains(where: { contains(URL(filePath: $0), URL(filePath: real)) }) else {
-            throw BrowserAgentToolError("\(path) is outside this task's project folders.")
+            throw BrowserAgentToolError("\(path) is outside this task's project folders.", outsideFolders(retry: .withChanges))
         }
         let parts = real.split(separator: "/").map(String.init)
         guard let name = parts.last else { throw BrowserAgentToolError("\(path) is not a file.") }

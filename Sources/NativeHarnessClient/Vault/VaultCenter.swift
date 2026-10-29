@@ -1,4 +1,5 @@
 import Foundation
+import YardletAgentTools
 
 /// Where items' secrets are kept: the login keychain on macOS (`KeychainVaultSecretStore`), memory
 /// in tests and QA runs.
@@ -187,9 +188,11 @@ struct VaultFillGrant {
     var confirmedBy: VaultUse.Confirmation
 }
 
-/// A refused fill, in words for the agent.
+/// A refused fill, in words for the agent, and what calling again can do: naming another item, or nothing until the
+/// person or a setting changes something.
 struct VaultRefusal: Error, Equatable {
     var message: String
+    var failure = AgentToolFailure(.refused, retry: .no)
 }
 
 /// An item whose sites or agent policy in `items.json` are not the ones saved with its secret.
@@ -283,11 +286,12 @@ final class VaultCenter: ObservableObject {
             let here = matching.filter(isNamed)
             guard here.count < 2 else {
                 return refuse(request, item: nil, "Several items for \(host) are named “\(name)”: "
-                    + here.map(Self.label).joined(separator: ", ") + ". Name one by its username.")
+                    + here.map(Self.label).joined(separator: ", ") + ". Name one by its username.", retry: .withChanges)
             }
             guard let named = here.first ?? onSite.first(where: isNamed) ?? items.first(where: isNamed) else {
                 return refuse(request, item: nil, "No saved item is named “\(name)”."
-                    + (matching.isEmpty ? "" : " Items for \(host): " + matching.map(Self.label).joined(separator: ", ") + "."))
+                    + (matching.isEmpty ? "" : " Items for \(host): " + matching.map(Self.label).joined(separator: ", ") + "."),
+                    kind: .notFound, retry: matching.isEmpty ? .no : .withChanges)
             }
             guard onSite.contains(where: { $0.id == named.id }) else {
                 // An item with no site yet, such as a code from an authenticator app, is for no page until the
@@ -311,7 +315,8 @@ final class VaultCenter: ObservableObject {
             }
             guard matching.count == 1 else {
                 return refuse(request, item: nil, "Several items are saved for \(host): "
-                    + matching.map(Self.label).joined(separator: ", ") + ". Name one with item, by its name or username.")
+                    + matching.map(Self.label).joined(separator: ", ") + ". Name one with item, by its name or username.",
+                    retry: .withChanges)
             }
             item = only
         }
@@ -497,9 +502,11 @@ final class VaultCenter: ObservableObject {
             + Self.personLinks(VaultSite.host(of: request.origin))
     }
 
-    private func refuse(_ request: VaultFillRequest, item: VaultItem?, _ message: String) -> Result<VaultFillGrant, VaultRefusal> {
+    private func refuse(_ request: VaultFillRequest, item: VaultItem?, _ message: String,
+                        kind: AgentToolFailure.Kind = .refused, retry: AgentToolFailure.Retry = .no)
+        -> Result<VaultFillGrant, VaultRefusal> {
         log(request, item: item, kinds: [request.kind.rawValue], outcome: .refused, reason: message, confirmedBy: nil)
-        return .failure(VaultRefusal(message: message))
+        return .failure(VaultRefusal(message: message, failure: AgentToolFailure(kind, retry: retry)))
     }
 
     private func log(_ request: VaultFillRequest, item: VaultItem?, kinds: [String], outcome: VaultUse.Outcome,

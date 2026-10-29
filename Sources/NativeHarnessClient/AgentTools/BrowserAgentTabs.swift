@@ -1,4 +1,5 @@
 import Foundation
+import YardletAgentTools
 
 /// A task's tab as the tab tools report it.
 struct BrowserAgentTabInfo: Equatable, Sendable {
@@ -104,7 +105,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
             return (String(tab.id), "Tab \(tabID) is now tab \(tab.id): \(Self.describe(cause)), and it was opened again in its "
                 + "place as the same tab of the task's browser panel. Calls that name tab \(tabID) go to tab \(tab.id).")
         }
-        throw BrowserAgentToolError(missing(tabID, for: sessionID, in: client))
+        throw missing(tabID, for: sessionID, in: client)
     }
 
     func tabs(for sessionID: UUID) throws -> (tabs: [BrowserAgentTabInfo], panelOpen: Bool) {
@@ -197,7 +198,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
 
     private func existingTab(_ tabID: String, for sessionID: UUID, in client: BrowserHostClient) throws -> BrowserTab {
         guard let tab = client.tabs(forSession: sessionID).first(where: { String($0.id) == tabID }) else {
-            throw BrowserAgentToolError(missing(tabID, for: sessionID, in: client))
+            throw missing(tabID, for: sessionID, in: client)
         }
         return tab
     }
@@ -210,7 +211,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
     }
 
     /// Why the task has no tab `tabID` (`BrowserHostClient.departure(of:)`), and the tabs it has.
-    private func missing(_ tabID: String, for sessionID: UUID, in client: BrowserHostClient) -> String {
+    private func missing(_ tabID: String, for sessionID: UUID, in client: BrowserHostClient) -> BrowserAgentToolError {
         let went = BrowserTabID(tabID).flatMap(client.departure(of:)).flatMap { $0.session == sessionID ? $0.departure : nil }
         let why: String = switch went {
         case .reopened(_, let cause)?:
@@ -224,11 +225,15 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         case nil: "This task has no tab \(tabID), and no tab of this task has had that id since Yardlet started."
         }
         let active = client.agentTab(forSession: sessionID)
-        let tabs = client.tabs(forSession: sessionID).map { tab in
+        let open = client.tabs(forSession: sessionID)
+        let tabs = open.map { tab in
             "\(tab.id) (\(Self.origin(of: tab.currentURL ?? "about:blank"))\(tab === active ? ", active" : ""))"
         }
-        return why + (tabs.isEmpty ? " This task has no browser tab now; browser_navigate or browser_tab_new opens one."
-            : " This task's tabs now: " + tabs.joined(separator: ", ") + ".")
+        return BrowserAgentToolError(why + (tabs.isEmpty ? " This task has no browser tab now; browser_navigate or "
+            + "browser_tab_new opens one." : " This task's tabs now: " + tabs.joined(separator: ", ") + "."),
+            AgentToolFailure(.notFound, retry: .withChanges, details: [
+                "tabId": .string(tabID), "tabs": .array(open.map { .string(String($0.id)) })
+            ]))
     }
 
     /// How a tab that another took the place of went, as a clause.
@@ -256,9 +261,9 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         entries = entries.filter { !$0.value.tab.isClosed }
         let page = BrowserAgentPage(cdp: tab.devTools, tabID: tab.id) { [weak tab] command in tab?.send(command) }
         page.unresponsive = { [weak tab] in tab?.unresponsive }
-        page.rendererAnswered = { [weak tab] in
+        page.rendererAnswered = { [weak tab] method in
             guard let tab else { return nil }
-            return await tab.rendererAnswered()
+            return await tab.rendererAnswered(after: method)
         }
         page.crash = { [weak tab] in tab?.crash }
         page.openFailure = { [weak tab] in tab?.openFailure }

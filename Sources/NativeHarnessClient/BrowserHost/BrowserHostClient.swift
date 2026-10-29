@@ -1368,8 +1368,16 @@ final class BrowserTab {
     /// tells, and the page reads as not responding only when that one goes unanswered too. While it runs, it decides.
     private func devToolsTimedOut(_ method: String) {
         guard !isClosed, unanswered == nil, rendererCheck == nil, Self.needsRenderer(method) else { return }
+        checkRenderer(after: method)
+    }
+
+    /// The check under way, or a new one: whether the renderer answers a call it answers at once. When it does not, the
+    /// page is not responding after `method`.
+    @discardableResult
+    private func checkRenderer(after method: String) -> Task<Bool, Never> {
+        if let rendererCheck { return rendererCheck }
         let wait = client?.rendererCheckWait ?? .seconds(5)
-        rendererCheck = Task { @MainActor [weak self] in
+        let check = Task { @MainActor [weak self] in
             let answered: Bool
             do {
                 _ = try await self?.devTools.send("Runtime.evaluate", ["expression": .string("0")], timeout: wait)
@@ -1388,14 +1396,18 @@ final class BrowserTab {
             }
             return answered
         }
+        rendererCheck = check
+        return check
     }
 
-    /// After a call to the tab timed out: whether the renderer answered the check it started (`devToolsTimedOut`), once
-    /// that ends; false when the page was already not responding, nil when nothing was checked (a call the renderer does
-    /// not answer, such as `Page.navigate`, or a closed tab).
-    func rendererAnswered() async -> Bool? {
-        if let rendererCheck { return await rendererCheck.value }
-        return unanswered == nil ? nil : false
+    /// After `method` to the tab timed out: whether the renderer answered the check after it (`devToolsTimedOut`), once
+    /// that ends, or a check of its own when an earlier late call's check ended meanwhile; false when the page was
+    /// already not responding, nil when nothing is checked (a call the renderer does not answer, such as
+    /// `Page.navigate`, or a closed tab).
+    func rendererAnswered(after method: String) async -> Bool? {
+        guard !isClosed, Self.needsRenderer(method) else { return nil }
+        if rendererCheck == nil, unanswered != nil { return false }
+        return await checkRenderer(after: method).value
     }
 
     private func devToolsAnswered(_ method: String) {
