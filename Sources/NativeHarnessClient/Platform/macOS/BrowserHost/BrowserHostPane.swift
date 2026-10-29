@@ -355,10 +355,10 @@ final class BrowserHostPaneController {
         MacBrowserHost.shared.showFrames(of: tab.id, in: view.frameDisplay)
         startAccessibility(tab: tab, view: view)
         // Attaching shows the tab to its engine and asks for a fresh frame, so a tab adopted from an
-        // earlier panel (or opened by the agent) paints again now.
-        client.attachPanel(to: tab)
-        isPanelOccluded = false
-        if view.isOccluded { panelOcclusionChanged(true) }
+        // earlier panel (or opened by the agent) paints again now. A panel off screen attaches as one:
+        // the tab neither paints nor counts as seen by the person (the memory saver).
+        isPanelOccluded = view.isOccluded
+        client.attachPanel(to: tab, occluded: isPanelOccluded)
         // Chromium's window over this tab (a passkey dialog) shows over this panel.
         MacBrowserHost.shared.panelShows(tab.id, in: view)
         view.resendViewport()

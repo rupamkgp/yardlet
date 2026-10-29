@@ -1373,6 +1373,30 @@ final class RestartResumeTests: XCTestCase {
         XCTAssertTrue(switches.contains { $0.label == L10n.string("Continue running work after a restart") },
             switches.description)
         XCTAssertTrue(switches.contains { $0.label == L10n.string("Memory saver") }, switches.description)
+        // Chrome's three levels under the memory saver's switch, each with its line, at the sheet's size scrolled to them.
+        let radios = host.accessibilityElements().filter { $0.role == NSAccessibility.Role.radioButton.rawValue }
+        for level in BrowserMemorySaver.Level.allCases {
+            XCTAssertTrue(radios.contains { $0.label.hasPrefix(level.title) && $0.label.contains(level.detail) }, radios.description)
+        }
+        for appearance in WindowlessRender.Appearance.allCases {
+            let shown = WindowlessRender.Host(
+                SettingsCenterView(notificationCenter: MenuBarQuietNotificationCenter()).environment(\.colorScheme, appearance.colorScheme),
+                size: size, appearance: appearance)
+            defer { shown.close() }
+            shown.settle()
+            func scrollViews(in view: NSView) -> [NSScrollView] {
+                ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollViews)
+            }
+            let scroll = try XCTUnwrap(scrollViews(in: shown.hosting).max {
+                ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0)
+            })
+            scroll.contentView.scroll(to: NSPoint(
+                x: 0, y: (scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.height))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            shown.settle()
+            try WindowlessRender.writePNG(shown.capture().bitmap,
+                                          to: directory.appending(path: "settings-memory-saver-\(appearance.suffix).png"))
+        }
 
         // A question the quit cut off, asked again where its call was, in place of the row the CLI's
         // refusal written as it quit would draw.

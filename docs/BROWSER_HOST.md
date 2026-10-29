@@ -20,10 +20,11 @@ operating document for the macOS product implementation.
   tens of ms longer to delete the temporary copy; section 3, "Shutdown"). A task's tabs stay until the task is archived
   or deleted (as the Codex app cleans up browser pages when it archives a thread), and the host ends 60 seconds after no
   tab is left open.
-- A tab hidden for more than 4 hours is discarded, as Chrome's Memory Saver discards one: its renderer ends, while its
-  address, title, icon, place and back/forward history stay, and its page loads again when it is shown or the agent uses
-  it. While memory is critical, tabs hidden for more than 10 minutes go, one every 5 seconds (section 3, "Memory saver";
-  Settings › General "Memory saver").
+- A tab hidden for more than the level's time (Chrome's Moderate 6 hours, Balanced 4 hours, Maximum 2 hours) is
+  discarded, as Chrome's Memory Saver discards one: its renderer ends, while its address, title, icon, place and
+  back/forward history stay, and its page loads again when it is shown or the agent uses it. A tab the agent opened that
+  no panel has shown on screen goes 10 minutes after the agent's turn. While memory is critical, tabs hidden for more
+  than 10 minutes go, one every 5 seconds (section 3, "Memory saver"; Settings › General "Memory saver").
 - VoiceOver and accessibility apps read and operate the page in the panel element by element. The page's accessibility
   tree is turned on only when something asks for it (section 5).
 - In Yardlet built without CEF (`swift build`, `swift run`, `swift test`), the browser panel falls back to the existing
@@ -103,10 +104,28 @@ and cannot be accessed outside of this callback"), so it has to be copied before
 | Page errors | 2026-10-23. "Unavailable" in the panel header and the error card attach only to the visible tab, and only to the navigation that failed. A main-frame `loadError` (except -3 `ERR_ABORTED`) becomes a card when its address commits: an `address` to that address, or the `loadEnd` with status 0 that Chromium sends for the error page (CEF 154 sends no address change for an error page; QA `load-errors`). If loading ends without a commit (the previous page stays), there is a "Could not open ‹address›." notice instead of a card. An error that comes after loading has ended belongs to a navigation already replaced, so it is dropped. The card is cleared by a commit of another address (`address`, including history.pushState) or by a `loadEnd` with an HTTP status (a reload succeeded), and stays through the error page's own follow-up loading (`loading` → -3 → end) (before 2026-10-23 that loading cleared real failures). Showing another tab clears it. The host's `failed` carries a tab (`failed(message:tab:)`, a tab whose browser could not be created) and goes only to that tab; only a `failed` without a tab goes to every tab. A tab that could not receive a CDP message (an agent call to a tab that is gone) gets a DevTools error answer (-32001) for that call's `id` instead of `failed`, so the call fails at once. Before 2026-10-23 this went to every tab as a `failed` without a tab, and healthy pages showed "Unavailable" and the card (reproduced in QA). Diagnostics: for each main-frame load error the host writes one line to host.log, `load error tab=… code=… host=…` (host name only, no path or query), and one line `devtools message refused tab=…` |
 | Not responding | 2026-10-23. A tab's page is not responding when one of two facts holds: Chromium's hang monitor finds that the renderer has not handled input for 15 seconds, or a DevTools call the renderer answers (the navigation calls `Page.navigate`, `reload` and `navigateToHistoryEntry`, and every call outside `Target.` and `Browser.`) got no answer in time and neither did a call it answers at once sent right after (`Runtime.evaluate` of `0` within `BrowserHostClient.rendererCheckWait`, 5 seconds) (`BrowserTab.unresponsive`: `.hangMonitor` and `.unanswered(method:)`). A call can be late on its own while the renderer answers everything else (a promise it awaits, a frame to draw); that check keeps such a page from reading as not responding. Chromium does not call `OnRenderProcessUnresponsive` for a tab with a DevTools session attached (Yardlet's tabs have one, for the agent and accessibility) (`IsDebuggerAttached` in `WebContentsImpl::RendererUnresponsive`; confirmed in QA, where only "responsive" ever came), so the host reads `is_render_process_unresponsive` for each open tab every second and sends `responsiveness(tab:isResponsive:)` when it changes. For a tab where the callback does come, the host holds on to that callback (wait and terminate in the `unresponsive(tab:action:)` command). The panel shows Chrome's "Page Unresponsive" bar with "Wait" and "Reload", and the header status is one line: "Not responding" > "Crashed" (see "Renderer exit" below) > "Unavailable" > "Loading" > "Ready" (the error card is hidden while the page is not responding). Wait hides the bar for 15 seconds and shows it again if the page still does not respond (Chrome's Wait). Reload, and the agent's `browser_navigate` to a tab that is not responding, open the tab anew with the same key, position and front state (`BrowserHostClient.replace`: if a callback is held, it ends the renderer first, then closes and opens). QA (`unresponsive`): the renderer of a script that never ends was at 98–100% CPU and was gone after the replacement. The state clears when the page responds (`responsiveness` true), when the renderer ends (`pageCrashed`) or when an answer comes to a call the renderer answers. The host log has `renderer unresponsive|responsive tab=…` |
 | Renderer exit | 2026-10-24. When a renderer ends (CEF `on_render_process_terminated`), the host writes one line to host.log, `renderer ended tab=… status=… code=…` (`status` is crashed, oom, killed, abnormal and so on; `code` is the exit code, the signal number for a crash), and sends `pageCrashed(tab:reason:status:code:)`. `reason` is the error code of Chrome's error screen, named by the host (SIGTRAP, SIGSEGV and so on, Out of Memory; signal numbers differ by platform, so the host names them, not the engine). The tab keeps `BrowserTab.crash` (`BrowserTabCrash`) until the next load starts. The panel gets the header status "Crashed" and a card in the Codex app's wording ("This page crashed", "‹host› ended unexpectedly. Error code: ‹code›", Reload), and the agent tools get the fact at the end of a result ("This tab's page crashed: its renderer ended (error code ‹code›). …") and a line "Crashed: tab … (‹code›)" in `browser_tab_list`. All five crashes in the installed app were caused by input timestamps (section 4, "Input timestamps") |
-| Memory saver | 2026-10-27. As Chrome's Memory Saver does, a task's tab hidden from its engine (no panel shows it on screen and the
-agent has not used it for a minute) for 4 hours is discarded. The figures are Chromium's source: its recommended Balanced mode
-(`MemorySaverModePolicy`, kMedium) is 4 hours, and the hidden time leaves out the Mac's sleep (`SuspendingClock`, Chrome's
-elapsed_not_suspended). While macOS memory pressure is critical, as Chrome's urgent discarding (`UrgentPageDiscardingPolicy`)
+| Memory saver | 2026-10-27; levels and the agent's unseen tabs 2026-10-29. As Chrome's Memory Saver does, a task's tab hidden
+from its engine (no panel shows it on screen and the agent has not used it for a minute) for the level's time is discarded.
+**Levels** (Settings › General "Memory saver", under the switch while it is on, as on Chrome's Memory page): Moderate 6
+hours, Balanced 4 hours (the default, as in Chrome) and Maximum 2 hours, and a tab the person brought in front of its task
+more than 5 times (Moderate) or 15 times (Balanced, Maximum) is not discarded for being hidden. The figures are Chromium's
+source: `chrome/browser/performance_manager/policies/memory_saver_mode_policy.cc`, `GetTimeBeforeDiscardForCurrentMode`
+and `GetMaxNumRevisitsForCurrentMode` for `MemorySaverModeAggressiveness` kConservative, kMedium and kAggressive (the
+names and order in `components/performance_manager/public/user_tuning/prefs.h`; the default kMedium in `prefs.cc`; the
+labels "Moderate", "Balanced (recommended)" and "Maximum" in `chrome/app/settings_strings.grdp`, and Chrome's own Korean
+translations in `generated_resources_ko.xtb`). Only the time and the revisits differ between levels; the pages kept and urgent discarding are
+the same. Chrome counts a revisit each time a tab becomes its window's active tab (`TabRevisitTracker`, from the second
+time for a tab opened in front); Yardlet counts each time the person brings the tab in front of its task in the panel
+(`BrowserHostClient.show`): returning to the task is not one, as returning to a Chrome window is not, and neither is the
+agent fronting a tab. The hidden time leaves out the Mac's sleep (`SuspendingClock`, Chrome's elapsed_not_suspended).
+**The agent's unseen tabs:** a tab the agent opened (with `browser_tab_new`, the first tab of a task that had none, or as a
+pop-up of its own click) that no panel has shown on screen goes sooner: once both its hiding and the end of the agent's
+turn that used it are 10 minutes past, whichever came later. The 10 minutes are Chrome's
+`kNonVisiblePagesUrgentProtectionTime` (`discard_eligibility_policy.h`), how long Chrome keeps a hidden tab even while
+memory is critical. A panel attached off screen (its window covered, miniaturized, on another space, or Yardlet
+hidden) does not count as showing the tab. The tab is discarded like any other (it is not closed), the pages kept below
+keep it too (a turn still going among them), the level's revisits do not apply, and turning the saver off turns this
+off. Yardlet tells the agent nothing about closing its tabs. While macOS memory pressure is critical, as Chrome's urgent discarding (`UrgentPageDiscardingPolicy`)
 one tab goes every 5 seconds, the longest hidden first among those hidden for more than 10 minutes
 (kNonVisiblePagesUrgentProtectionTime). At the warning level Chrome discards nothing either. The tabs kept follow
 `DiscardEligibilityPolicy`: a tab a panel shows (an occluded panel too, as Chrome keeps each window's front tab); a page
@@ -729,7 +748,8 @@ window server events.
 ```
 
 `--ui-fixture-browser-check-only=memory-saver --ui-fixture-browser-memory-saver=4 --ui-fixture-browser-agent-visible=1`
-(2026-10-27, `BrowserHostMemorySaverQA`, section 3, "Memory saver") makes Chrome's 4 hours 4 seconds and keeps eight tabs of
+(2026-10-27, `BrowserHostMemorySaverQA`, section 3, "Memory saver") makes the level's time, the urgent protection and the
+agent's unseen time 4 seconds and keeps eight tabs of
 one task with no panel: two pages that hold memory and have an iframe from another site (one moved on to a next page, so
 its history has two entries), a page whose CSP allows no script of its own, a page playing sound, a form the person typed
 into, a page that opened a pop-up and that pop-up (sharing one renderer), and a PDF. It checks that the first three are
@@ -737,7 +757,11 @@ discarded and the rest kept, each for its reason; the host's process count and f
 (`before`, `afterDiscard` and `afterRestore` in `result.json`; run-check.sh samples too at the phase markers `saver-1-live`,
 `saver-2-discarded` and `saver-3-restored`); that the page loads again with its history (`history.length`) and Back when the
 agent's tools use a discarded tab; that a panel showing a discarded tab loads it again; and that turning the setting off
-loads the rest.
+loads the rest. Then, with the level's time an hour again (2026-10-29), the agent's tools open four tabs of another task:
+two no panel shows on screen (one in a panel attached off screen), one a panel shows on screen, and one the person opened.
+It checks that none goes while the agent's turn goes on, that the two unseen ones go once it ended and the other two stay,
+the process count and footprint before and after (`agentTabsBefore` and `agentTabsAfter`; phase markers
+`saver-4-agent-turn` and `saver-5-agent-tabs-discarded`), and that the agent's next use loads an unseen tab again.
 `--ui-fixture-browser-check-only=many-tabs --ui-fixture-browser-limit=20` runs through tabs of several tasks and a tab
 with no room left in the browser (2026-10-27, section 3, "Number of tabs"). It opens 20 tabs: one panel tab, 9 tabs each
 in two other tasks (each task with its own profile), and one tab the agent opened. It checks that tabs beyond 16 all

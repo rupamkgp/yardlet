@@ -297,23 +297,29 @@ final class MacBrowserHost: NativeSurfaceResource {
     private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
     private var memorySaverObserver: (any NSObjectProtocol)?
 
-    /// The memory saver (`BrowserMemorySaver`): on as the setting says, and told when memory turns critical.
+    /// The memory saver (`BrowserMemorySaver`): on and at the level the setting says, and told when memory turns critical.
     private func followMemorySaver(_ client: BrowserHostClient) {
         client.isMemoryCritical = { MacConditionReader.memoryPressure() == .critical }
 #if DEBUG
-        // QA runs shorten Chrome's times: `--ui-fixture-browser-memory-saver=<seconds hidden before a discard>`.
+        // QA runs shorten Chrome's times: `--ui-fixture-browser-memory-saver=<seconds>` for the level's time, the urgent
+        // protection and the agent's unseen tabs.
         if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--ui-fixture-browser-memory-saver=") }),
            let seconds = Double(argument.dropFirst("--ui-fixture-browser-memory-saver=".count)) {
+            let time = Duration.milliseconds(Int(seconds * 1000))
             client.memorySaverTiming = BrowserMemorySaver.Timing(
-                hiddenBeforeDiscard: .milliseconds(Int(seconds * 1000)), urgentInterval: .seconds(1),
-                urgentProtection: .milliseconds(Int(seconds * 1000)), sweepInterval: .seconds(1), retryAfter: .seconds(2))
+                hiddenBeforeDiscard: time, urgentInterval: .seconds(1), urgentProtection: time, unseenAgentTabIdle: time,
+                sweepInterval: .seconds(1), retryAfter: .seconds(2))
         }
 #endif
+        client.memorySaverLevel = MemorySaverPreference.level()
         client.isMemorySaverOn = MemorySaverPreference.isOn()
         memorySaverObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak client] _ in
-            MainActor.assumeIsolated { client?.isMemorySaverOn = MemorySaverPreference.isOn() }
+            MainActor.assumeIsolated {
+                client?.memorySaverLevel = MemorySaverPreference.level()
+                client?.isMemorySaverOn = MemorySaverPreference.isOn()
+            }
         }
         let source = DispatchSource.makeMemoryPressureSource(eventMask: .critical, queue: .main)
         source.setEventHandler { [weak client] in MainActor.assumeIsolated { client?.memoryBecameCritical() } }

@@ -2037,6 +2037,14 @@
 "Keep the screen unlocked while tasks work" = "작업 중 화면 잠금 막기";
 "Memory saver" = "메모리 절약";
 "Frees memory from tasks you haven't used in a while and brings them back when you return." = "한동안 쓰지 않은 작업의 메모리를 비우고, 다시 쓰면 되살립니다.";
+/* Settings › General "Memory saver": Chrome's levels and how soon each frees a tab. */
+"Moderate" = "보통";
+"Balanced (recommended)" = "균형(권장)";
+"Maximum" = "최대";
+"Frees the memory of tabs unused for 6 hours." = "6시간 동안 쓰지 않은 탭의 메모리를 비웁니다.";
+"Frees the memory of tabs unused for 4 hours." = "4시간 동안 쓰지 않은 탭의 메모리를 비웁니다.";
+"Frees the memory of tabs unused for 2 hours." = "2시간 동안 쓰지 않은 탭의 메모리를 비웁니다.";
+"Memory saver level" = "메모리 절약 단계";
 "Keeping the screen unlocked" = "화면 잠금을 막는 중";
 "Not keeping the screen unlocked: battery under 20%" = "배터리가 20% 아래라 화면 잠금을 막지 않는 중";
 "The screen can lock now" = "이제 화면이 잠길 수 있습니다";

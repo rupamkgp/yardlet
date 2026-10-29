@@ -2037,6 +2037,14 @@
 "Keep the screen unlocked while tasks work" = "Keep the screen unlocked while tasks work";
 "Memory saver" = "Memory saver";
 "Frees memory from tasks you haven't used in a while and brings them back when you return." = "Frees memory from tasks you haven't used in a while and brings them back when you return.";
+/* Settings › General "Memory saver": Chrome's levels and how soon each frees a tab. */
+"Moderate" = "Moderate";
+"Balanced (recommended)" = "Balanced (recommended)";
+"Maximum" = "Maximum";
+"Frees the memory of tabs unused for 6 hours." = "Frees the memory of tabs unused for 6 hours.";
+"Frees the memory of tabs unused for 4 hours." = "Frees the memory of tabs unused for 4 hours.";
+"Frees the memory of tabs unused for 2 hours." = "Frees the memory of tabs unused for 2 hours.";
+"Memory saver level" = "Memory saver level";
 "Keeping the screen unlocked" = "Keeping the screen unlocked";
 "Not keeping the screen unlocked: battery under 20%" = "Not keeping the screen unlocked: battery under 20%";
 "The screen can lock now" = "The screen can lock now";

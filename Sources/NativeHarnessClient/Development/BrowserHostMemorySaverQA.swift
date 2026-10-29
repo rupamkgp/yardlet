@@ -9,7 +9,8 @@ import Foundation
 /// keeps (sound playing, a form typed into, a page and the pop-up it opened, which share a renderer, and a PDF). The
 /// first three are discarded and the rest kept, each for its reason; the browser's processes and memory before and
 /// after go to `result.json` (and run-check.sh samples them at the phase markers). A discarded tab loads its page
-/// again for the agent and for a panel, with its history; turning the saver off loads the rest.
+/// again for the agent and for a panel, with its history; turning the saver off loads the rest. Then the agent's tabs
+/// no panel showed on screen go soon after its turn (`runAgentTabs`).
 @MainActor
 final class BrowserHostMemorySaverQA {
     private let output: URL
@@ -112,7 +113,62 @@ final class BrowserHostMemorySaverQA {
         record["afterRestore"] = measure().json
         await phase("saver-3-restored")
         client.closeTabs(forSession: session)
+        await runAgentTabs()
         await finish()
+    }
+
+    /// Tabs the agent opened with its tools that no panel showed on screen (one of them in a panel off screen) go once
+    /// its turn has ended and the unseen time (the saver's seconds here) has passed; with the level's time an hour, a
+    /// tab the agent opened that a panel showed on screen and a tab the person opened stay. The agent's next use of an
+    /// unseen tab loads it again.
+    private func runAgentTabs() async {
+        client.memorySaverTiming.hiddenBeforeDiscard = .seconds(3600)
+        client.memorySaverTiming.urgentProtection = .seconds(3600)
+        client.isMemorySaverOn = true
+        let session = UUID()
+        let agentTabs = BrowserAgentTabs { MacBrowserHost.shared.client }
+        guard let unseen = await agentTab(agentTabs, session, "saver/page?n=5", title: "Saver 5"),
+              let offScreen = await agentTab(agentTabs, session, "saver/page?n=6", title: "Saver 6"),
+              let seen = await agentTab(agentTabs, session, "saver/page?n=7", title: "Saver 7"),
+              let persons = await tab(session, "saver/page?n=8", title: "Saver 8")
+        else { return }
+        client.attachPanel(to: offScreen, occluded: true)
+        client.detachPanel(from: offScreen, occluded: true)
+        client.attachPanel(to: seen)
+        client.detachPanel(from: seen)
+        let idle = client.memorySaverTiming.unseenAgentTabIdle
+        try? await Task.sleep(for: idle * 2)
+        let before = measure()
+        record["agentTabsBefore"] = before.json
+        let tabs = [unseen, offScreen, seen, persons]
+        check("the agent's tabs stay while its turn goes on", tabs.allSatisfy { !$0.isDiscarded },
+              tabs.map { "\($0.title) \($0.isDiscarded)" }.joined(separator: ", "))
+        await phase("saver-4-agent-turn")
+
+        await agentTabs.endAgentEmulation(for: session)
+        let gone = await waitUntil(idle + .seconds(30)) { unseen.isDiscarded && offScreen.isDiscarded }
+        check("the agent's tabs no panel showed on screen go once its turn ended", gone,
+              [unseen, offScreen].map { "\($0.title) \($0.isDiscarded) \($0.discardRefusal ?? "-")" }.joined(separator: ", "))
+        try? await Task.sleep(for: idle)
+        check("a tab a panel showed on screen and the person's tab wait for the level's time",
+              !seen.isDiscarded && !persons.isDiscarded && seen.discardRefusal == nil && persons.discardRefusal == nil,
+              [seen, persons].map { "\($0.title) \($0.isDiscarded) \($0.discardRefusal ?? "-")" }.joined(separator: ", "))
+        try? await Task.sleep(for: .seconds(3))
+        let after = measure()
+        record["agentTabsAfter"] = after.json
+        check("the unseen agent tabs' renderers end and free their memory",
+              after.processes <= before.processes - 2 && after.footprint < before.footprint,
+              "processes \(before.processes) → \(after.processes), footprint \(before.footprint >> 20) → \(after.footprint >> 20) MiB")
+        await phase("saver-5-agent-tabs-discarded")
+
+        if let page = try? agentTabs.page(for: session, tabID: String(unseen.id)) {
+            await page.untilRestored()
+        }
+        let state = await value(unseen, "document.title + '|' + (window.held ? window.held.length : 0)")
+        check("the agent's next use loads an unseen tab again", !unseen.isDiscarded && state == .string("Saver 5|40"),
+              Self.describe(state))
+        client.isMemorySaverOn = false
+        client.closeTabs(forSession: session)
     }
 
     // MARK: Measuring
@@ -157,6 +213,17 @@ final class BrowserHostMemorySaverQA {
             return nil
         }
         return tab
+    }
+
+    /// A tab the agent's tools open (`browser_tab_new`), at `path`.
+    private func agentTab(_ agentTabs: BrowserAgentTabs, _ session: UUID, _ path: String, title: String) async -> BrowserTab? {
+        guard let info = try? agentTabs.newTab(for: session, foreground: false),
+              let tab = client.tabs(forSession: session).first(where: { String($0.id) == info.id }) else {
+            check("the agent opens a tab for \(path)", false, "no tab")
+            return nil
+        }
+        tab.noteAgentActivity()
+        return await navigate(tab, path, title: title) ? tab : nil
     }
 
     private func navigate(_ tab: BrowserTab, _ path: String, title: String) async -> Bool {

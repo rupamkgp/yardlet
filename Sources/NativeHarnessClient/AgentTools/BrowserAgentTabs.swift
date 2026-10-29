@@ -121,7 +121,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         // A task whose tabs were lost with the host gets them back first, so the new tab goes after them.
         try restoreLostTabs(for: sessionID, in: client)
         let tab = try start {
-            try client.newTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault, select: false)
+            try client.newTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault, select: false, byAgent: true)
         }
         if foreground { client.selectForAgent(tab) }
         _ = entry(for: tab)
@@ -192,7 +192,7 @@ final class BrowserAgentTabs: BrowserAgentTabDirectory {
         if let tab = client.agentTab(forSession: sessionID) { return tab }
         return try start {
             try client.restoreTabs(forSession: sessionID, viewport: .offscreenDefault)
-                ?? client.openTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault)
+                ?? client.openTab(forSession: sessionID, url: "about:blank", viewport: .offscreenDefault, byAgent: true)
         }
     }
 

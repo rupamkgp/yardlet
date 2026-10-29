@@ -199,9 +199,11 @@ final class BrowserHostClient {
 
     /// The session's fronted tab, opened at `url` (starting the host) when it has none. An existing tab
     /// keeps its page; `url` is not loaded again.
-    func openTab(forSession session: UUID, url: String, viewport: BrowserViewport) throws -> BrowserTab {
+    /// - Parameter byAgent: the agent's tools open the tab (`BrowserTab.openedByAgent`).
+    func openTab(forSession session: UUID, url: String, viewport: BrowserViewport, byAgent: Bool = false) throws -> BrowserTab {
         if let tab = tab(forSession: session) { return tab }
         let tab = try open(url: url, viewport: viewport, session: session, key: UUID(), after: nil)
+        tab.openedByAgent = byAgent
         frontedTabs[session] = tab.id
         reschedule()
         notifySession(session)
@@ -212,12 +214,14 @@ final class BrowserHostClient {
     /// otherwise it opens behind the fronted tab, as the Claude app's `tabs_create` does by default.
     /// - Parameter key: the side-panel tab it is; a tab opened for a panel tab that has none yet
     ///   passes that tab's key.
+    /// - Parameter byAgent: the agent's tools open the tab (`BrowserTab.openedByAgent`).
     func newTab(forSession session: UUID, url: String, viewport: BrowserViewport, select: Bool,
-                key: UUID = UUID(), after: BrowserTab? = nil) throws -> BrowserTab {
+                key: UUID = UUID(), after: BrowserTab? = nil, byAgent: Bool = false) throws -> BrowserTab {
         guard tabs(forSession: session).count < Self.maxTabsPerSession else { throw BrowserTabLimitError() }
         guard tab(key: key, forSession: session) == nil else { throw BrowserTabKeyInUseError() }
         let tab = try open(url: url, viewport: viewport, session: session, key: key,
                            after: after.flatMap { $0.session == session ? $0.id : nil })
+        tab.openedByAgent = byAgent
         if select || frontedTabs[session].flatMap({ tabs[$0] }) == nil {
             keepAgentTab(inSession: session, as: tab.id)
             frontedTabs[session] = tab.id
@@ -259,6 +263,9 @@ final class BrowserHostClient {
     /// they show; once the panel shows the agent's own tab, the two are one again.
     func show(_ tab: BrowserTab) {
         guard let session = tab.session, tabs[tab.id] === tab else { return }
+        // The memory saver's revisits, as Chrome counts a tab becoming its window's active tab; the agent's fronting
+        // (`selectForAgent`) is no sign the person returns to the tab, and the panel following it finds it in front.
+        if frontedTabs[session] != tab.id { tab.revisits += 1 }
         if agentFronts[session] == tab.id {
             agentFronts[session] = nil
         } else {
@@ -421,6 +428,9 @@ final class BrowserHostClient {
         let replacement = try open(url: url, viewport: tab.viewport ?? .offscreenDefault, session: session, key: tab.key,
                                    after: nil, at: min(index, order.count))
         replacement.visitedAddress = tab.visitedAddress
+        replacement.openedByAgent = tab.openedByAgent
+        replacement.wasOnScreen = tab.wasOnScreen
+        replacement.revisits = tab.revisits
         if wasFront || frontedTabs[session].flatMap({ tabs[$0] }) == nil { frontedTabs[session] = replacement.id }
         if agentFronts[session] == tab.id { agentFronts[session] = replacement.id }
         if agentUsedTabs[session] == tab.id { agentUsedTabs[session] = replacement.id }
@@ -538,14 +548,20 @@ final class BrowserHostClient {
         if sessionObservers[session]?.isEmpty == true { sessionObservers[session] = nil }
     }
 
-    /// A panel shows the tab. The tab is kept, and shown to its engine, for as long as a panel is
-    /// attached; attaching also asks for a fresh frame.
-    func attachPanel(to tab: BrowserTab) {
+    /// A panel shows the tab. The tab is kept, and shown to its engine while the panel is on screen, for as long as a
+    /// panel is attached; attaching on screen also asks for a fresh frame.
+    /// - Parameter occluded: the panel is not on screen as it attaches (`setPanelOccluded`).
+    func attachPanel(to tab: BrowserTab, occluded: Bool = false) {
         guard tabs[tab.id] === tab else { return }
         tab.panelCount += 1
         tab.wasPanelAttached = true
-        tab.isShown = true
-        connection?.send(.visibility(tab: tab.id, isHidden: false))
+        if occluded {
+            tab.occludedPanelCount += 1
+        } else {
+            tab.wasOnScreen = true
+            tab.isShown = true
+            connection?.send(.visibility(tab: tab.id, isHidden: false))
+        }
         wake(tab)
         reschedule()
     }
@@ -566,6 +582,7 @@ final class BrowserHostClient {
     func setPanelOccluded(_ occluded: Bool, on tab: BrowserTab) {
         guard tabs[tab.id] === tab, tab.panelCount > 0 else { return }
         tab.occludedPanelCount = min(tab.panelCount, max(0, tab.occludedPanelCount + (occluded ? 1 : -1)))
+        if tab.visiblePanelCount > 0 { tab.wasOnScreen = true }
         reschedule()
     }
 
@@ -719,6 +736,8 @@ final class BrowserHostClient {
     /// Whether this Mac's memory is critical now (macOS's memory pressure), when Chrome discards a tab every few
     /// seconds; the platform layer reads it.
     var isMemoryCritical: () -> Bool = { false }
+    /// Chrome's level the person chose (Settings › General "Memory saver").
+    var memorySaverLevel = BrowserMemorySaver.Level.balanced
     /// Chrome's times; QA runs shorten them.
     var memorySaverTiming = BrowserMemorySaver.Timing()
     private var memorySaverTask: Task<Void, Never>?
@@ -750,7 +769,7 @@ final class BrowserHostClient {
         let candidates = tabs.values.compactMap {
             $0.memorySaverCandidate(now: now, hasChromiumWindow: windowed.contains($0.id), retryAfter: memorySaverTiming.retryAfter)
         }
-        for id in BrowserMemorySaver.picks(candidates, urgent: urgent, timing: memorySaverTiming) {
+        for id in BrowserMemorySaver.picks(candidates, urgent: urgent, level: memorySaverLevel, timing: memorySaverTiming) {
             guard let tab = tabs[id] else { continue }
             tab.isDiscardAsked = true
             connection.send(.discard(tab: id, urgent: urgent))
@@ -867,6 +886,8 @@ final class BrowserHostClient {
         let agentsOpener = agentTab(forSession: session) === opener
         let tab = BrowserTab(id: id, client: self, session: session, key: UUID())
         tab.viewport = opener.viewport
+        // The agent's click opened it.
+        tab.openedByAgent = opener.isDrivenByAgent
         tabs[id] = tab
         sessionOrder[session, default: []].append(id)
         if (!background && !behind) || frontedTabs[session].flatMap({ tabs[$0] }) == nil {
@@ -1295,6 +1316,12 @@ final class BrowserTab {
     fileprivate(set) var occludedPanelCount = 0
     /// A panel has shown the tab at some point.
     fileprivate(set) var wasPanelAttached = false
+    /// A panel has shown the tab on screen at some point: the person may have seen it.
+    fileprivate(set) var wasOnScreen = false
+    /// The agent's tools opened the tab, or the agent's input in another tab opened it as a pop-up.
+    fileprivate(set) var openedByAgent = false
+    /// How many times the person brought the tab in front of its task (`BrowserHostClient.show`).
+    fileprivate(set) var revisits = 0
     fileprivate(set) var lastAgentActivity: ContinuousClock.Instant?
     fileprivate let openedAt = ContinuousClock.now
     /// Whether the engine was last told the tab is shown (a new tab starts shown).
@@ -1333,6 +1360,8 @@ final class BrowserTab {
     /// The agent used the tab in its turn that is still going (`BrowserHostClient.noteAgentActivity`, until
     /// `endAgentEmulation`).
     fileprivate var isInAgentTurn = false
+    /// When the last agent turn that used the tab ended, on the clock `hiddenSince` uses.
+    private var agentTurnEndedAt: SuspendingClock.Instant?
     /// The panel's primary handler.
     var eventHandler: ((BrowserHostEvent) -> Void)?
     /// Called whenever the agent reports using this tab.
@@ -1626,6 +1655,7 @@ final class BrowserTab {
 
     /// The agent's turn ended: the size and color scheme it set go, as the Claude app clears them; the person's stay.
     func endAgentEmulation() async {
+        if isInAgentTurn { agentTurnEndedAt = .now }
         isInAgentTurn = false
         // A waiting call reads that the turn ended; an answer no call read belongs to the turn that ended.
         if handoff?.answer == nil { answerHandoff(.turnEnded) } else { endHandoff() }
@@ -1660,10 +1690,14 @@ final class BrowserTab {
             || isClosing || handoff != nil || isInAgentTurn || hasChromiumWindow || hadPersonEdits
             || permissionPrompt != nil || externalAppQuestion != nil || closeQuestion != nil || javaScriptDialog != nil
             || fileDialog != nil || !activeDownloads.isEmpty || !BrowserMemorySaver.isWebPage(currentURL)
+        // A tab the agent opened that no one has seen: the agent let it go when it hid or its turn ended, the later.
+        let unseenAgentIdle = openedByAgent && !wasOnScreen
+            ? max(hiddenSince, agentTurnEndedAt ?? hiddenSince).duration(to: now) : nil
         return BrowserMemorySaver.Candidate(
             tab: id, hidden: hiddenSince.duration(to: now), isProtected: isProtected,
             isProtectedFromProactive: workedInBackground,
-            refusedRecently: discardRefusedAt.map { $0.duration(to: now) < retryAfter } ?? false)
+            refusedRecently: discardRefusedAt.map { $0.duration(to: now) < retryAfter } ?? false,
+            revisits: revisits, unseenAgentIdle: unseenAgentIdle)
     }
 
     /// The memory saver loads the discarded page again (`BrowserHostClient.wake`).

@@ -73,7 +73,8 @@ final class BrowserHostVisibilityTests: XCTestCase {
 
     /// The memory saver (docs/BROWSER_HOST.md §3 "Memory saver"): a task's tab hidden past Chrome's time is offered to the host
     /// for discarding, once; a tab the person typed into, one downloading and one not on the web are not. A discarded tab
-    /// loads its page again when a panel shows it, and turning the saver off brings the others back.
+    /// loads its page again when a panel shows it, and turning the saver off brings the others back. Chrome's levels set
+    /// the time and the revisits that keep a tab, and a tab the agent opened that no one saw goes sooner.
     func testTheMemorySaverDiscardsLongHiddenTabsAndAShownOneLoadsAgain() async throws {
         let client = makeClient(visibleWindow: .milliseconds(20))
         client.memorySaverTiming = BrowserMemorySaver.Timing(
@@ -106,6 +107,59 @@ final class BrowserHostVisibilityTests: XCTestCase {
         client.isMemorySaverOn = false
         XCTAssertEqual(connection.sent.last, .navigation(tab: second.id, action: .reload), "turned off, the tabs are as before")
         XCTAssertFalse(second.isDiscarded)
+
+        // Chrome's levels (MemorySaverModePolicy): 6, 4 and 2 hours hidden, and a tab the person brought in front more
+        // than 5 or 15 times stays. Urgent discarding weighs neither.
+        func hidden(_ seconds: Int, revisits: Int = 0) -> [BrowserMemorySaver.Candidate] {
+            [BrowserMemorySaver.Candidate(tab: 1, hidden: .seconds(seconds), isProtected: false,
+                                          isProtectedFromProactive: false, refusedRecently: false, revisits: revisits)]
+        }
+        let levels: [(BrowserMemorySaver.Level, hours: Int, revisits: Int)] = [(.moderate, 6, 5), (.balanced, 4, 15), (.maximum, 2, 15)]
+        for (level, hours, revisits) in levels {
+            XCTAssertEqual(BrowserMemorySaver.picks(hidden(hours * 3600 - 1), urgent: false, level: level), [], "\(level)")
+            XCTAssertEqual(BrowserMemorySaver.picks(hidden(hours * 3600, revisits: revisits), urgent: false, level: level), [1], "\(level)")
+            XCTAssertEqual(BrowserMemorySaver.picks(hidden(hours * 3600, revisits: revisits + 1), urgent: false, level: level), [],
+                           "\(level)")
+        }
+        XCTAssertEqual(BrowserMemorySaver.picks(hidden(600, revisits: 99), urgent: true, level: .moderate), [1])
+
+        // A tab the agent opened that no panel showed on screen goes once the agent let it go for the unseen time,
+        // counted from its turn's end; a tab the person saw, or opened, waits for the level's time.
+        client.memorySaverTiming = BrowserMemorySaver.Timing(
+            hiddenBeforeDiscard: .seconds(3600), urgentProtection: .seconds(3600), unseenAgentTabIdle: .milliseconds(150),
+            sweepInterval: .milliseconds(30), retryAfter: .seconds(60))
+        let agentSession = UUID()
+        let unseen = try client.openTab(forSession: agentSession, url: "https://b.test/", viewport: .offscreenDefault, byAgent: true)
+        let offScreen = try client.newTab(forSession: agentSession, url: "https://b.test/2", viewport: .offscreenDefault,
+                                          select: false, byAgent: true)
+        let seen = try client.newTab(forSession: agentSession, url: "https://b.test/3", viewport: .offscreenDefault,
+                                     select: false, byAgent: true)
+        let persons = try client.newTab(forSession: agentSession, url: "https://b.test/4", viewport: .offscreenDefault, select: false)
+        for tab in [unseen, offScreen, seen, persons] {
+            connection.eventHandler?(.address(tab: tab.id, url: "https://b.test/\(tab.id)"))
+        }
+        for tab in [unseen, offScreen, seen] { tab.noteAgentActivity() }
+        client.attachPanel(to: offScreen, occluded: true)
+        client.detachPanel(from: offScreen, occluded: true)
+        client.attachPanel(to: seen)
+        client.detachPanel(from: seen)
+        // The person's fronting is a revisit; the agent's is not.
+        client.selectForAgent(seen)
+        client.show(persons)
+        client.show(seen)
+        XCTAssertEqual([seen.revisits, persons.revisits], [1, 1])
+        func agentTabsAsked() -> Set<BrowserTabID> {
+            Set(connection.sent.compactMap { if case .discard(let id, false) = $0 { id } else { nil } })
+                .intersection([unseen.id, offScreen.id, seen.id, persons.id])
+        }
+        client.isMemorySaverOn = true
+        try await wait(.milliseconds(400))
+        XCTAssertEqual(agentTabsAsked(), [], "kept while the agent's turn goes on")
+        for tab in client.tabs(forSession: agentSession) { await tab.endAgentEmulation() }
+        try await waitUntil { agentTabsAsked() == [unseen.id, offScreen.id] }
+        try await wait(.milliseconds(200))
+        XCTAssertEqual(agentTabsAsked(), [unseen.id, offScreen.id], "a tab the person saw, or opened, waits for the level")
+        client.isMemorySaverOn = false
     }
 
     func testAnOccludedPanelHidesTheTabUntilItIsOnScreenAgain() async throws {

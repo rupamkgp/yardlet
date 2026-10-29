@@ -169,6 +169,7 @@ struct SettingsCenterView: View {
     @AppStorage(KeepScreenAwakePreference.key) private var keepsScreenAwake = false
     /// Read by the browser host client as it changes and by each memory check (`MemorySaverPreference`).
     @AppStorage(MemorySaverPreference.key) private var savesMemory = true
+    @AppStorage(MemorySaverPreference.levelKey) private var memorySaverLevel = BrowserMemorySaver.Level.balanced
     /// `RunningWorkActivity` registers or removes the lid helper as it changes.
     @AppStorage(LidClosedWorkPreference.key) private var keepsWorkingWithLidClosed = false
     /// Asked of a Claude Code task's CLI when it starts or resumes; the composer reads it live.
@@ -520,22 +521,7 @@ struct SettingsCenterView: View {
                     lidClosedWorkRow(lidHelper)
                 }
                 Divider().padding(.leading, Self.dividerLeading)
-                HStack(spacing: 12) {
-                    settingsControlIcon("memorychip")
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L10n.string("Memory saver")).font(.callout.weight(.medium))
-                        Text(L10n.string("Frees memory from tasks you haven't used in a while and brings them back when you return."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    Toggle(L10n.string("Memory saver"), isOn: $savesMemory)
-                        .labelsHidden()
-                        .toggleStyle(.paritySwitch)
-                        .controlSize(.small)
-                }
-                .padding(.vertical, 14)
+                memorySaverRow
                 Divider().padding(.leading, Self.dividerLeading)
                 HStack(spacing: 12) {
                     settingsControlIcon("text.append")
@@ -667,6 +653,48 @@ struct SettingsCenterView: View {
     /// Where a General row's divider starts: under the words, past the 30 pt icon and the 12 pt
     /// gap, as Connectors' rows divide.
     static let dividerLeading: CGFloat = 30 + 12
+
+    /// "Memory saver", and while it is on Chrome's levels under it, each with its line, as Chrome's Memory page has them.
+    private var memorySaverRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                settingsControlIcon("memorychip")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n.string("Memory saver")).font(.callout.weight(.medium))
+                    Text(L10n.string("Frees memory from tasks you haven't used in a while and brings them back when you return."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle(L10n.string("Memory saver"), isOn: $savesMemory)
+                    .labelsHidden()
+                    .toggleStyle(.paritySwitch)
+                    .controlSize(.small)
+            }
+            .padding(.vertical, 14)
+            if savesMemory {
+                Picker(L10n.string("Memory saver level"), selection: $memorySaverLevel) {
+                    ForEach(BrowserMemorySaver.Level.allCases) { level in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(level.title).font(.callout)
+                            Text(level.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.bottom, 6)
+                        .tag(level)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.radioGroup)
+                .controlSize(.small)
+                .padding(.leading, Self.dividerLeading)
+                .padding(.bottom, 8)
+            }
+        }
+    }
 
     /// "Keep tasks working with the lid closed", with one line while it is on and macOS has not let
     /// the helper run yet.
